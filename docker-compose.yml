@@ -1,0 +1,62 @@
+version: "3.9"
+
+services:
+
+  web:
+    build: .
+    container_name: football_web
+    command: python manage.py runserver 0.0.0.0:8000
+
+    volumes:
+      - .:/app
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - .env
+
+    depends_on:
+      - db
+      - redis
+
+  db:
+    image: mysql:8.4
+
+    container_name: football_mysql
+
+    restart: always
+
+    environment:
+      MYSQL_DATABASE: football_db
+      MYSQL_USER: football_user
+      MYSQL_PASSWORD: football_password
+      MYSQL_ROOT_PASSWORD: rootpassword
+
+    ports:
+      - "3306:3306"
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7
+
+    container_name: football_redis
+
+    restart: always
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis_data:/data
+
+volumes:
+
+  mysql_data:
+
+  redis_data:
+
+#stdin_open: true
+#tty: true

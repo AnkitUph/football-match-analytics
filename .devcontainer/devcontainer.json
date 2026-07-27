@@ -1,0 +1,21 @@
+{
+    "name": "Football Match Analytics",
+
+    "dockerComposeFile": "../docker-compose.yml",
+
+    "service": "web",
+
+    "workspaceFolder": "/app",
+
+    "shutdownAction": "stopCompose",
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    }
+}

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual Environment
+venv/
+.env.local
+
+# Django
+db.sqlite3
+media/
+staticfiles/
+
+# Docker
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# macOS/Linux
+.DS_Store
+Thumbs.db
+
+# Pytest
+.pytest_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# MySQL
+mysql_data/
+
+# Redis
+redis_data/
+
+# AI Models
+*.pt
+*.onnx
+
+# Temporary
+tmp/
+cache/
