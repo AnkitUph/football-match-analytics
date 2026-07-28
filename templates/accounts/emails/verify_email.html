@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<h2>Welcome to Football Analytics!</h2>
+
+<p>Hello {{ user.username }},</p>
+
+<p>
+Thank you for registering.
+Please verify your email by clicking the button below.
+</p>
+
+<p>
+<a href="{{ verification_url }}"
+   style="background:#2563eb;color:white;padding:12px 24px;
+          text-decoration:none;border-radius:6px;">
+Verify Email
+</a>
+</p>
+
+<p>
+If the button doesn't work, copy this link:
+</p>
+
+<p>{{ verification_url }}</p>
+
+</body>
+</html>
