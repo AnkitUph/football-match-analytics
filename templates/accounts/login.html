@@ -13,7 +13,7 @@
     {% endfor %}
 {% endif %}
 
-<form method="POST">
+<form method="POST" action="{% url 'accounts:login' %}">
     {% csrf_token %}
 
     <label>Email</label><br>
@@ -27,6 +27,9 @@
     <br><br>
 
     <button type="submit">Login</button>
+    <a href="{% url 'accounts:forgot_password' %}" style="font-size: 12px; color: #2c5364; text-decoration: none;">
+            Forgot Password?
+    </a>
 </form>
 
 </body>
