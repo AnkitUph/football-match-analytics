@@ -1,0 +1,318 @@
+{% comment %}
+Save this as templates/accounts/profile.html
+
+Fully self-contained — no base.html required. If you build a base.html
+later, you can strip this down to just the {% block content %} portion.
+{% endcomment %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Profile — Football Analytics</title>
+    <style>
+        :root {
+            --pitch: #3D8B5F;
+            --pitch-light: #4FAE79;
+            --ink: #0F1512;
+            --panel: #161D19;
+            --panel-line: #263029;
+            --chalk: #EDEFEC;
+            --chalk-dim: #9BA69E;
+            --error: #D9695A;
+            --success: #4FAE79;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--ink);
+            background-image:
+                repeating-linear-gradient(
+                    90deg,
+                    rgba(255, 255, 255, 0.015) 0px,
+                    rgba(255, 255, 255, 0.015) 1px,
+                    transparent 1px,
+                    transparent 64px
+                );
+            color: var(--chalk);
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            padding: 48px 20px;
+        }
+
+        .wrap {
+            max-width: 640px;
+            margin: 0 auto;
+        }
+
+        .eyebrow {
+            font-size: 12px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--pitch-light);
+            font-weight: 600;
+            margin: 0 0 6px;
+        }
+
+        h1 {
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 34px;
+            font-weight: 700;
+            margin: 0 0 28px;
+            letter-spacing: -0.01em;
+        }
+
+        .messages {
+            list-style: none;
+            margin: 0 0 20px;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .message {
+            padding: 11px 14px;
+            border-radius: 6px;
+            font-size: 14px;
+            border: 1px solid var(--panel-line);
+            background: var(--panel);
+        }
+
+        .message.success { border-color: var(--success); color: var(--success); }
+        .message.error { border-color: var(--error); color: var(--error); }
+
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--panel-line);
+            border-radius: 10px;
+            padding: 32px;
+        }
+
+        .identity {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            padding-bottom: 28px;
+            margin-bottom: 28px;
+            border-bottom: 1px solid var(--panel-line);
+        }
+
+        .avatar {
+            width: 84px;
+            height: 84px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid var(--pitch);
+            flex-shrink: 0;
+        }
+
+        .avatar-placeholder {
+            width: 84px;
+            height: 84px;
+            border-radius: 50%;
+            background: var(--ink);
+            border: 2px solid var(--pitch);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            font-weight: 700;
+            color: var(--pitch-light);
+            flex-shrink: 0;
+        }
+
+        .identity-text .username {
+            font-size: 20px;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .identity-text .since {
+            font-size: 13px;
+            color: var(--chalk-dim);
+            margin: 4px 0 0;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--chalk-dim);
+            font-weight: 600;
+            margin-bottom: 7px;
+        }
+
+        input[type="text"],
+        input[type="email"] {
+            width: 100%;
+            padding: 11px 13px;
+            background: var(--ink);
+            border: 1px solid var(--panel-line);
+            border-radius: 6px;
+            color: var(--chalk);
+            font-size: 15px;
+            font-family: inherit;
+            transition: border-color 0.15s ease;
+        }
+
+        input[type="text"]:focus,
+        input[type="email"]:focus {
+            outline: none;
+            border-color: var(--pitch);
+        }
+
+        input:disabled {
+            color: var(--chalk-dim);
+            cursor: not-allowed;
+        }
+
+        small {
+            display: block;
+            margin-top: 6px;
+            color: var(--chalk-dim);
+            font-size: 12px;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 10px 0;
+            color: var(--chalk-dim);
+            font-size: 14px;
+        }
+
+        input[type="file"]::file-selector-button {
+            background: var(--panel-line);
+            color: var(--chalk);
+            border: none;
+            border-radius: 5px;
+            padding: 8px 14px;
+            margin-right: 12px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        button[type="submit"] {
+            width: 100%;
+            padding: 13px;
+            background: var(--pitch);
+            border: none;
+            border-radius: 6px;
+            color: #061009;
+            font-size: 15px;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: background 0.15s ease;
+        }
+
+        button[type="submit"]:hover {
+            background: var(--pitch-light);
+        }
+
+        button[type="submit"]:focus-visible,
+        a:focus-visible,
+        input:focus-visible {
+            outline: 2px solid var(--pitch-light);
+            outline-offset: 2px;
+        }
+
+        .links {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 24px;
+            font-size: 14px;
+        }
+
+        .links a {
+            color: var(--chalk-dim);
+            text-decoration: none;
+            border-bottom: 1px solid transparent;
+        }
+
+        .links a:hover {
+            color: var(--pitch-light);
+            border-bottom-color: var(--pitch-light);
+        }
+
+        @media (max-width: 480px) {
+            .card { padding: 22px; }
+            h1 { font-size: 27px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <p class="eyebrow">Account</p>
+        <h1>My Profile</h1>
+
+        {% if messages %}
+            <ul class="messages">
+                {% for message in messages %}
+                    <li class="message {{ message.tags }}">{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+
+        <div class="card">
+            <div class="identity">
+                {% if profile_user.profile_picture %}
+                    <img class="avatar" src="{{ profile_user.profile_picture.url }}" alt="{{ profile_user.username }}">
+                {% else %}
+                    <div class="avatar-placeholder">{{ profile_user.username|first|upper }}</div>
+                {% endif %}
+                <div class="identity-text">
+                    <p class="username">{{ profile_user.username }}</p>
+                    <p class="since">Member since {{ profile_user.created_at|date:"F j, Y" }}</p>
+                </div>
+            </div>
+
+            <form method="post" enctype="multipart/form-data" action="{% url 'accounts:profile' %}">
+                {% csrf_token %}
+
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" value="{{ profile_user.username }}" disabled>
+                    <small>Username can't be changed.</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="first_name">First name</label>
+                    <input type="text" id="first_name" name="first_name" value="{{ profile_user.first_name }}">
+                </div>
+
+                <div class="form-group">
+                    <label for="last_name">Last name</label>
+                    <input type="text" id="last_name" name="last_name" value="{{ profile_user.last_name }}">
+                </div>
+
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" value="{{ profile_user.email }}" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="profile_picture">Profile picture</label>
+                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*">
+                </div>
+
+                <button type="submit">Save changes</button>
+            </form>
+
+            <div class="links">
+                <a href="{% url 'accounts:change_password' %}">Change password</a>
+                <a href="{% url 'dashboard:index' %}">Back to dashboard</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

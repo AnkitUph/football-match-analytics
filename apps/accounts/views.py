@@ -1,16 +1,44 @@
-import token
-from urllib import request
-
 from django.contrib import messages
-from django.contrib.auth import get_user_model
-from django.shortcuts import render, redirect
-from django.contrib.auth.tokens import default_token_generator
+from django.contrib.auth import (
+    authenticate,
+    get_user_model,
+    login,
+    logout,
+    update_session_auth_hash,
+)
+from django.contrib.auth.decorators import login_required
+from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.tokens import PasswordResetTokenGenerator, default_token_generator
 from django.contrib.sites.shortcuts import get_current_site
+from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives
+from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
-from django.utils.encoding import force_bytes
-from django.utils.http import urlsafe_base64_encode
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+
 User = get_user_model()
+
+
+class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
+    """
+    Separate salt + hash payload from the password-reset token generator so a
+    verification link can never be replayed to reset a password (and vice
+    versa). Including is_active means the token is invalidated the moment
+    the account is verified.
+    """
+    key_salt = "accounts.EmailVerificationTokenGenerator"
+
+    def _make_hash_value(self, user, timestamp):
+        return f"{user.pk}{timestamp}{user.is_active}"
+
+
+email_verification_token = EmailVerificationTokenGenerator()
+
+
+def _build_absolute_url(request, path):
+    scheme = "https" if request.is_secure() else "http"
+    return f"{scheme}://{get_current_site(request).domain}{path}"
 
 
 def register(request):
@@ -30,6 +58,14 @@ def register(request):
             messages.error(request, "Passwords do not match.")
             return redirect("accounts:register")
 
+        # Password strength (length, common password, similarity to user attrs, etc.)
+        try:
+            validate_password(password)
+        except ValidationError as e:
+            for msg in e.messages:
+                messages.error(request, msg)
+            return redirect("accounts:register")
+
         # Username exists
         if User.objects.filter(username=username).exists():
             messages.error(request, "Username already exists.")
@@ -47,13 +83,12 @@ def register(request):
             is_active=False,
         )
 
-# Generate verification token
+        # Generate verification token (distinct from password-reset tokens)
         uid = urlsafe_base64_encode(force_bytes(user.pk))
-        token = default_token_generator.make_token(user)
+        token = email_verification_token.make_token(user)
 
-        verification_url = (
-            f"http://{get_current_site(request).domain}"
-            f"/accounts/verify-email/{uid}/{token}/"
+        verification_url = _build_absolute_url(
+            request, f"/accounts/verify-email/{uid}/{token}/"
         )
 
         html_message = render_to_string(
@@ -61,7 +96,7 @@ def register(request):
             {
                 "user": user,
                 "verification_url": verification_url,
-          },
+            },
         )
 
         email_message = EmailMultiAlternatives(
@@ -70,26 +105,25 @@ def register(request):
             to=[user.email],
         )
         email_message.attach_alternative(html_message, "text/html")
-        email_message.send()
+
+        try:
+            email_message.send()
+        except Exception:
+            # Don't leave an orphaned, unverifiable account behind
+            user.delete()
+            messages.error(
+                request,
+                "We couldn't send the verification email. Please try registering again.",
+            )
+            return redirect("accounts:register")
 
         messages.success(
             request,
             "Account created successfully. Please check your email to verify your account.",
         )
-
         return redirect("accounts:login")
-        
 
     return render(request, "accounts/register.html")
-
-
-from django.http import HttpResponse
-
-from django.contrib import messages
-from django.contrib.auth import authenticate, login
-from django.shortcuts import render, redirect
-
-
 
 
 def user_login(request):
@@ -99,16 +133,15 @@ def user_login(request):
 
         user = authenticate(
             request,
-            username=email,   # Pass email here
+            username=email,  # ModelBackend looks this up via USERNAME_FIELD (email)
             password=password,
         )
 
         if user is not None:
-
             if not user.is_active:
                 messages.error(
                     request,
-                    "Please verify your email before logging in."
+                    "Please verify your email before logging in.",
                 )
                 return redirect("accounts:login")
 
@@ -121,41 +154,28 @@ def user_login(request):
     return render(request, "accounts/login.html")
 
 
-from django.utils.http import urlsafe_base64_decode
-from django.utils.encoding import force_str
-from django.contrib.auth.tokens import default_token_generator
-
-
 def verify_email(request, uidb64, token):
     try:
         uid = force_str(urlsafe_base64_decode(uidb64))
         user = User.objects.get(pk=uid)
-
     except (TypeError, ValueError, OverflowError, User.DoesNotExist):
         user = None
 
-    if user and default_token_generator.check_token(user, token):
+    if user and email_verification_token.check_token(user, token):
         user.is_active = True
         user.save()
 
         messages.success(
             request,
-            "Your email has been verified. You can now log in."
+            "Your email has been verified. You can now log in.",
         )
-
         return redirect("accounts:login")
 
     messages.error(
         request,
-        "Verification link is invalid or has expired."
+        "Verification link is invalid or has expired.",
     )
-
     return redirect("accounts:login")
-
-from django.contrib.auth import update_session_auth_hash
-from django.contrib.auth.decorators import login_required
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
 
 
 def forgot_password(request):
@@ -174,9 +194,8 @@ def forgot_password(request):
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
 
-            reset_url = (
-                f"http://{get_current_site(request).domain}"
-                f"/accounts/reset-password/{uid}/{token}/"
+            reset_url = _build_absolute_url(
+                request, f"/accounts/reset-password/{uid}/{token}/"
             )
 
             html_message = render_to_string(
@@ -193,11 +212,18 @@ def forgot_password(request):
                 to=[user.email],
             )
             email_message.attach_alternative(html_message, "text/html")
-            email_message.send()
+
+            try:
+                email_message.send()
+            except Exception:
+                # Fail silently to the user (same as "email not found") so we
+                # don't leak account existence via error behavior, but this
+                # is a good spot to log the exception for yourself.
+                pass
 
         messages.success(
             request,
-            "If an account with that email exists, a password reset link has been sent."
+            "If an account with that email exists, a password reset link has been sent.",
         )
         return redirect("accounts:login")
 
@@ -241,7 +267,7 @@ def reset_password(request, uidb64, token):
 
         messages.success(
             request,
-            "Your password has been reset successfully. You can now log in."
+            "Your password has been reset successfully. You can now log in.",
         )
         return redirect("accounts:login")
 
@@ -250,6 +276,7 @@ def reset_password(request, uidb64, token):
         "accounts/reset_password.html",
         {"uidb64": uidb64, "token": token},
     )
+
 
 @login_required
 def change_password(request):
@@ -290,10 +317,43 @@ def change_password(request):
     return render(request, "accounts/change_password.html")
 
 
-from django.contrib.auth import logout
-
-
 def user_logout(request):
     logout(request)
     messages.success(request, "You have been logged out.")
     return redirect("accounts:login")
+
+
+ 
+@login_required
+def profile(request):
+    user = request.user
+ 
+    if request.method == "POST":
+        first_name = request.POST.get("first_name", "").strip()
+        last_name = request.POST.get("last_name", "").strip()
+        email = request.POST.get("email", "").strip().lower()
+        profile_picture = request.FILES.get("profile_picture")
+ 
+        if not email:
+            messages.error(request, "Email is required.")
+            return redirect("accounts:profile")
+ 
+        # Only complain if a *different* user already owns this email
+        if User.objects.exclude(pk=user.pk).filter(email=email).exists():
+            messages.error(request, "That email is already in use.")
+            return redirect("accounts:profile")
+ 
+        user.first_name = first_name
+        user.last_name = last_name
+        user.email = email
+ 
+        if profile_picture:
+            user.profile_picture = profile_picture
+ 
+        user.save()
+ 
+        messages.success(request, "Your profile has been updated.")
+        return redirect("accounts:profile")
+ 
+    return render(request, "accounts/profile.html", {"profile_user": user})
+ 
