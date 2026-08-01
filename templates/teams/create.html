@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manage Teams | Football Analytics</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+    body { min-height: 100vh; background: #f4f6f8; }
+
+    header {
+        background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        padding: 20px 40px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: #fff;
+    }
+    header h1 { font-size: 20px; font-weight: 600; }
+    header a {
+        color: #cfe8ee;
+        text-decoration: none;
+        padding: 6px 14px;
+        border: 1px solid rgba(255,255,255,0.4);
+        border-radius: 6px;
+    }
+    header a:hover { background: rgba(255,255,255,0.1); }
+
+    .container { max-width: 900px; margin: 0 auto; padding: 40px 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+    @media (max-width: 800px) { .container { grid-template-columns: 1fr; } }
+
+    .page-title { font-size: 24px; font-weight: 700; color: #1a1a1a; margin-bottom: 6px; grid-column: 1 / -1; }
+    .page-subtitle { font-size: 14px; color: #888; margin-bottom: 4px; grid-column: 1 / -1; }
+
+    .messages { list-style: none; margin-bottom: 4px; grid-column: 1 / -1; }
+    .messages li {
+        padding: 10px 14px;
+        border-radius: 8px;
+        font-size: 13px;
+        margin-bottom: 8px;
+    }
+    .messages li.success { background: #e6f7ed; color: #1a7f4e; border: 1px solid #b3e6c9; }
+    .messages li.error { background: #fdeaea; color: #c0392b; border: 1px solid #f5c2c2; }
+
+    .card {
+        background: #fff;
+        border-radius: 10px;
+        padding: 28px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+        align-self: start;
+    }
+
+    .card h2 { font-size: 15px; margin-bottom: 18px; color: #203a43; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+    label {
+        display: block;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #666;
+        font-weight: 600;
+        margin-bottom: 6px;
+    }
+    input[type="text"], select {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-size: 14px;
+        font-family: inherit;
+    }
+    input[type="color"] {
+        width: 100%;
+        height: 40px;
+        padding: 2px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        cursor: pointer;
+    }
+    input[type="file"] { font-size: 13px; }
+
+    button[type="submit"] {
+        width: 100%;
+        padding: 12px;
+        background: #203a43;
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 700;
+        cursor: pointer;
+        margin-top: 6px;
+    }
+    button[type="submit"]:hover { background: #2c5364; }
+
+    .team-list { list-style: none; }
+    .team-list li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid #f0f0f0;
+        font-size: 14px;
+    }
+    .team-list li:last-child { border-bottom: none; }
+    .swatch {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 1px solid rgba(0,0,0,0.1);
+        flex-shrink: 0;
+        background: #d9d9d9;
+    }
+    .team-meta { color: #999; font-size: 12px; }
+    .empty-state { color: #999; font-size: 13px; padding: 12px 0; }
+</style>
+</head>
+<body>
+    <header>
+        <h1>⚽ Football Analytics</h1>
+        <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
+    </header>
+
+    <div class="container">
+        <p class="page-title">Manage Teams</p>
+        <p class="page-subtitle">Add teams here once, then pick them from a dropdown when uploading matches.</p>
+
+        {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        <div class="card">
+            <h2>Add a Team</h2>
+            <form method="post" enctype="multipart/form-data" action="{% url 'teams:create' %}">
+                {% csrf_token %}
+
+                <div class="form-group">
+                    <label for="name">Team Name</label>
+                    <input type="text" id="name" name="name" required>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="short_name">Short Name</label>
+                        <input type="text" id="short_name" name="short_name" maxlength="10" placeholder="e.g. MUFC" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="team_type">Type</label>
+                        <select id="team_type" name="team_type">
+                            {% for value, label in team_types %}
+                                <option value="{{ value }}">{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="country">Country</label>
+                        <input type="text" id="country" name="country">
+                    </div>
+                    <div class="form-group">
+                        <label for="league">League</label>
+                        <input type="text" id="league" name="league" placeholder="Optional">
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="primary_color">Primary Color</label>
+                        <input type="color" id="primary_color" name="primary_color" value="#3D8B5F" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="secondary_color">Secondary Color</label>
+                        <input type="color" id="secondary_color" name="secondary_color" value="#FFFFFF">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="logo">Logo</label>
+                    <input type="file" id="logo" name="logo" accept="image/*">
+                </div>
+
+                <button type="submit">Add Team</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>Existing Teams ({{ teams|length }})</h2>
+            {% if teams %}
+                <ul class="team-list">
+                    {% for team in teams %}
+                        <li>
+                            <span class="swatch" data-color="{{ team.primary_color }}"></span>
+                            <span>{{ team.name }} ({{ team.short_name }})</span>
+                            <span class="team-meta">— {{ team.country }}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="empty-state">No teams added yet.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        document.querySelectorAll('.swatch[data-color]').forEach(function (el) {
+            el.style.backgroundColor = el.dataset.color;
+        });
+    </script>
+</body>
+</html>

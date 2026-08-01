@@ -8,8 +8,8 @@ urlpatterns = [
     path("", include("apps.dashboard.urls")),
     path("accounts/", include("apps.accounts.urls")),
     path("matches/", include("apps.matches.urls")),
-    #path("players/", include("apps.players.urls")),
-    #path("teams/", include("apps.teams.urls")),
+    path("players/", include("apps.players.urls")),
+    path("teams/", include("apps.teams.urls")),
     #path("analytics/", include("apps.analytics.urls")),
     #path("reports/", include("apps.reports.urls")),
 ]
