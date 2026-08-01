@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upload Match | Football Analytics</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+    body { min-height: 100vh; background: #f4f6f8; }
+
+    header {
+        background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        padding: 20px 40px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: #fff;
+    }
+    header h1 { font-size: 20px; font-weight: 600; }
+    header a {
+        color: #cfe8ee;
+        text-decoration: none;
+        padding: 6px 14px;
+        border: 1px solid rgba(255,255,255,0.4);
+        border-radius: 6px;
+    }
+    header a:hover { background: rgba(255,255,255,0.1); }
+
+    .container { max-width: 640px; margin: 0 auto; padding: 40px 20px; }
+
+    .page-title { font-size: 24px; font-weight: 700; color: #1a1a1a; margin-bottom: 6px; }
+    .page-subtitle { font-size: 14px; color: #888; margin-bottom: 28px; }
+
+    .messages { list-style: none; margin-bottom: 20px; }
+    .messages li {
+        padding: 10px 14px;
+        border-radius: 8px;
+        font-size: 13px;
+        margin-bottom: 8px;
+    }
+    .messages li.success { background: #e6f7ed; color: #1a7f4e; border: 1px solid #b3e6c9; }
+    .messages li.error { background: #fdeaea; color: #c0392b; border: 1px solid #f5c2c2; }
+
+    .card {
+        background: #fff;
+        border-radius: 10px;
+        padding: 32px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    }
+
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .form-group { margin-bottom: 20px; }
+    label {
+        display: block;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #666;
+        font-weight: 600;
+        margin-bottom: 7px;
+    }
+    select, input[type="text"], input[type="date"] {
+        width: 100%;
+        padding: 11px 13px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-size: 14px;
+        font-family: inherit;
+        background: #fff;
+    }
+    select:focus, input:focus {
+        outline: none;
+        border-color: #2c5364;
+    }
+
+    .video-drop {
+        border: 2px dashed #ccc;
+        border-radius: 8px;
+        padding: 24px;
+        text-align: center;
+        color: #888;
+        font-size: 13px;
+    }
+    input[type="file"] {
+        width: 100%;
+        font-size: 13px;
+        color: #666;
+    }
+
+    .no-teams {
+        background: #fff8e6;
+        border: 1px solid #f0d98c;
+        color: #8a6d1a;
+        padding: 12px 14px;
+        border-radius: 8px;
+        font-size: 13px;
+        margin-bottom: 20px;
+    }
+
+    button[type="submit"] {
+        width: 100%;
+        padding: 13px;
+        background: #203a43;
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        margin-top: 8px;
+    }
+    button[type="submit"]:hover { background: #2c5364; }
+    button[type="submit"]:disabled { background: #aaa; cursor: not-allowed; }
+</style>
+</head>
+<body>
+    <header>
+        <h1>⚽ Football Analytics</h1>
+        <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
+    </header>
+
+    <div class="container">
+        <p class="page-title">Upload Match</p>
+        <p class="page-subtitle">Add a new match video for analysis.</p>
+
+        {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        <div class="card">
+            {% if not teams %}
+                <div class="no-teams">
+                    No teams exist yet. Add teams via the admin panel before uploading a match.
+                </div>
+            {% endif %}
+
+            <form method="post" enctype="multipart/form-data" action="{% url 'matches:upload' %}">
+                {% csrf_token %}
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="home_team">Team A (Home)</label>
+                        <select id="home_team" name="home_team" required>
+                            <option value="">Select team</option>
+                            {% for team in teams %}
+                                <option value="{{ team.id }}">{{ team.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="away_team">Team B (Away)</label>
+                        <select id="away_team" name="away_team" required>
+                            <option value="">Select team</option>
+                            {% for team in teams %}
+                                <option value="{{ team.id }}">{{ team.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="match_date">Match Date</label>
+                        <input type="date" id="match_date" name="match_date" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="competition">Competition</label>
+                        <input type="text" id="competition" name="competition" placeholder="e.g. Premier League">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="stadium">Stadium</label>
+                    <input type="text" id="stadium" name="stadium" placeholder="Optional">
+                </div>
+
+                <div class="form-group">
+                    <label for="video">Match Video</label>
+                    <div class="video-drop">
+                        <input type="file" id="video" name="video" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska" required>
+                        <p style="margin-top:8px;">MP4, MOV, AVI, or MKV</p>
+                    </div>
+                </div>
+
+                <button type="submit" {% if not teams %}disabled{% endif %}>Upload Match</button>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
