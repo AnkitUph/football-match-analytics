@@ -176,3 +176,20 @@ LOGOUT_REDIRECT_URL = "accounts:login"
 
 FILE_UPLOAD_MAX_MEMORY_SIZE = 50 * 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = None  # or a large number
+
+
+# ===========================
+# Celery / Redis Configuration (Phase 4)
+# ===========================
+
+# Matches the "redis" service already defined in docker-compose.yml.
+# Override REDIS_URL in .env if you ever run Redis somewhere else.
+REDIS_URL = env("REDIS_URL", default="redis://redis:6379/0")
+
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True

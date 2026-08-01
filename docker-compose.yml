@@ -20,6 +20,21 @@ services:
       - db
       - redis
 
+  celery_worker:
+    build: .
+    container_name: football_celery_worker
+    command: celery -A config worker --loglevel=info
+
+    volumes:
+      - .:/app
+
+    env_file:
+      - .env
+
+    depends_on:
+      - db
+      - redis
+
   db:
     image: mysql:8.4
 

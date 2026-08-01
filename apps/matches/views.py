@@ -4,6 +4,7 @@ from django.db import IntegrityError, transaction
 from django.shortcuts import redirect, render
 
 from apps.matches.models import Match, MatchLineup, MatchVideo
+from apps.matches.tasks import process_match
 from apps.players.models import Player
 from apps.teams.models import Team
 
@@ -262,8 +263,10 @@ def upload_match(request):
             )
             return redirect("matches:upload")
 
-        # Phase 4 will kick off the background task here, e.g.:
-        #   process_match.delay(match.id)
+        # Queue background processing only after the transaction above has
+        # actually committed — otherwise the Celery worker could try to
+        # fetch this Match before it exists in the database.
+        transaction.on_commit(lambda: process_match.delay(match.id))
 
         messages.success(
             request,
