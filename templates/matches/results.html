@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ match }} — Results | Football Analytics</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+    body { min-height: 100vh; background: #f4f6f8; }
+
+    header {
+        background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        padding: 20px 40px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: #fff;
+    }
+    header h1 { font-size: 20px; font-weight: 600; }
+    header a {
+        color: #cfe8ee;
+        text-decoration: none;
+        padding: 6px 14px;
+        border: 1px solid rgba(255,255,255,0.4);
+        border-radius: 6px;
+    }
+    header a:hover { background: rgba(255,255,255,0.1); }
+
+    .container { max-width: 900px; margin: 0 auto; padding: 28px 20px 60px; }
+
+    .dummy-banner {
+        background: #fff8e6;
+        border: 1px solid #f0d98c;
+        color: #8a6d1a;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-size: 13px;
+        margin-bottom: 20px;
+    }
+
+    /* Match header */
+    .match-header {
+        background: #fff;
+        border-radius: 12px;
+        padding: 26px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+        margin-bottom: 16px;
+        text-align: center;
+    }
+    .match-meta { font-size: 12px; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; }
+    .scoreline { display: flex; align-items: center; justify-content: center; gap: 28px; }
+    .team-block { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 170px; }
+    .team-swatch { width: 38px; height: 38px; border-radius: 50%; border: 2px solid rgba(0,0,0,0.06); }
+    .team-name { font-size: 14px; font-weight: 700; color: #1a1a1a; }
+    .score { font-size: 36px; font-weight: 800; color: #203a43; min-width: 100px; }
+    .status-pill {
+        display: inline-block;
+        margin-top: 12px;
+        padding: 4px 14px;
+        border-radius: 20px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        background: #e6f7ed; color: #1a7f4e;
+    }
+
+    /* Tabs */
+    .tab-bar {
+        display: flex;
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+        margin-bottom: 16px;
+        overflow: hidden;
+    }
+    .tab-btn {
+        flex: 1;
+        padding: 14px;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 700;
+        color: #888;
+        background: none;
+        border: none;
+        cursor: pointer;
+        border-bottom: 3px solid transparent;
+    }
+    .tab-btn.active { color: #203a43; border-bottom-color: #203a43; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .section {
+        background: #fff;
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+        margin-bottom: 16px;
+    }
+    .section h2 {
+        font-size: 14px;
+        color: #203a43;
+        margin-bottom: 16px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+    }
+
+    /* Possession */
+    .possession-bar { display: flex; height: 32px; border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+    .possession-home { background: #203a43; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 700; }
+    .possession-away { background: #94a8b2; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 700; }
+    .possession-labels { display: flex; justify-content: space-between; font-size: 11px; color: #888; }
+
+    /* Metric grid */
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; }
+    .metric-card { background: #f8f9fa; border-radius: 8px; padding: 14px; text-align: center; }
+    .metric-value { font-size: 22px; font-weight: 800; color: #203a43; }
+    .metric-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+    /* Shots */
+    .shot-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid #f4f4f4; font-size: 13px; }
+    .shot-row:first-child { border-top: none; }
+    .shot-minute { width: 32px; font-weight: 700; color: #888; font-size: 12px; }
+    .shot-side { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .shot-side.home { background: #203a43; }
+    .shot-side.away { background: #94a8b2; }
+    .shot-player { flex: 1; }
+    .shot-xg { font-size: 11px; color: #999; width: 55px; text-align: right; }
+    .shot-outcome { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 8px; border-radius: 10px; width: 70px; text-align: center; }
+    .shot-outcome.Goal { background: #e6f7ed; color: #1a7f4e; }
+    .shot-outcome.Saved { background: #e3edf1; color: #2c5364; }
+    .shot-outcome.Blocked { background: #f4f0e6; color: #8a6d1a; }
+    .shot-outcome.Off-Target { background: #fdeaea; color: #c0392b; }
+    .shot-outcome.Woodwork { background: #ece6fd; color: #5a3fc0; }
+
+    /* Timeline */
+    .timeline { position: relative; padding-left: 22px; }
+    .timeline::before { content: ""; position: absolute; left: 6px; top: 4px; bottom: 4px; width: 2px; background: #eee; }
+    .timeline-event { position: relative; padding: 9px 0; font-size: 13px; }
+    .timeline-event::before {
+        content: ""; position: absolute; left: -22px; top: 13px;
+        width: 9px; height: 9px; border-radius: 50%;
+        background: #94a8b2; border: 2px solid #fff; box-shadow: 0 0 0 1px #ddd;
+    }
+    .timeline-event.goal::before { background: #1a7f4e; }
+    .timeline-event.red_card::before { background: #c0392b; }
+    .timeline-event.yellow_card::before { background: #f0ad4e; }
+    .timeline-event.kickoff::before, .timeline-event.fulltime::before { background: #203a43; }
+    .timeline-minute { font-weight: 700; color: #888; margin-right: 8px; }
+
+    /* Team stats table */
+    table.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.stats-table td { padding: 9px 6px; text-align: center; border-top: 1px solid #f2f2f2; }
+    table.stats-table td.stat-label { text-align: left; color: #666; font-weight: 600; }
+    table.stats-table td.home-val { font-weight: 700; color: #203a43; }
+    table.stats-table td.away-val { font-weight: 700; color: #555; }
+
+    /* Heatmap placeholder */
+    .pitch-placeholder {
+        background: linear-gradient(180deg, #3D8B5F, #4FAE79);
+        border-radius: 10px;
+        aspect-ratio: 3 / 2;
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: 16px;
+    }
+    .pitch-placeholder::before { content: ""; position: absolute; inset: 6%; border: 2px solid rgba(255,255,255,0.4); }
+    .pitch-placeholder::after { content: ""; position: absolute; left: 50%; top: 6%; bottom: 6%; width: 2px; background: rgba(255,255,255,0.4); }
+    .pitch-note { background: rgba(15,32,39,0.55); color: #fff; font-size: 12px; padding: 8px 16px; border-radius: 20px; z-index: 1; }
+
+    /* Lineup */
+    .lineup-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 700px) { .lineup-columns { grid-template-columns: 1fr; } }
+    .lineup-columns h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #203a43; margin-bottom: 10px; }
+    .lineup-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 8px;
+        border-radius: 8px;
+        cursor: pointer;
+        border-top: 1px solid #f4f4f4;
+        transition: background 0.12s;
+    }
+    .lineup-columns > div > .lineup-row:first-of-type { border-top: none; }
+    .lineup-row:hover { background: #f4f6f8; }
+    .lineup-jersey {
+        width: 28px; height: 28px; border-radius: 50%;
+        background: #203a43; color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 700; flex-shrink: 0;
+    }
+    .lineup-info { flex: 1; }
+    .lineup-name { font-size: 13.5px; font-weight: 600; color: #1a1a1a; }
+    .lineup-position { font-size: 11px; color: #999; }
+    .lineup-rating {
+        font-size: 12px; font-weight: 700; color: #fff;
+        background: #4FAE79; padding: 3px 8px; border-radius: 6px;
+    }
+
+    .badge-dummy {
+        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+        color: #b8720a; background: #fff3e0; padding: 2px 7px; border-radius: 8px;
+        margin-left: 8px; vertical-align: middle;
+    }
+
+    /* Player modal */
+    .modal-overlay {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(15,20,25,0.6);
+        z-index: 100;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-card {
+        background: #fff;
+        border-radius: 14px;
+        width: 100%;
+        max-width: 420px;
+        max-height: 85vh;
+        overflow-y: auto;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+    }
+    .modal-header {
+        background: linear-gradient(135deg, #0f2027, #203a43);
+        color: #fff;
+        padding: 24px;
+        border-radius: 14px 14px 0 0;
+        position: relative;
+        text-align: center;
+    }
+    .modal-close {
+        position: absolute; top: 14px; right: 16px;
+        background: rgba(255,255,255,0.15);
+        border: none; color: #fff;
+        width: 28px; height: 28px; border-radius: 50%;
+        font-size: 15px; cursor: pointer;
+    }
+    .modal-jersey {
+        width: 56px; height: 56px; border-radius: 50%;
+        background: rgba(255,255,255,0.15);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 22px; font-weight: 800;
+        margin: 0 auto 10px;
+    }
+    .modal-player-name { font-size: 18px; font-weight: 700; }
+    .modal-player-meta { font-size: 12px; color: #cfe8ee; margin-top: 4px; }
+
+    .modal-body { padding: 4px 24px 26px; max-height: calc(85vh - 150px); overflow-y: auto; }
+
+    .stat-group { margin-top: 18px; }
+    .stat-group:first-child { margin-top: 4px; }
+    .stat-group-title {
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.6px; color: #999; margin-bottom: 6px;
+    }
+    .stat-row {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 9px 0; border-top: 1px solid #f2f2f2; font-size: 13.5px;
+    }
+    .stat-group .stat-row:first-of-type { border-top: none; }
+    .stat-row-label { color: #666; }
+    .stat-row-value { font-weight: 700; color: #1a1a1a; }
+    .stat-row-value.rating-value {
+        background: #4FAE79; color: #fff; padding: 2px 10px; border-radius: 6px; font-size: 13px;
+    }
+
+    .modal-pitch {
+        background: linear-gradient(180deg, #3D8B5F, #4FAE79);
+        border-radius: 10px;
+        aspect-ratio: 3 / 2;
+        position: relative;
+        display: flex; align-items: center; justify-content: center;
+        overflow: hidden;
+    }
+    .modal-pitch::before { content: ""; position: absolute; inset: 6%; border: 2px solid rgba(255,255,255,0.4); }
+    .modal-pitch-note { background: rgba(15,32,39,0.55); color: #fff; font-size: 11px; padding: 6px 12px; border-radius: 16px; z-index: 1; }
+</style>
+</head>
+<body>
+    <header>
+        <h1>⚽ Football Analytics</h1>
+        <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
+    </header>
+
+    <div class="container">
+        <div class="dummy-banner">
+            📊 Stats shown are placeholder data (Phase 5). Real numbers populate once the CV pipeline (Phase 6) processes this match.
+        </div>
+
+        <div class="match-header">
+            <div class="match-meta">
+                {{ match.competition|default:"Friendly" }} · {{ match.match_date|date:"F j, Y" }}
+                {% if match.stadium %} · {{ match.stadium }}{% endif %}
+            </div>
+            <div class="scoreline">
+                <div class="team-block">
+                    <span class="team-swatch" style="--swatch-color: {{ match.home_kit_color|default:match.home_team.primary_color }}; background: var(--swatch-color);"></span>
+                    <span class="team-name">{{ match.home_team.name }}</span>
+                </div>
+                <div class="score">{{ match.home_score }} — {{ match.away_score }}</div>
+                <div class="team-block">
+                    <span class="team-swatch" style="--swatch-color: {{ match.away_kit_color|default:match.away_team.primary_color }}; background: var(--swatch-color);"></span>
+                    <span class="team-name">{{ match.away_team.name }}</span>
+                </div>
+            </div>
+            <span class="status-pill">{{ match.get_status_display }}</span>
+        </div>
+
+        <div class="tab-bar">
+            <button class="tab-btn active" data-tab="overview" onclick="showTab('overview')">Overview</button>
+            <button class="tab-btn" data-tab="stats" onclick="showTab('stats')">Team Stats</button>
+            <button class="tab-btn" data-tab="lineup" onclick="showTab('lineup')">Lineup</button>
+        </div>
+
+        <!-- Overview -->
+        <div class="tab-panel active" id="tab-overview">
+            <div class="section">
+                <h2>Possession <span class="badge-dummy">Dummy</span></h2>
+                <div class="possession-bar">
+                    <div class="possession-home" style="--pct: {{ home_possession }}; width: calc(var(--pct) * 1%);"></div>
+                    <div class="possession-away" style="--pct: {{ away_possession }}; width: calc(var(--pct) * 1%);"></div>
+                </div>
+                <div class="possession-labels">
+                    <span>{{ match.home_team.short_name }}</span>
+                    <span>{{ match.away_team.short_name }}</span>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>xG &amp; Distance <span class="badge-dummy">Dummy</span></h2>
+                <div class="metric-grid">
+                    <div class="metric-card"><div class="metric-value">{{ team_stats.home.xg }}</div><div class="metric-label">{{ match.home_team.short_name }} xG</div></div>
+                    <div class="metric-card"><div class="metric-value">{{ team_stats.away.xg }}</div><div class="metric-label">{{ match.away_team.short_name }} xG</div></div>
+                    <div class="metric-card"><div class="metric-value">{{ team_stats.home.distance_km }}km</div><div class="metric-label">{{ match.home_team.short_name }} Distance</div></div>
+                    <div class="metric-card"><div class="metric-value">{{ team_stats.away.distance_km }}km</div><div class="metric-label">{{ match.away_team.short_name }} Distance</div></div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Shots <span class="badge-dummy">Dummy</span></h2>
+                {% for shot in shots %}
+                <div class="shot-row">
+                    <span class="shot-minute">{{ shot.minute }}'</span>
+                    <span class="shot-side {{ shot.side }}"></span>
+                    <span class="shot-player">{{ shot.player }}</span>
+                    <span class="shot-xg">xG {{ shot.xg }}</span>
+                    <span class="shot-outcome {{ shot.outcome|slugify }}">{{ shot.outcome }}</span>
+                </div>
+                {% endfor %}
+            </div>
+
+            <div class="section">
+                <h2>Timeline <span class="badge-dummy">Dummy</span></h2>
+                <div class="timeline">
+                    {% for event in timeline %}
+                    <div class="timeline-event {{ event.type }}">
+                        <span class="timeline-minute">{{ event.minute }}'</span>{{ event.description }}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Team Stats -->
+        <div class="tab-panel" id="tab-stats">
+            <div class="section">
+                <h2>Team Statistics <span class="badge-dummy">Dummy</span></h2>
+                <table class="stats-table">
+                    <tbody>
+                        <tr><td class="stat-label">Shots</td><td class="home-val">{{ team_stats.home.shots }}</td><td></td><td class="away-val">{{ team_stats.away.shots }}</td></tr>
+                        <tr><td class="stat-label">Shots on Target</td><td class="home-val">{{ team_stats.home.shots_on_target }}</td><td></td><td class="away-val">{{ team_stats.away.shots_on_target }}</td></tr>
+                        <tr><td class="stat-label">Passes</td><td class="home-val">{{ team_stats.home.passes }}</td><td></td><td class="away-val">{{ team_stats.away.passes }}</td></tr>
+                        <tr><td class="stat-label">Pass Accuracy</td><td class="home-val">{{ team_stats.home.pass_accuracy }}%</td><td></td><td class="away-val">{{ team_stats.away.pass_accuracy }}%</td></tr>
+                        <tr><td class="stat-label">Corners</td><td class="home-val">{{ team_stats.home.corners }}</td><td></td><td class="away-val">{{ team_stats.away.corners }}</td></tr>
+                        <tr><td class="stat-label">Fouls</td><td class="home-val">{{ team_stats.home.fouls }}</td><td></td><td class="away-val">{{ team_stats.away.fouls }}</td></tr>
+                        <tr><td class="stat-label">Yellow Cards</td><td class="home-val">{{ team_stats.home.yellow_cards }}</td><td></td><td class="away-val">{{ team_stats.away.yellow_cards }}</td></tr>
+                        <tr><td class="stat-label">Red Cards</td><td class="home-val">{{ team_stats.home.red_cards }}</td><td></td><td class="away-val">{{ team_stats.away.red_cards }}</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section">
+                <h2>Heatmap <span class="badge-dummy">Placeholder</span></h2>
+                <div class="pitch-placeholder">
+                    <span class="pitch-note">Team heatmap will render here after CV processing</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lineup -->
+        <div class="tab-panel" id="tab-lineup">
+            <div class="section">
+                <h2>Lineup <span class="badge-dummy">Tap a player</span></h2>
+                <div class="lineup-columns">
+                    <div>
+                        <h3>{{ match.home_team.name }}</h3>
+                        <div id="lineup-home"></div>
+                    </div>
+                    <div>
+                        <h3>{{ match.away_team.name }}</h3>
+                        <div id="lineup-away"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Player modal -->
+    <div class="modal-overlay" id="player-modal" onclick="if(event.target===this) closeModal()">
+        <div class="modal-card">
+            <div class="modal-header">
+                <button class="modal-close" onclick="closeModal()">✕</button>
+                <div class="modal-jersey" id="modal-jersey"></div>
+                <div class="modal-player-name" id="modal-name"></div>
+                <div class="modal-player-meta" id="modal-meta"></div>
+            </div>
+            <div class="modal-body">
+                <div id="modal-stat-groups"></div>
+                <div class="modal-pitch" style="margin-top:18px;"><span class="modal-pitch-note">Player heatmap coming in Phase 6</span></div>
+            </div>
+        </div>
+    </div>
+
+    {{ home_players|json_script:"home-players-data" }}
+    {{ away_players|json_script:"away-players-data" }}
+
+    <script>
+        const homePlayers = JSON.parse(document.getElementById('home-players-data').textContent);
+        const awayPlayers = JSON.parse(document.getElementById('away-players-data').textContent);
+
+        function renderLineup(containerId, players) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = players.map((p, i) => `
+                <div class="lineup-row" onclick="openPlayer('${containerId}', ${i})">
+                    <div class="lineup-jersey">${p.jersey_number}</div>
+                    <div class="lineup-info">
+                        <div class="lineup-name">${p.name}</div>
+                        <div class="lineup-position">${p.position}</div>
+                    </div>
+                    <div class="lineup-rating">${p.rating}</div>
+                </div>
+            `).join('');
+        }
+        renderLineup('lineup-home', homePlayers);
+        renderLineup('lineup-away', awayPlayers);
+
+        const statGroups = [
+            {
+                title: "Summary",
+                stats: [
+                    ["Rating", p => p.rating, null, "rating-value"],
+                    ["Minutes Played", p => p.minutes_played, "'"],
+                ],
+            },
+            {
+                title: "Attacking",
+                stats: [
+                    ["Goals", p => p.goals],
+                    ["Assists", p => p.assists],
+                    ["Shots", p => p.shots],
+                    ["Shots on Target", p => p.shots_on_target],
+                    ["Expected Goals (xG)", p => p.xg],
+                    ["Key Passes", p => p.key_passes],
+                    ["Dribbles Completed", p => p.dribbles_completed],
+                    ["Offsides", p => p.offsides],
+                ],
+            },
+            {
+                title: "Passing",
+                stats: [
+                    ["Passes Attempted", p => p.passes_attempted],
+                    ["Passes Completed", p => p.passes_completed],
+                    ["Pass Accuracy", p => p.pass_accuracy, "%"],
+                ],
+            },
+            {
+                title: "Defending",
+                stats: [
+                    ["Tackles", p => p.tackles],
+                    ["Interceptions", p => p.interceptions],
+                    ["Clearances", p => p.clearances],
+                ],
+            },
+            {
+                title: "Discipline",
+                stats: [
+                    ["Fouls Committed", p => p.fouls_committed],
+                    ["Fouls Suffered", p => p.fouls_suffered],
+                    ["Yellow Cards", p => p.yellow_cards],
+                    ["Red Cards", p => p.red_cards],
+                ],
+            },
+            {
+                title: "Physical",
+                stats: [
+                    ["Distance Covered", p => p.distance_km, " km"],
+                    ["Top Speed", p => p.top_speed, " km/h"],
+                    ["Average Speed", p => p.average_speed, " km/h"],
+                ],
+            },
+        ];
+
+        function openPlayer(containerId, index) {
+            const players = containerId === 'lineup-home' ? homePlayers : awayPlayers;
+            const teamName = containerId === 'lineup-home' ? "{{ match.home_team.name|escapejs }}" : "{{ match.away_team.name|escapejs }}";
+            const p = players[index];
+
+            document.getElementById('modal-jersey').textContent = p.jersey_number;
+            document.getElementById('modal-name').textContent = p.name;
+            document.getElementById('modal-meta').textContent = p.position + ' · ' + teamName;
+
+            const container = document.getElementById('modal-stat-groups');
+            container.innerHTML = statGroups.map(group => `
+                <div class="stat-group">
+                    <div class="stat-group-title">${group.title}</div>
+                    ${group.stats.map(([label, getValue, suffix, extraClass]) => `
+                        <div class="stat-row">
+                            <span class="stat-row-label">${label}</span>
+                            <span class="stat-row-value ${extraClass || ''}">${getValue(p)}${suffix || ''}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `).join('');
+
+            document.getElementById('player-modal').classList.add('open');
+        }
+
+        function closeModal() {
+            document.getElementById('player-modal').classList.remove('open');
+        }
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
+            document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + tab));
+        }
+    </script>
+</body>
+</html>

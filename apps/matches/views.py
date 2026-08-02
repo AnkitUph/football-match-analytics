@@ -1,7 +1,11 @@
+import random
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
-from django.shortcuts import redirect, render
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 
 from apps.matches.models import Match, MatchLineup, MatchVideo
 from apps.matches.tasks import process_match
@@ -272,7 +276,7 @@ def upload_match(request):
             request,
             "Match uploaded successfully. It's queued and will begin processing shortly.",
         )
-        return redirect("dashboard:index")
+        return redirect("matches:processing", public_id=match.public_id)
 
     context = {
         "teams": teams,
@@ -281,3 +285,188 @@ def upload_match(request):
         "lineup_row_range": range(LINEUP_ROWS_PER_SIDE),
     }
     return render(request, "matches/upload.html", context)
+
+
+@login_required
+def match_processing(request, public_id):
+    """
+    Shown right after upload. Polls match_status_api via JS and redirects
+    to the results page automatically once status becomes COMPLETED.
+    """
+    match = get_object_or_404(Match, public_id=public_id)
+
+    # If someone revisits this URL after it's already done/failed, just
+    # send them straight to where they need to be instead of re-showing
+    # a "processing" screen for a match that isn't processing anymore.
+    if match.status == Match.MatchStatus.COMPLETED:
+        return redirect("matches:results", public_id=match.public_id)
+
+    return render(request, "matches/processing.html", {"match": match})
+
+
+@login_required
+def match_status_api(request, public_id):
+    """
+    Lightweight JSON endpoint the processing page polls. Deliberately
+    tiny (no DRF) since this is the only place in the app that needs a
+    JSON response - not worth adding a whole API layer for one field.
+    """
+    match = get_object_or_404(Match, public_id=public_id)
+    return JsonResponse({
+        "status": match.status,
+        "status_display": match.get_status_display(),
+        "progress": match.processing_progress,
+        "results_url": (
+            reverse("matches:results", args=[match.public_id])
+            if match.status == Match.MatchStatus.COMPLETED else None
+        ),
+    })
+
+
+def _dummy_player_rows(rng, lineup_qs, team):
+    """
+    Phase 5: placeholder stats only, to verify the results UI before the
+    real CV pipeline (Phase 6) fills these in. Uses real lineup entries
+    if they exist (Phase 3 optional lineup), otherwise generic rows.
+    rng is seeded per-match so the same match shows the same numbers on
+    every reload rather than reshuffling each time.
+
+    Field names deliberately mirror apps.analytics.models.PlayerStatistics
+    so swapping this out for real queries later is a drop-in replacement.
+    """
+    rows = []
+    entries = list(lineup_qs)
+
+    if not entries:
+        entries = [
+            {"jersey_number": i, "player_name": f"{team.short_name} Player {i}",
+             "position": rng.choice(["GK", "DEF", "MID", "FWD"])}
+            for i in range(1, 12)
+        ]
+
+    for entry in entries:
+        is_dict = isinstance(entry, dict)
+        position = entry["position"] if is_dict else entry.position
+        name = entry["player_name"] if is_dict else entry.player_name
+        jersey_number = entry["jersey_number"] if is_dict else entry.jersey_number
+
+        passes_attempted = rng.randint(15, 75)
+        passes_completed = int(passes_attempted * rng.uniform(0.65, 0.95))
+        pass_accuracy = round((passes_completed / passes_attempted) * 100, 1) if passes_attempted else 0
+
+        rows.append({
+            "jersey_number": jersey_number,
+            "name": name,
+            "position": position,
+            "minutes_played": rng.choice([90, 90, 90, rng.randint(60, 89)]),
+            "goals": rng.choice([0, 0, 0, 0, 1, 1, 2]) if position == "FWD" else rng.choice([0, 0, 0, 0, 1]),
+            "assists": rng.choice([0, 0, 0, 1]),
+            "shots": rng.randint(0, 6),
+            "shots_on_target": rng.randint(0, 3),
+            "passes_attempted": passes_attempted,
+            "passes_completed": passes_completed,
+            "pass_accuracy": pass_accuracy,
+            "key_passes": rng.randint(0, 4),
+            "dribbles_completed": rng.randint(0, 5),
+            "tackles": rng.randint(0, 6),
+            "interceptions": rng.randint(0, 5),
+            "clearances": rng.randint(0, 8) if position in ("DEF", "GK") else rng.randint(0, 2),
+            "fouls_committed": rng.randint(0, 4),
+            "fouls_suffered": rng.randint(0, 4),
+            "yellow_cards": rng.choice([0, 0, 0, 0, 1]),
+            "red_cards": 0,
+            "offsides": rng.randint(0, 3) if position == "FWD" else 0,
+            "distance_km": round(rng.uniform(7.5, 11.8), 2),
+            "top_speed": round(rng.uniform(24, 34), 1),
+            "average_speed": round(rng.uniform(7, 11), 1),
+            "xg": round(rng.uniform(0, 1.2), 2),
+            "rating": round(rng.uniform(5.8, 8.9), 1),
+        })
+    return rows
+
+
+@login_required
+def match_results(request, public_id):
+    match = get_object_or_404(Match, public_id=public_id)
+
+    # Don't show stats for a match that isn't actually done - send the
+    # user to the processing page instead (which itself redirects to
+    # results the moment the task finishes).
+    if match.status != Match.MatchStatus.COMPLETED:
+        return redirect("matches:processing", public_id=match.public_id)
+
+    # Deterministic per-match "randomness" - same match always shows the
+    # same dummy numbers instead of reshuffling on every page load.
+    rng = random.Random(str(match.public_id))
+
+    home_lineup = match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number")
+    away_lineup = match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number")
+
+    home_players = _dummy_player_rows(rng, home_lineup, match.home_team)
+    away_players = _dummy_player_rows(rng, away_lineup, match.away_team)
+
+    home_possession = rng.randint(38, 62)
+    away_possession = 100 - home_possession
+
+    def team_stat_block():
+        return {
+            "shots": rng.randint(8, 18),
+            "shots_on_target": rng.randint(3, 9),
+            "passes": rng.randint(300, 600),
+            "pass_accuracy": rng.randint(75, 90),
+            "corners": rng.randint(2, 9),
+            "fouls": rng.randint(6, 14),
+            "yellow_cards": rng.randint(0, 4),
+            "red_cards": rng.choice([0, 0, 0, 0, 1]),
+            "xg": round(rng.uniform(0.8, 2.9), 2),
+            "distance_km": round(rng.uniform(105, 118), 1),
+        }
+
+    team_stats = {"home": team_stat_block(), "away": team_stat_block()}
+
+    shot_outcomes = ["Goal", "Saved", "Blocked", "Off Target", "Woodwork"]
+    shot_pool = [(p, "home") for p in home_players] + [(p, "away") for p in away_players]
+    shots = []
+    for _ in range(rng.randint(10, 18)):
+        player, side = rng.choice(shot_pool)
+        shots.append({
+            "minute": rng.randint(1, 90),
+            "player": player["name"],
+            "side": side,
+            "xg": round(rng.uniform(0.02, 0.75), 2),
+            "outcome": rng.choice(shot_outcomes),
+        })
+    shots.sort(key=lambda s: s["minute"])
+
+    timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
+    event_types = ["goal", "yellow_card", "red_card", "substitution"]
+    for _ in range(rng.randint(6, 10)):
+        etype = rng.choice(event_types)
+        side = rng.choice(["home", "away"])
+        team = match.home_team if side == "home" else match.away_team
+        player = rng.choice(home_players if side == "home" else away_players)
+        label = {
+            "goal": "Goal",
+            "yellow_card": "Yellow card",
+            "red_card": "Red card",
+            "substitution": "Substitution",
+        }[etype]
+        timeline.append({
+            "minute": rng.randint(1, 90),
+            "type": etype,
+            "description": f"{label} — {player['name']} ({team.short_name})",
+        })
+    timeline.append({"minute": 90, "type": "fulltime", "description": "Full Time"})
+    timeline.sort(key=lambda e: e["minute"])
+
+    context = {
+        "match": match,
+        "home_players": home_players,
+        "away_players": away_players,
+        "home_possession": home_possession,
+        "away_possession": away_possession,
+        "team_stats": team_stats,
+        "shots": shots,
+        "timeline": timeline,
+    }
+    return render(request, "matches/results.html", context)

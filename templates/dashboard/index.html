@@ -222,8 +222,8 @@
         <div class="section-title">Quick Links</div>
         <div class="quick-links">
             <a href="{% url 'matches:upload' %}">📹 Matches</a>
-            <a href="#">🛡️ Teams</a>
-            <a href="#">🏃 Players</a>
+            <a href="{% url 'teams:create' %}">🛡️ Teams</a>
+            <a href="{% url 'players:list' %}">🏃 Players</a>
             <a href="#">📊 Analytics</a>
             <a href="#">📄 Reports</a>
         </div>
@@ -242,7 +242,13 @@
                 <tbody>
                     {% for match in recent_matches %}
                     <tr>
-                        <td>{{ match }}</td>
+                        <td>
+                            {% if match.status == "COMPLETED" %}
+                                <a href="{% url 'matches:results' match.public_id %}" style="color:#203a43; text-decoration:none; font-weight:600;">{{ match }}</a>
+                            {% else %}
+                                <a href="{% url 'matches:processing' match.public_id %}" style="color:#203a43; text-decoration:none; font-weight:600;">{{ match }}</a>
+                            {% endif %}
+                        </td>
                         <td>{{ match.created_at|date:"M d, Y" }}</td>
                         <td>
                             <span class="status-badge {{ match.status|lower }}">

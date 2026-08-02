@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Processing — {{ match }} | Football Analytics</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+    body {
+        min-height: 100vh;
+        background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+
+    .card {
+        background: #fff;
+        border-radius: 16px;
+        padding: 44px 36px;
+        max-width: 460px;
+        width: 100%;
+        text-align: center;
+        box-shadow: 0 20px 50px rgba(0,0,0,0.3);
+    }
+
+    .spinner {
+        width: 56px;
+        height: 56px;
+        border: 4px solid #eee;
+        border-top-color: #203a43;
+        border-radius: 50%;
+        margin: 0 auto 24px;
+        animation: spin 1s linear infinite;
+    }
+    .spinner.done { border-top-color: #1a7f4e; animation: none; }
+    .spinner.failed { border-top-color: #c0392b; animation: none; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .match-name { font-size: 15px; color: #888; margin-bottom: 4px; }
+    .status-text { font-size: 20px; font-weight: 700; color: #1a1a1a; margin-bottom: 24px; }
+
+    .progress-track {
+        width: 100%;
+        height: 10px;
+        background: #eee;
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 10px;
+    }
+    .progress-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #3D8B5F, #4FAE79);
+        border-radius: 6px;
+        transition: width 0.6s ease;
+    }
+    .progress-percent { font-size: 13px; color: #888; margin-bottom: 24px; }
+
+    .hint { font-size: 13px; color: #999; line-height: 1.5; }
+
+    .error-box {
+        display: none;
+        background: #fdeaea;
+        border: 1px solid #f5c2c2;
+        color: #c0392b;
+        padding: 14px 16px;
+        border-radius: 8px;
+        font-size: 13px;
+        margin-bottom: 20px;
+        text-align: left;
+    }
+
+    .actions { margin-top: 20px; }
+    .actions a {
+        display: inline-block;
+        text-decoration: none;
+        color: #203a43;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 10px 18px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+    }
+    .actions a:hover { background: #f4f6f8; }
+</style>
+</head>
+<body>
+    <div class="card">
+        <div class="spinner" id="spinner"></div>
+
+        <p class="match-name">{{ match.home_team.name }} vs {{ match.away_team.name }}</p>
+        <p class="status-text" id="status-text">{{ match.get_status_display }}</p>
+
+        <div class="progress-track">
+            <div class="progress-fill" id="progress-fill" style="--pct: {{ match.processing_progress }}; width: calc(var(--pct) * 1%);"></div>
+        </div>
+        <p class="progress-percent" id="progress-percent">{{ match.processing_progress }}%</p>
+
+        <div class="error-box" id="error-box">
+            Processing failed. This can happen with corrupted video files or unsupported formats. You can try uploading again.
+        </div>
+
+        <p class="hint" id="hint-text">We're analyzing your match video. This page will move on automatically once it's ready — no need to refresh.</p>
+
+        <div class="actions" id="actions" style="display:none;">
+            <a href="{% url 'matches:upload' %}">Upload Another Match</a>
+        </div>
+    </div>
+
+    <script>
+        const statusUrl = "{% url 'matches:status_api' match.public_id %}";
+        const spinner = document.getElementById('spinner');
+        const statusText = document.getElementById('status-text');
+        const progressFill = document.getElementById('progress-fill');
+        const progressPercent = document.getElementById('progress-percent');
+        const errorBox = document.getElementById('error-box');
+        const hintText = document.getElementById('hint-text');
+        const actions = document.getElementById('actions');
+
+        let pollTimer = null;
+
+        function poll() {
+            fetch(statusUrl)
+                .then(response => response.json())
+                .then(data => {
+                    progressFill.style.width = data.progress + '%';
+                    progressPercent.textContent = data.progress + '%';
+                    statusText.textContent = data.status_display;
+
+                    if (data.status === 'COMPLETED') {
+                        clearInterval(pollTimer);
+                        spinner.classList.add('done');
+                        hintText.textContent = 'Done! Taking you to the results...';
+                        setTimeout(() => { window.location.href = data.results_url; }, 800);
+                    } else if (data.status === 'FAILED') {
+                        clearInterval(pollTimer);
+                        spinner.classList.add('failed');
+                        errorBox.style.display = 'block';
+                        hintText.style.display = 'none';
+                        actions.style.display = 'block';
+                    }
+                })
+                .catch(() => {
+                    // Network hiccup — just try again next interval, no need to alarm the user.
+                });
+        }
+
+        poll();
+        pollTimer = setInterval(poll, 2000);
+    </script>
+</body>
+</html>
