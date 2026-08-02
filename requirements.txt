@@ -11,3 +11,17 @@ redis==6.4.0
 gunicorn==23.0.0
 
 Pillow==11.3.0
+
+ultralytics>=8.2,<9
+opencv-python-headless>=4.10,<5
+
+# Prevent any dependency (ultralytics, supervision, etc.) from silently
+# pulling in regular opencv-python, which needs GUI libs (libxcb) that
+# don't exist in this container and will break cv2 imports.
+
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Add to requirements.txt - Stage 2 (tracking)
+supervision>=0.24,<1
