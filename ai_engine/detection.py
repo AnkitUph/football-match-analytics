@@ -86,7 +86,7 @@ def _compute_pitch_mask(frame):
     return pitch_mask
 
 
-def _polygon_pitch_mask(frame_shape, polygon_points):
+def _polygon_pitch_mask(frame_shape, polygon_points, buffer_pixels=25):
     """
     Builds a pitch mask from manually specified corner points instead of
     color detection. Use this when the technical area shares the pitch's
@@ -97,10 +97,21 @@ def _polygon_pitch_mask(frame_shape, polygon_points):
     as seen from the camera angle). Get these by extracting a still frame
     (see ai_engine/extract_frame.py) and reading off pixel coordinates in
     any image viewer.
+
+    buffer_pixels: expands the mask outward by this many pixels so
+    players legitimately near the touchline (throw-ins, corners, tackles
+    right on the line) aren't clipped just for being a few pixels outside
+    your traced boundary. Increase this if players near the sideline are
+    still getting missed; decrease it if staff are still leaking back in.
     """
     mask = np.zeros(frame_shape[:2], dtype=np.uint8)
     points = np.array(polygon_points, dtype=np.int32)
     cv2.fillPoly(mask, [points], 255)
+
+    if buffer_pixels > 0:
+        kernel_size = buffer_pixels * 2 + 1  # must be odd
+        mask = cv2.dilate(mask, np.ones((kernel_size, kernel_size), np.uint8))
+
     return mask
 
 
@@ -121,6 +132,7 @@ def detect_video(
     ball_confidence=0.10,
     filter_to_pitch=True,
     pitch_polygon=None,
+    imgsz=1280,
     progress_callback=None,
 ):
     """
@@ -195,6 +207,7 @@ def detect_video(
                 frame,
                 classes=[COCO_PERSON_CLASS, COCO_BALL_CLASS],
                 conf=ball_confidence,  # loosest threshold; person gets filtered stricter below
+                imgsz=imgsz,
                 verbose=False,
             )[0]
 

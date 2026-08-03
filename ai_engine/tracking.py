@@ -100,11 +100,22 @@ def track_video(
     filter_to_pitch=True,
     pitch_polygon=None,
     max_ball_gap_seconds=1.5,
+    imgsz=1280,
     progress_callback=None,
 ):
     """
     Runs detection + player tracking + ball gap-filling over the full
     video. Returns a summary dict.
+
+    imgsz: the resolution YOLO resizes each frame to before inference.
+    Ultralytics defaults to 640, which is fine for large/close subjects
+    but genuinely too small to detect distant players in broadcast-style
+    football footage - a player that's ~30px tall in a 1920px-wide frame
+    becomes only a few pixels after a 640px downscale, below what the
+    model can work with. 1280 roughly doubles the detail kept for small
+    objects, at a real speed/memory cost. Raise further (e.g. 1536) if
+    small/distant players are still being missed; lower back toward 640
+    if processing is too slow and detection quality is already good.
     """
     video_path = Path(video_path)
     annotated_output_path = Path(annotated_output_path)
@@ -160,6 +171,7 @@ def track_video(
             frame,
             classes=[COCO_PERSON_CLASS, COCO_BALL_CLASS],
             conf=ball_confidence,
+            imgsz=imgsz,
             verbose=False,
         )[0]
 
@@ -298,28 +310,49 @@ def track_video(
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) not in (3, 4):
-        print("Usage: python -m ai_engine.tracking <video_path> <output_dir> [polygon]")
+    if len(sys.argv) < 3:
+        print("Usage: python -m ai_engine.tracking <video_path> <output_dir> [polygon] [nofilter]")
         print()
         print('  polygon is optional: a space-separated list of "x,y" pixel')
         print('  points tracing the pitch boundary, e.g.:')
         print('    python -m ai_engine.tracking clip.mp4 out/ "120,80 1150,75 1200,640 60,650"')
         print()
-        print("  Get these coordinates by running ai_engine.extract_frame first")
-        print("  and reading pixel positions off the saved image.")
+        print("  nofilter: pass this literal word (in place of or in addition to")
+        print("  the polygon) to disable pitch-area filtering entirely - useful")
+        print("  for isolating whether missing players are a masking problem or")
+        print("  a raw detection-confidence problem, e.g.:")
+        print("    python -m ai_engine.tracking clip.mp4 out/ nofilter")
+        print()
+        print("  imgsz=N: inference resolution (default 1280). Raise this if")
+        print("  small/distant players aren't being detected at all, even with")
+        print("  filtering off - lower it if processing is too slow, e.g.:")
+        print("    python -m ai_engine.tracking clip.mp4 out/ nofilter imgsz=1536")
         sys.exit(1)
 
     in_path = Path(sys.argv[1])
     out_dir = Path(sys.argv[2])
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    remaining_args = sys.argv[3:]
+    no_filter = "nofilter" in remaining_args
+    imgsz = 1280
+    for arg in list(remaining_args):
+        if arg.startswith("imgsz="):
+            imgsz = int(arg.split("=")[1])
+            remaining_args.remove(arg)
+    polygon_args = [a for a in remaining_args if a != "nofilter"]
+
     polygon = None
-    if len(sys.argv) == 4:
+    if polygon_args:
         polygon = [
             tuple(int(v) for v in pair.split(","))
-            for pair in sys.argv[3].split()
+            for pair in polygon_args[0].split()
         ]
         print(f"Using manual pitch boundary: {polygon}")
+
+    if no_filter:
+        print("Pitch filtering DISABLED - all detected people will be kept, including sideline staff.")
+    print(f"Using inference resolution imgsz={imgsz}")
 
     logging.basicConfig(level=logging.INFO)
 
@@ -329,6 +362,8 @@ if __name__ == "__main__":
         player_tracking_csv_path=out_dir / "players.csv",
         ball_tracking_csv_path=out_dir / "ball.csv",
         pitch_polygon=polygon,
+        filter_to_pitch=not no_filter,
+        imgsz=imgsz,
         progress_callback=lambda pct: print(f"\r{pct}%", end="", flush=True),
     )
     print()
