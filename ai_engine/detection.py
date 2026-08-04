@@ -1,19 +1,30 @@
 """
-Stage 1 of the CV pipeline, and ONLY Stage 1: raw player/ball detection.
+Stage 1 of the CV pipeline: player/ball detection.
 
-Deliberately does nothing else. No tracking, no IDs across frames, no
-Django/Celery integration. The point of this script is to answer one
-question before anything else gets built: is YOLO actually detecting
-players and the ball reliably in real match footage?
+Standalone - no Django/Celery/database. Run it by hand against a clip
+before trusting it in the full pipeline:
 
-Run it standalone against a short clip and watch the output video:
+    python -m ai_engine.detection <video_path> <output_dir>
 
-    python -m ai_engine.detection <input_video> <output_dir>
+Design decisions baked in from earlier testing (kept here so the reasons
+aren't lost):
 
-If detection quality looks good (players consistently boxed, ball
-detected at least some of the time), Stage 2 (tracking) gets built next.
-If it doesn't, the fix belongs here - trying a bigger model, adjusting
-confidence, fine-tuning - not in whatever gets built on top of it.
+  - imgsz=1280 (not YOLO's 640 default): broadcast/wide-angle football
+    footage has small/distant players that get lost entirely at 640px -
+    there's no detection to threshold-tune if the resolution already
+    destroyed the pixel detail. This was the actual fix for missed
+    small/edge players, not a confidence-threshold change.
+
+  - Split person/ball confidence: the ball needs a much looser threshold
+    than a person (small, blurry, low model confidence even when
+    genuinely detected). Inference runs at the loose ball threshold,
+    then person detections are filtered stricter afterward.
+
+  - Pitch-area filtering, two modes: automatic (green color detection)
+    or manual polygon. Automatic FAILS when the technical area shares
+    the pitch's turf color (common at local venues) - color segmentation
+    literally cannot separate two regions of the same color. Manual
+    polygon is the reliable fallback for that case.
 """
 
 import csv
@@ -26,37 +37,24 @@ from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
-# COCO class IDs used by the pretrained YOLO model.
 COCO_PERSON_CLASS = 0
 COCO_BALL_CLASS = 32  # "sports ball"
 
-# Start with the small model - good balance of speed/accuracy. If
-# detection quality is poor, try yolov8m.pt (slower, more accurate)
-# before assuming the whole approach doesn't work.
 DEFAULT_MODEL = "yolov8s.pt"
+DEFAULT_IMGSZ = 1280
 
-BOX_COLOR_PERSON = (60, 179, 113)   # green (BGR)
-BOX_COLOR_BALL = (0, 215, 255)      # gold (BGR)
+BOX_COLOR_PERSON = (60, 179, 113)
+BOX_COLOR_BALL = (0, 215, 255)
 
 
 def _compute_pitch_mask(frame):
     """
-    Approximates "where the grass is" using a green color threshold, then
-    keeps only the single largest connected green region (the pitch
-    itself, not stray green in the crowd/ads).
-
-    LIMITATION: this is a color-based heuristic. If the technical area
-    (where coaches/staff stand) is the same turf color as the playing
-    field - common at local/non-professional venues - this CANNOT
-    distinguish between them, because there's no color difference to
-    detect. In that case, use _polygon_pitch_mask() instead with a
-    manually defined boundary.
-
-    Returns a binary mask the same size as the frame, or None if no
-    plausible pitch region was found.
+    Automatic pitch detection via green color threshold + largest
+    connected region. FAILS (returns None) if the technical area shares
+    the pitch's turf color - no color threshold can separate two regions
+    of identical color. Use _polygon_pitch_mask() in that case.
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
     lower_green = np.array([30, 30, 30])
     upper_green = np.array([90, 255, 255])
     mask = cv2.inRange(hsv, lower_green, upper_green)
@@ -70,46 +68,31 @@ def _compute_pitch_mask(frame):
         return None
 
     largest = max(contours, key=cv2.contourArea)
-
     frame_area = frame.shape[0] * frame.shape[1]
     if cv2.contourArea(largest) < frame_area * 0.15:
         return None
 
     pitch_mask = np.zeros(mask.shape, dtype=np.uint8)
     cv2.drawContours(pitch_mask, [largest], -1, 255, thickness=cv2.FILLED)
-
-    # Small buffer only - just enough that a player's feet right at the
-    # touchline (throw-ins, corners) aren't clipped. A large buffer here
-    # is exactly what lets nearby technical-area staff slip back in.
     pitch_mask = cv2.dilate(pitch_mask, np.ones((7, 7), np.uint8))
-
     return pitch_mask
 
 
 def _polygon_pitch_mask(frame_shape, polygon_points, buffer_pixels=25):
     """
-    Builds a pitch mask from manually specified corner points instead of
-    color detection. Use this when the technical area shares the pitch's
-    turf color, since no color threshold can separate them in that case.
+    Manual pitch boundary from corner points. Use ai_engine.extract_frame
+    + ai_engine.zoom_frame to find accurate coordinates.
 
-    polygon_points: list of (x, y) pixel coordinates tracing the
-    playing-area boundary, in order (e.g. the four corners of the pitch
-    as seen from the camera angle). Get these by extracting a still frame
-    (see ai_engine/extract_frame.py) and reading off pixel coordinates in
-    any image viewer.
-
-    buffer_pixels: expands the mask outward by this many pixels so
-    players legitimately near the touchline (throw-ins, corners, tackles
-    right on the line) aren't clipped just for being a few pixels outside
-    your traced boundary. Increase this if players near the sideline are
-    still getting missed; decrease it if staff are still leaking back in.
+    buffer_pixels expands the mask outward so players legitimately near
+    the touchline (throw-ins, corners) aren't clipped just for being a
+    few pixels outside the traced boundary.
     """
     mask = np.zeros(frame_shape[:2], dtype=np.uint8)
     points = np.array(polygon_points, dtype=np.int32)
     cv2.fillPoly(mask, [points], 255)
 
     if buffer_pixels > 0:
-        kernel_size = buffer_pixels * 2 + 1  # must be odd
+        kernel_size = buffer_pixels * 2 + 1
         mask = cv2.dilate(mask, np.ones((kernel_size, kernel_size), np.uint8))
 
     return mask
@@ -132,22 +115,9 @@ def detect_video(
     ball_confidence=0.10,
     filter_to_pitch=True,
     pitch_polygon=None,
-    imgsz=1280,
+    imgsz=DEFAULT_IMGSZ,
     progress_callback=None,
 ):
-    """
-    Runs detection only (no tracking) over every frame of the video.
-
-    Draws boxes on an output video and writes every detection to a CSV
-    (frame_index, timestamp, class_name, x1, y1, x2, y2, confidence).
-
-    progress_callback, if given, is called with an int 0-100 as frames
-    are processed.
-
-    Returns a summary dict - frame count, average detections per frame
-    for each class, etc. - useful for judging quality at a glance before
-    even watching the video.
-    """
     video_path = Path(video_path)
     annotated_output_path = Path(annotated_output_path)
     detections_csv_path = Path(detections_csv_path)
@@ -179,9 +149,8 @@ def detect_video(
                 if pitch_mask is None:
                     logger.warning(
                         "Could not confidently detect a pitch area - proceeding "
-                        "WITHOUT sideline filtering. Coaches/ball boys/staff "
-                        "near the pitch may get detected as players. Consider "
-                        "passing pitch_polygon= for a reliable manual boundary."
+                        "WITHOUT sideline filtering. Consider pitch_polygon= "
+                        "for a reliable manual boundary."
                     )
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
@@ -206,7 +175,7 @@ def detect_video(
             results = model(
                 frame,
                 classes=[COCO_PERSON_CLASS, COCO_BALL_CLASS],
-                conf=ball_confidence,  # loosest threshold; person gets filtered stricter below
+                conf=ball_confidence,
                 imgsz=imgsz,
                 verbose=False,
             )[0]
@@ -222,17 +191,14 @@ def detect_video(
                 is_ball = class_id == COCO_BALL_CLASS
                 class_name = "ball" if is_ball else "person"
 
-                if not is_ball and conf < person_confidence:
-                    continue  # below the stricter person threshold - inference ran at ball_confidence
-
-                if not is_ball and pitch_mask is not None:
-                    # Use the bottom-center of the box (feet position) to
-                    # decide if this person is standing on the pitch.
-                    foot_x = (x1 + x2) / 2
-                    foot_y = y2
-                    if not _point_in_mask(pitch_mask, foot_x, foot_y):
-                        sideline_filtered_count += 1
-                        continue  # skip: likely a coach/ball boy/staff member
+                if not is_ball:
+                    if conf < person_confidence:
+                        continue
+                    if pitch_mask is not None:
+                        foot_x, foot_y = (x1 + x2) / 2, y2
+                        if not _point_in_mask(pitch_mask, foot_x, foot_y):
+                            sideline_filtered_count += 1
+                            continue
 
                 if is_ball:
                     ball_detection_count += 1
@@ -289,13 +255,17 @@ def detect_video(
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) != 3:
-        print("Usage: python -m ai_engine.detection <video_path> <output_dir>")
+    if len(sys.argv) not in (3, 4):
+        print("Usage: python -m ai_engine.detection <video_path> <output_dir> [polygon]")
         sys.exit(1)
 
     in_path = Path(sys.argv[1])
     out_dir = Path(sys.argv[2])
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    polygon = None
+    if len(sys.argv) == 4:
+        polygon = [tuple(int(v) for v in pair.split(",")) for pair in sys.argv[3].split()]
 
     logging.basicConfig(level=logging.INFO)
 
@@ -303,11 +273,9 @@ if __name__ == "__main__":
         video_path=in_path,
         annotated_output_path=out_dir / "detected.mp4",
         detections_csv_path=out_dir / "detections.csv",
+        pitch_polygon=polygon,
         progress_callback=lambda pct: print(f"\r{pct}%", end="", flush=True),
     )
     print()
-    print("--- Detection Summary ---")
     for key, value in result.items():
         print(f"{key}: {value}")
-    print()
-    print(f"Watch {out_dir / 'detected.mp4'} to judge quality before moving to Stage 2 (tracking).")

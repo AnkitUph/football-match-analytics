@@ -1,32 +1,28 @@
 """
-Stage 2 of the CV pipeline: tracking.
+Stage 2 (+3) of the CV pipeline: player tracking + ball gap-filling.
 
-Builds directly on Stage 1 (ai_engine.detection) - reuses the same pitch-
-area filtering and split person/ball confidence thresholds, so a track
-never gets created for a coach or ball boy in the first place.
+Standalone - no Django/Celery/database:
 
-Two different problems get solved here, deliberately differently:
+    python -m ai_engine.tracking <video_path> <output_dir> [polygon] [nofilter] [imgsz=N]
 
-  - PLAYERS: a real multi-object tracking problem. ByteTrack assigns a
-    consistent track_id to each detected person across frames, surviving
-    brief occlusion (players crossing paths, etc.).
+Two different problems, solved differently:
 
-  - BALL: not really a tracking problem - there's only one ball, so
-    "identity" isn't in question. What actually matters is filling the
-    gaps where it wasn't detected at all (small/fast/occluded object).
-    This does that with straightforward linear interpolation, capped at
-    a maximum gap length so a genuinely long absence (ball out of frame,
-    stoppage) doesn't get faked into a fictional trajectory.
+  - PLAYERS: real multi-object tracking via ByteTrack. Tuned with a
+    longer lost_track_buffer than the library default - short-distance/
+    blurry footage causes brief detection flicker, and the default
+    buffer gives up on a lost ID too fast, spawning a new track_id for
+    the same real player. A longer buffer meaningfully reduces this
+    fragmentation (observed ~130 tracks for ~25 real people with
+    defaults; this is the fix for that).
 
-Still fully standalone - no Django/Celery/database involved. Run it by
-hand against a clip and inspect the output before this gets wired into
-the actual app pipeline.
-
-    python -m ai_engine.tracking <input_video> <output_dir>
+  - BALL: not an identity problem (only one ball) - it's a gap-filling
+    problem. Linear interpolation across short gaps, capped so a
+    genuinely long absence isn't faked into a fictional path.
 """
 
 import csv
 import logging
+from collections import defaultdict
 from pathlib import Path
 
 import cv2
@@ -37,6 +33,7 @@ from ultralytics import YOLO
 from ai_engine.detection import (
     COCO_BALL_CLASS,
     COCO_PERSON_CLASS,
+    DEFAULT_IMGSZ,
     DEFAULT_MODEL,
     _compute_pitch_mask,
     _point_in_mask,
@@ -45,20 +42,16 @@ from ai_engine.detection import (
 
 logger = logging.getLogger(__name__)
 
-TRACK_BOX_COLOR = (60, 179, 113)      # green (BGR) - matches detection.py
-BALL_COLOR_REAL = (0, 215, 255)        # solid gold - actual detection
-BALL_COLOR_INTERPOLATED = (0, 140, 255)  # dimmer orange - estimated position
+TRACK_BOX_COLOR = (60, 179, 113)
+BALL_COLOR_REAL = (0, 215, 255)
+BALL_COLOR_INTERPOLATED = (0, 140, 255)
 
 
 def _interpolate_ball_positions(raw_ball_points, max_gap_frames):
     """
-    raw_ball_points: dict of {frame_index: (x, y, confidence)} for frames
-    where the ball was actually detected.
-
-    Returns a dict covering every frame from the first to last detection,
-    filling gaps <= max_gap_frames with linearly interpolated (x, y) and
-    confidence=None, is_interpolated=True. Gaps longer than that are left
-    out entirely (position genuinely unknown for that stretch).
+    raw_ball_points: {frame_index: (x, y, confidence)} for frames where
+    the ball was actually detected. Fills gaps <= max_gap_frames with
+    linear interpolation; longer gaps are left genuinely empty.
     """
     if not raw_ball_points:
         return {}
@@ -70,7 +63,6 @@ def _interpolate_ball_positions(raw_ball_points, max_gap_frames):
         f1, f2 = known_frames[i], known_frames[i + 1]
         x1, y1, _ = raw_ball_points[f1]
         x2, y2, _ = raw_ball_points[f2]
-
         filled[f1] = (x1, y1, raw_ball_points[f1][2], False)
 
         gap = f2 - f1
@@ -80,7 +72,6 @@ def _interpolate_ball_positions(raw_ball_points, max_gap_frames):
                 x = x1 + (x2 - x1) * t
                 y = y1 + (y2 - y1) * t
                 filled[f1 + step] = (x, y, None, True)
-        # else: gap too long (or zero) - leave those frames genuinely empty
 
     last_frame = known_frames[-1]
     x, y, conf = raw_ball_points[last_frame]
@@ -100,23 +91,9 @@ def track_video(
     filter_to_pitch=True,
     pitch_polygon=None,
     max_ball_gap_seconds=1.5,
-    imgsz=1280,
+    imgsz=DEFAULT_IMGSZ,
     progress_callback=None,
 ):
-    """
-    Runs detection + player tracking + ball gap-filling over the full
-    video. Returns a summary dict.
-
-    imgsz: the resolution YOLO resizes each frame to before inference.
-    Ultralytics defaults to 640, which is fine for large/close subjects
-    but genuinely too small to detect distant players in broadcast-style
-    football footage - a player that's ~30px tall in a 1920px-wide frame
-    becomes only a few pixels after a 640px downscale, below what the
-    model can work with. 1280 roughly doubles the detail kept for small
-    objects, at a real speed/memory cost. Raise further (e.g. 1536) if
-    small/distant players are still being missed; lower back toward 640
-    if processing is too slow and detection quality is already good.
-    """
     video_path = Path(video_path)
     annotated_output_path = Path(annotated_output_path)
     player_tracking_csv_path = Path(player_tracking_csv_path)
@@ -124,7 +101,6 @@ def track_video(
 
     logger.info("Loading YOLO model: %s", model_name)
     model = YOLO(model_name)
-    tracker = sv.ByteTrack()
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -135,6 +111,18 @@ def track_video(
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     max_ball_gap_frames = int(max_ball_gap_seconds * fps)
+
+    # Longer buffer than supervision's default (30 frames) - keeps a
+    # track "alive" through longer occlusion/detection-flicker before
+    # giving up and spawning a new ID. Tune down if memory/perf becomes
+    # an issue on very long clips; tune up further if fragmentation is
+    # still high after this.
+    tracker = sv.ByteTrack(
+        frame_rate=int(fps),
+        lost_track_buffer=int(fps * 3),
+        track_activation_threshold=person_confidence,
+        minimum_matching_threshold=0.8,
+    )
 
     pitch_mask = None
     if filter_to_pitch:
@@ -148,15 +136,13 @@ def track_video(
                 if pitch_mask is None:
                     logger.warning(
                         "Could not confidently detect a pitch area - proceeding "
-                        "WITHOUT sideline filtering. Consider passing "
-                        "pitch_polygon= for a reliable manual boundary."
+                        "WITHOUT sideline filtering."
                     )
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    # ---- Pass 1: run detection + player tracking, collect raw ball points ----
-    all_frames = []  # list of (frame, player_detections) per frame, kept in memory for pass 2 annotation
-    player_rows = []  # (frame_index, timestamp, track_id, x1, y1, x2, y2, confidence)
-    raw_ball_points = {}  # frame_index -> (x, y, confidence)
+    all_frames = []
+    player_rows = []
+    raw_ball_points = {}
 
     frame_index = 0
     last_reported_pct = -1
@@ -177,9 +163,6 @@ def track_video(
 
         detections = sv.Detections.from_ultralytics(results)
 
-        # Split person vs ball, apply the stricter person-confidence
-        # threshold and the pitch-area filter, BEFORE handing anything
-        # to the tracker - so sideline staff never get a track_id.
         person_mask = detections.class_id == COCO_PERSON_CLASS
         person_detections = detections[person_mask]
         person_detections = person_detections[person_detections.confidence >= person_confidence]
@@ -207,7 +190,6 @@ def track_video(
             ])
             seen_track_ids.add(int(track_id))
 
-        # Ball: keep the single highest-confidence detection this frame, if any.
         ball_mask = detections.class_id == COCO_BALL_CLASS
         ball_detections = detections[ball_mask]
         if len(ball_detections) > 0:
@@ -217,14 +199,16 @@ def track_video(
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
             raw_ball_points[frame_index] = (cx, cy, conf)
 
-        all_frames.append((frame_index, person_detections.xyxy.tolist() if len(person_detections) else [],
-                            person_detections.tracker_id.tolist() if len(person_detections) else []))
+        all_frames.append((
+            frame_index,
+            person_detections.xyxy.tolist() if len(person_detections) else [],
+            person_detections.tracker_id.tolist() if len(person_detections) else [],
+        ))
 
         frame_index += 1
 
         if progress_callback and frame_count:
-            # Reserve the last 20% of progress for the annotation pass below.
-            pct = int((frame_index / frame_count) * 80)
+            pct = int((frame_index / frame_count) * 80)  # reserve 20% for annotation pass
             if pct != last_reported_pct:
                 progress_callback(pct)
                 last_reported_pct = pct
@@ -232,7 +216,6 @@ def track_video(
     total_frames = frame_index
     cap.release()
 
-    # ---- Interpolate ball gaps ----
     ball_positions = _interpolate_ball_positions(raw_ball_points, max_ball_gap_frames)
 
     ball_rows = []
@@ -253,7 +236,6 @@ def track_video(
         writer.writerow(["frame_index", "timestamp_seconds", "x", "y", "confidence", "is_interpolated"])
         writer.writerows(ball_rows)
 
-    # ---- Pass 2: re-read the video to draw annotations (keeps memory low - we didn't hold frames) ----
     cap = cv2.VideoCapture(str(video_path))
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer_out = cv2.VideoWriter(str(annotated_output_path), fourcc, fps, (width, height))
@@ -311,22 +293,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 3:
-        print("Usage: python -m ai_engine.tracking <video_path> <output_dir> [polygon] [nofilter]")
-        print()
-        print('  polygon is optional: a space-separated list of "x,y" pixel')
-        print('  points tracing the pitch boundary, e.g.:')
-        print('    python -m ai_engine.tracking clip.mp4 out/ "120,80 1150,75 1200,640 60,650"')
-        print()
-        print("  nofilter: pass this literal word (in place of or in addition to")
-        print("  the polygon) to disable pitch-area filtering entirely - useful")
-        print("  for isolating whether missing players are a masking problem or")
-        print("  a raw detection-confidence problem, e.g.:")
-        print("    python -m ai_engine.tracking clip.mp4 out/ nofilter")
-        print()
-        print("  imgsz=N: inference resolution (default 1280). Raise this if")
-        print("  small/distant players aren't being detected at all, even with")
-        print("  filtering off - lower it if processing is too slow, e.g.:")
-        print("    python -m ai_engine.tracking clip.mp4 out/ nofilter imgsz=1536")
+        print("Usage: python -m ai_engine.tracking <video_path> <output_dir> [polygon] [nofilter] [imgsz=N]")
         sys.exit(1)
 
     in_path = Path(sys.argv[1])
@@ -335,7 +302,7 @@ if __name__ == "__main__":
 
     remaining_args = sys.argv[3:]
     no_filter = "nofilter" in remaining_args
-    imgsz = 1280
+    imgsz = DEFAULT_IMGSZ
     for arg in list(remaining_args):
         if arg.startswith("imgsz="):
             imgsz = int(arg.split("=")[1])
@@ -344,14 +311,11 @@ if __name__ == "__main__":
 
     polygon = None
     if polygon_args:
-        polygon = [
-            tuple(int(v) for v in pair.split(","))
-            for pair in polygon_args[0].split()
-        ]
+        polygon = [tuple(int(v) for v in pair.split(",")) for pair in polygon_args[0].split()]
         print(f"Using manual pitch boundary: {polygon}")
 
     if no_filter:
-        print("Pitch filtering DISABLED - all detected people will be kept, including sideline staff.")
+        print("Pitch filtering DISABLED.")
     print(f"Using inference resolution imgsz={imgsz}")
 
     logging.basicConfig(level=logging.INFO)
@@ -367,8 +331,5 @@ if __name__ == "__main__":
         progress_callback=lambda pct: print(f"\r{pct}%", end="", flush=True),
     )
     print()
-    print("--- Tracking Summary ---")
     for key, value in result.items():
         print(f"{key}: {value}")
-    print()
-    print(f"Watch {out_dir / 'tracked.mp4'} to judge quality before moving to Stage 3+ (team classification).")

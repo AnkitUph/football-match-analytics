@@ -1,46 +1,54 @@
 """
 Stage 4 of the CV pipeline: team classification.
 
-Consumes Stage 2's output (players.csv, ball.csv) rather than re-running
-YOLO - detection/tracking is expensive, no need to pay for it twice. For
-every tracked player box, crops the torso region and samples its color,
-builds up a per-track_id color history across every frame that player
-appears in, then classifies each track against the match's four kit
-colors (home outfield, home GK, away outfield, away GK - captured back
-in Phase 3's upload form).
+Hybrid design, combining two approaches for two different problems:
 
-Two things this is deliberately careful about:
+  1. OUTFIELD PLAYERS (the bulk of the roster): K-means (k=2) discovers
+     the two dominant jersey colors that actually exist in this specific
+     video, rather than requiring an exact pre-specified hex color to
+     match against. This is far more robust to real-world variation -
+     lighting, camera quality, slightly-off reference colors - than
+     matching every player against one fixed target color. The two
+     discovered cluster centers are then labeled "home"/"away" by
+     comparing them to the match's stored kit colors (used as LABELS,
+     not as strict matching targets).
 
-  1. Low-saturation colors (a referee's black kit, or any near-gray/
-     near-white kit) have an almost meaningless hue - there's barely any
-     "color" to have a direction on the color wheel. The distance metric
-     down-weights hue for such colors and leans on saturation/value
-     instead, which is what actually separates "vivid team color" from
-     "black officiating kit."
+  2. GOALKEEPERS: there are only ever 2 GK tracks in a whole match - far
+     too few for K-means to reliably treat as their own cluster (they'd
+     just get absorbed into whichever outfield cluster is nearest, which
+     is usually wrong, since GK kits are deliberately different from
+     everyone else). Instead, GK tracks are identified FIRST via direct
+     distance matching against the stored GK colors, and excluded from
+     the outfield clustering pool entirely.
 
-  2. A track with very few color samples (can happen if Stage 2 loses
-     and reassigns a player's ID mid-clip, leaving a short-lived track
-     segment) doesn't have enough evidence to classify reliably. Rather
-     than force a possibly-wrong match, tracks below MIN_SAMPLES are
-     explicitly labeled "insufficient_data".
+  3. SAFETY NET: after clustering, any track whose color is still far
+     from ITS OWN assigned cluster's center (not just far from the DB
+     color) is relabeled "unclassified" rather than force-kept. K-means
+     with k=2 always assigns every point to one of two groups regardless
+     of fit quality - this catches the referee (a genuine third color
+     group) who would otherwise get silently folded into whichever team
+     cluster happens to be nearest.
 
-Anyone whose sampled color doesn't closely match ANY kit color - most
-likely the referee - gets labeled "unclassified" rather than force-
-matched to a team. A wrong team assignment is worse than an honest
-"don't know," since it would silently corrupt team-level stats later.
+  4. Tracks with too few color samples (a short-lived/unstable track_id,
+     which can happen if Stage 2 loses and reassigns a player mid-clip)
+     are labeled "insufficient_data" rather than classified on weak
+     evidence.
 
-Still fully standalone - no Django/Celery/database. Run it by hand:
+Consumes Stage 2's output (players.csv, ball.csv) - detection/tracking
+already happened, no need to re-run YOLO.
+
+Standalone - no Django/Celery/database:
 
     python -m ai_engine.team_classification \\
-        <video_path> <players_csv_from_stage2> <output_dir> \\
+        <video_path> <players_csv> <output_dir> \\
         --home "#RRGGBB" --away "#RRGGBB" \\
         --home-gk "#RRGGBB" --away-gk "#RRGGBB" \\
-        --ball-csv <ball_csv_from_stage2>
+        --ball-csv <ball_csv>
 
-Get real kit-color hex values with ai_engine.sample_color (and
-ai_engine.zoom_frame if the subjects are small/distant) - never guess
-or use placeholder colors, since classification quality is entirely
-dependent on the reference colors being accurate.
+home/away/home-gk/away-gk should be the match's actual stored kit colors
+(e.g. from the upload form) - they're used to LABEL what K-means
+discovers, not as the primary matching mechanism, so they don't need to
+be pixel-perfect.
 """
 
 import argparse
@@ -55,33 +63,40 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# How much each axis matters when comparing colors. Hue (the actual
-# color, e.g. "red" vs "blue") dominates when reliable; saturation and
-# value matter less and shift a lot with lighting/shadow/motion blur.
 HUE_WEIGHT = 0.7
 SATURATION_WEIGHT = 0.2
 VALUE_WEIGHT = 0.1
 
-# If the closest kit color match is still farther than this, the player
-# is labeled unclassified rather than force-assigned.
-UNCLASSIFIED_DISTANCE_THRESHOLD = 0.35
-
 # Tracks with fewer color samples than this aren't classified - too
-# little evidence to trust, regardless of what the color match says.
+# little evidence to trust, regardless of what the color says.
 MIN_SAMPLES_FOR_CLASSIFICATION = 5
 
+# GK colors are deliberately distinctive, so this can be strict - if a
+# track isn't clearly close to a GK color, it goes into the outfield
+# clustering pool instead rather than being force-matched as a GK.
+GK_MATCH_THRESHOLD = 0.20
+
+# After clustering, if a track is farther than this from its OWN
+# cluster's center, it's relabeled unclassified - this is what catches
+# the referee (a real third color group that k=2 clustering would
+# otherwise silently force into a team).
+OUTLIER_THRESHOLD = 0.28
+
 DRAW_COLORS = {
-    "home": (255, 100, 40),           # blue-ish (BGR)
+    "home": (255, 100, 40),
     "home_gk": (255, 200, 40),
-    "away": (40, 40, 220),             # red-ish (BGR)
+    "away": (40, 40, 220),
     "away_gk": (40, 140, 220),
-    "unclassified": (180, 180, 180),   # gray
-    "insufficient_data": (100, 100, 100),  # dark gray
+    "team_0": (200, 200, 40),
+    "team_1": (40, 200, 200),
+    "unclassified": (180, 180, 180),
+    "insufficient_data": (100, 100, 100),
 }
 
 
 def hex_to_hsv(hex_color):
-    """'#3D8B5F' -> (hue_degrees, saturation, value), all in intuitive ranges."""
+    if not hex_color:
+        return None
     hex_color = hex_color.lstrip("#")
     r = int(hex_color[0:2], 16) / 255
     g = int(hex_color[2:4], 16) / 255
@@ -90,12 +105,13 @@ def hex_to_hsv(hex_color):
     return (h * 360, s, v)
 
 
-def _sample_jersey_hsv(frame_bgr, x1, y1, x2, y2):
-    """
-    Crops the torso-ish region of a bounding box (avoiding head/hair at
-    the top and shorts/legs at the bottom) and returns its median color
-    in HSV. Returns None if the crop is degenerate.
-    """
+def _rgb_to_hsv_deg(rgb):
+    h, s, v = colorsys.rgb_to_hsv(*rgb)
+    return (h * 360, s, v)
+
+
+def _sample_jersey_rgb(frame_bgr, x1, y1, x2, y2):
+    """Crops the torso region and returns its median color as normalized (r, g, b)."""
     w, h = x2 - x1, y2 - y1
     if w <= 0 or h <= 0:
         return None
@@ -114,33 +130,51 @@ def _sample_jersey_hsv(frame_bgr, x1, y1, x2, y2):
         return None
 
     crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).reshape(-1, 3) / 255.0
-    med_r, med_g, med_b = np.median(crop_rgb, axis=0)
-    h_val, s_val, v_val = colorsys.rgb_to_hsv(med_r, med_g, med_b)
-    return (h_val * 360, s_val, v_val)
+    return tuple(np.median(crop_rgb, axis=0))
 
 
 def _hsv_distance(hsv1, hsv2):
     """
-    Weighted HSV distance, with hue's weight scaled down when either
-    color is low-saturation (near-black/gray/white) - hue is unreliable
-    for such colors, so leaning on it would let a referee's black kit
-    coincidentally match a team by hue-noise alone.
+    Weighted HSV distance, hue down-weighted for low-saturation colors
+    (near-black/gray/white) since hue is unreliable/near-meaningless for
+    such colors - without this, a black referee kit could coincidentally
+    match a team by hue-noise alone.
     """
     h1, s1, v1 = hsv1
     h2, s2, v2 = hsv2
 
-    dh = min(abs(h1 - h2), 360 - abs(h1 - h2)) / 180  # circular, normalized 0-1
+    dh = min(abs(h1 - h2), 360 - abs(h1 - h2)) / 180
     ds = abs(s1 - s2)
     dv = abs(v1 - v2)
 
     hue_reliability = min(s1, s2)
     effective_hue_weight = HUE_WEIGHT * hue_reliability
-    remaining_weight = 1 - effective_hue_weight
+    remaining = 1 - effective_hue_weight
     other_total = SATURATION_WEIGHT + VALUE_WEIGHT
-    effective_sat_weight = remaining_weight * (SATURATION_WEIGHT / other_total)
-    effective_val_weight = remaining_weight * (VALUE_WEIGHT / other_total)
+    eff_sat = remaining * (SATURATION_WEIGHT / other_total)
+    eff_val = remaining * (VALUE_WEIGHT / other_total)
 
-    return dh * effective_hue_weight + ds * effective_sat_weight + dv * effective_val_weight
+    return dh * effective_hue_weight + ds * eff_sat + dv * eff_val
+
+
+def _assign_cluster_labels(centers_rgb, home_hsv, away_hsv):
+    """
+    Labels the 2 K-means cluster centers as "home"/"away" by finding
+    whichever pairing (0->home,1->away vs 0->away,1->home) has the
+    lower total distance - guarantees the two clusters get DIFFERENT
+    labels, rather than both greedily matching the same closer color.
+    """
+    if home_hsv is None or away_hsv is None:
+        return {0: "team_0", 1: "team_1"}
+
+    center_hsvs = [_rgb_to_hsv_deg(c) for c in centers_rgb]
+
+    cost_a = _hsv_distance(center_hsvs[0], home_hsv) + _hsv_distance(center_hsvs[1], away_hsv)
+    cost_b = _hsv_distance(center_hsvs[0], away_hsv) + _hsv_distance(center_hsvs[1], home_hsv)
+
+    if cost_a <= cost_b:
+        return {0: "home", 1: "away"}
+    return {0: "away", 1: "home"}
 
 
 def classify_teams(
@@ -155,38 +189,21 @@ def classify_teams(
     ball_tracking_csv_path=None,
     progress_callback=None,
 ):
-    """
-    home_color/away_color/home_gk_color/away_gk_color: hex strings like
-    "#3D8B5F", ideally sampled from the actual footage (see module
-    docstring) rather than guessed. GK colors are optional - if not
-    given, that reference is simply skipped.
-
-    Returns a summary dict, and writes:
-      - annotated_output_path: video with boxes colored/labeled by team
-        (and the ball drawn too, if ball_tracking_csv_path is given)
-      - classification_csv_path: one row per track_id with its assigned
-        team, match confidence, and sample count
-    """
     video_path = Path(video_path)
     player_tracking_csv_path = Path(player_tracking_csv_path)
     annotated_output_path = Path(annotated_output_path)
     classification_csv_path = Path(classification_csv_path)
 
-    references = {}
-    if home_color:
-        references["home"] = hex_to_hsv(home_color)
-    if away_color:
-        references["away"] = hex_to_hsv(away_color)
+    home_hsv = hex_to_hsv(home_color)
+    away_hsv = hex_to_hsv(away_color)
+    gk_references = {}
     if home_gk_color:
-        references["home_gk"] = hex_to_hsv(home_gk_color)
+        gk_references["home_gk"] = hex_to_hsv(home_gk_color)
     if away_gk_color:
-        references["away_gk"] = hex_to_hsv(away_gk_color)
+        gk_references["away_gk"] = hex_to_hsv(away_gk_color)
 
-    if not references:
-        raise ValueError("At least one kit color (home or away) must be provided.")
-
-    # ---- Load Stage 2's tracking output, grouped by frame for a single video pass ----
-    detections_by_frame = defaultdict(list)  # frame_index -> [(track_id, x1,y1,x2,y2)]
+    # ---- Load Stage 2's output ----
+    detections_by_frame = defaultdict(list)
     with open(player_tracking_csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -195,7 +212,7 @@ def classify_teams(
             x1, y1, x2, y2 = float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"])
             detections_by_frame[frame_idx].append((track_id, x1, y1, x2, y2))
 
-    ball_by_frame = {}  # frame_index -> (x, y, is_interpolated)
+    ball_by_frame = {}
     if ball_tracking_csv_path is not None:
         with open(ball_tracking_csv_path, newline="") as f:
             reader = csv.DictReader(f)
@@ -212,7 +229,7 @@ def classify_teams(
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # ---- Pass 1: sample jersey colors for every track, every frame it appears ----
+    # ---- Pass 1: sample jersey color for every track, every frame ----
     track_color_samples = defaultdict(list)
     frame_index = 0
     last_reported_pct = -1
@@ -223,47 +240,77 @@ def classify_teams(
             break
 
         for track_id, x1, y1, x2, y2 in detections_by_frame.get(frame_index, []):
-            hsv = _sample_jersey_hsv(frame, x1, y1, x2, y2)
-            if hsv is not None:
-                track_color_samples[track_id].append(hsv)
+            rgb = _sample_jersey_rgb(frame, x1, y1, x2, y2)
+            if rgb is not None:
+                track_color_samples[track_id].append(rgb)
 
         frame_index += 1
         if progress_callback and frame_count:
-            pct = int((frame_index / frame_count) * 60)  # reserve 40% for pass 2
+            pct = int((frame_index / frame_count) * 60)
             if pct != last_reported_pct:
                 progress_callback(pct)
                 last_reported_pct = pct
 
     cap.release()
 
-    # ---- Classify each track from its median color across all its samples ----
-    track_assignments = {}  # track_id -> (label, confidence)
+    # ---- Per-track median color (RGB for clustering, HSV for distance checks) ----
+    track_median_rgb = {}
+    track_median_hsv = {}
+    track_assignments = {}
+
     for track_id, samples in track_color_samples.items():
         if len(samples) < MIN_SAMPLES_FOR_CLASSIFICATION:
             track_assignments[track_id] = ("insufficient_data", None)
             continue
+        med_rgb = tuple(np.median(np.array(samples), axis=0))
+        track_median_rgb[track_id] = med_rgb
+        track_median_hsv[track_id] = _rgb_to_hsv_deg(med_rgb)
 
-        samples_arr = np.array(samples)
-        median_hsv = tuple(np.median(samples_arr, axis=0))
-
+    # ---- Step 1: direct GK matching, excluded from the outfield clustering pool ----
+    outfield_candidates = []
+    for track_id, hsv in track_median_hsv.items():
         best_label, best_distance = None, float("inf")
-        for label, ref_hsv in references.items():
-            d = _hsv_distance(median_hsv, ref_hsv)
+        for label, ref_hsv in gk_references.items():
+            d = _hsv_distance(hsv, ref_hsv)
             if d < best_distance:
                 best_label, best_distance = label, d
 
-        if best_distance > UNCLASSIFIED_DISTANCE_THRESHOLD:
-            track_assignments[track_id] = ("unclassified", round(1 - best_distance, 3))
-        else:
+        if best_label is not None and best_distance <= GK_MATCH_THRESHOLD:
             track_assignments[track_id] = (best_label, round(1 - best_distance, 3))
+        else:
+            outfield_candidates.append(track_id)
+
+    # ---- Step 2: K-means discovers the two outfield team colors ----
+    if len(outfield_candidates) >= 2:
+        rgb_data = np.float32([track_median_rgb[tid] for tid in outfield_candidates])
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+        _, labels, centers = cv2.kmeans(rgb_data, 2, None, criteria, 10, cv2.KMEANS_PP_CENTERS)
+        labels = labels.flatten()
+
+        cluster_label_map = _assign_cluster_labels(centers, home_hsv, away_hsv)
+
+        for i, track_id in enumerate(outfield_candidates):
+            cluster_idx = int(labels[i])
+            centroid_hsv = _rgb_to_hsv_deg(centers[cluster_idx])
+            own_hsv = track_median_hsv[track_id]
+            centroid_distance = _hsv_distance(own_hsv, centroid_hsv)
+
+            if centroid_distance > OUTLIER_THRESHOLD:
+                track_assignments[track_id] = ("unclassified", round(1 - centroid_distance, 3))
+            else:
+                track_assignments[track_id] = (cluster_label_map[cluster_idx], round(1 - centroid_distance, 3))
+    else:
+        for track_id in outfield_candidates:
+            track_assignments[track_id] = ("unclassified", None)
 
     with open(classification_csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["track_id", "team", "confidence", "sample_count"])
         for track_id, (label, confidence) in sorted(track_assignments.items()):
-            writer.writerow([track_id, label, confidence, len(track_color_samples[track_id])])
+            sample_count = len(track_color_samples.get(track_id, []))
+            writer.writerow([track_id, label, confidence, sample_count])
 
-    # ---- Pass 2: re-read video, draw team-colored/labeled boxes + ball ----
+    # ---- Pass 2: draw annotated video ----
     cap = cv2.VideoCapture(str(video_path))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -316,15 +363,15 @@ def classify_teams(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Stage 4: classify tracked players by team via kit color.")
+    parser = argparse.ArgumentParser(description="Stage 4: classify tracked players by team.")
     parser.add_argument("video_path")
-    parser.add_argument("players_csv", help="players.csv produced by Stage 2 (ai_engine.tracking)")
+    parser.add_argument("players_csv")
     parser.add_argument("output_dir")
     parser.add_argument("--home", required=True, help="Home team outfield kit color, e.g. #3D8B5F")
     parser.add_argument("--away", required=True, help="Away team outfield kit color, e.g. #274690")
-    parser.add_argument("--home-gk", default=None, help="Home goalkeeper kit color (optional)")
-    parser.add_argument("--away-gk", default=None, help="Away goalkeeper kit color (optional)")
-    parser.add_argument("--ball-csv", default=None, help="ball.csv from Stage 2, to draw the ball too (optional)")
+    parser.add_argument("--home-gk", default=None)
+    parser.add_argument("--away-gk", default=None)
+    parser.add_argument("--ball-csv", default=None)
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -345,6 +392,5 @@ if __name__ == "__main__":
         progress_callback=lambda pct: print(f"\r{pct}%", end="", flush=True),
     )
     print()
-    print("--- Team Classification Summary ---")
     for key, value in result.items():
         print(f"{key}: {value}")

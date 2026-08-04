@@ -1,21 +1,10 @@
 """
-One-off utility: pulls a single frame out of a video and saves it as a
-PNG, so you can open it in any image viewer and read off the pixel
-coordinates of the pitch's corners (or any boundary you want to define).
+Pulls a single frame out of a video and saves it as a PNG, so you can
+find pitch-boundary corner coordinates for ai_engine.detection's/
+ai_engine.tracking's pitch_polygon parameter.
 
 Usage:
     python -m ai_engine.extract_frame <video_path> <output_png> [frame_number]
-
-frame_number defaults to 0 (the first frame). Pick a frame where the
-camera angle is representative of the whole video (i.e. not mid-zoom or
-mid-pan, if the camera moves).
-
-Once you have the PNG, open it in an image viewer that shows pixel
-coordinates on hover (GIMP, or most OS "preview" tools, or even just
-loading it into a Jupyter cell with matplotlib) and note the (x, y) pixel
-position of each corner of the playing area, in order around the
-boundary. Pass that list to detect_video()/track_video() as
-pitch_polygon=[(x1,y1), (x2,y2), (x3,y3), (x4,y4)].
 """
 
 import sys
@@ -43,7 +32,6 @@ def extract_frame(video_path, output_path, frame_number=0):
     cv2.imwrite(str(output_path), frame)
     height, width = frame.shape[:2]
     print(f"Saved frame {frame_number} ({width}x{height}) to {output_path}")
-    print("Open it and note the pixel (x, y) coordinates of the pitch's corners.")
 
 
 if __name__ == "__main__":
