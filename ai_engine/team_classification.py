@@ -1,27 +1,46 @@
 """
 Stage 4 of the CV pipeline: team classification.
 
-Consumes Stage 2's output (players.csv) rather than re-running YOLO -
-detection/tracking is expensive, no need to pay for it twice. For every
-tracked player box, crops the torso region and samples its color, builds
-up a per-track_id color history across every frame that player appears
-in, then classifies each track against the match's four kit colors
-(home outfield, home GK, away outfield, away GK - captured back in
-Phase 3's upload form).
+Consumes Stage 2's output (players.csv, ball.csv) rather than re-running
+YOLO - detection/tracking is expensive, no need to pay for it twice. For
+every tracked player box, crops the torso region and samples its color,
+builds up a per-track_id color history across every frame that player
+appears in, then classifies each track against the match's four kit
+colors (home outfield, home GK, away outfield, away GK - captured back
+in Phase 3's upload form).
 
-Anyone whose sampled color doesn't closely match ANY of the four - most
-likely the referee, but could also be a linesman or ball boy that slipped
-through Stage 2's pitch filtering - gets labeled "unclassified" rather
-than force-matched to a team. That's deliberate: a wrong team assignment
-is worse than an honest "don't know," since it would silently corrupt
-team-level stats later.
+Two things this is deliberately careful about:
+
+  1. Low-saturation colors (a referee's black kit, or any near-gray/
+     near-white kit) have an almost meaningless hue - there's barely any
+     "color" to have a direction on the color wheel. The distance metric
+     down-weights hue for such colors and leans on saturation/value
+     instead, which is what actually separates "vivid team color" from
+     "black officiating kit."
+
+  2. A track with very few color samples (can happen if Stage 2 loses
+     and reassigns a player's ID mid-clip, leaving a short-lived track
+     segment) doesn't have enough evidence to classify reliably. Rather
+     than force a possibly-wrong match, tracks below MIN_SAMPLES are
+     explicitly labeled "insufficient_data".
+
+Anyone whose sampled color doesn't closely match ANY kit color - most
+likely the referee - gets labeled "unclassified" rather than force-
+matched to a team. A wrong team assignment is worse than an honest
+"don't know," since it would silently corrupt team-level stats later.
 
 Still fully standalone - no Django/Celery/database. Run it by hand:
 
     python -m ai_engine.team_classification \\
         <video_path> <players_csv_from_stage2> <output_dir> \\
-        --home "#3D8B5F" --away "#274690" \\
-        --home-gk "#F4C542" --away-gk "#4CAF50"
+        --home "#RRGGBB" --away "#RRGGBB" \\
+        --home-gk "#RRGGBB" --away-gk "#RRGGBB" \\
+        --ball-csv <ball_csv_from_stage2>
+
+Get real kit-color hex values with ai_engine.sample_color (and
+ai_engine.zoom_frame if the subjects are small/distant) - never guess
+or use placeholder colors, since classification quality is entirely
+dependent on the reference colors being accurate.
 """
 
 import argparse
@@ -36,25 +55,28 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# How much of each axis matters when comparing colors. Hue (the actual
-# color, e.g. "red" vs "blue") dominates; saturation and value (which
-# shift a lot with lighting/shadow/motion blur) matter much less.
+# How much each axis matters when comparing colors. Hue (the actual
+# color, e.g. "red" vs "blue") dominates when reliable; saturation and
+# value matter less and shift a lot with lighting/shadow/motion blur.
 HUE_WEIGHT = 0.7
 SATURATION_WEIGHT = 0.2
 VALUE_WEIGHT = 0.1
 
 # If the closest kit color match is still farther than this, the player
-# is labeled unclassified rather than force-assigned. Tune this if real
-# players are landing in "unclassified" (raise it) or the referee is
-# getting matched to a team (lower it).
+# is labeled unclassified rather than force-assigned.
 UNCLASSIFIED_DISTANCE_THRESHOLD = 0.35
 
+# Tracks with fewer color samples than this aren't classified - too
+# little evidence to trust, regardless of what the color match says.
+MIN_SAMPLES_FOR_CLASSIFICATION = 5
+
 DRAW_COLORS = {
-    "home": (255, 100, 40),        # blue-ish (BGR)
+    "home": (255, 100, 40),           # blue-ish (BGR)
     "home_gk": (255, 200, 40),
-    "away": (40, 40, 220),          # red-ish (BGR)
+    "away": (40, 40, 220),             # red-ish (BGR)
     "away_gk": (40, 140, 220),
-    "unclassified": (180, 180, 180),  # gray
+    "unclassified": (180, 180, 180),   # gray
+    "insufficient_data": (100, 100, 100),  # dark gray
 }
 
 
@@ -72,8 +94,7 @@ def _sample_jersey_hsv(frame_bgr, x1, y1, x2, y2):
     """
     Crops the torso-ish region of a bounding box (avoiding head/hair at
     the top and shorts/legs at the bottom) and returns its median color
-    in HSV. Returns None if the crop is degenerate (box too small/at
-    frame edge).
+    in HSV. Returns None if the crop is degenerate.
     """
     w, h = x2 - x1, y2 - y1
     if w <= 0 or h <= 0:
@@ -100,15 +121,10 @@ def _sample_jersey_hsv(frame_bgr, x1, y1, x2, y2):
 
 def _hsv_distance(hsv1, hsv2):
     """
-    Weighted HSV distance, with one important correction: hue is only
-    meaningful when a color is actually saturated. A near-black or
-    near-gray referee kit has an almost arbitrary hue value (there's
-    barely any "color" to have a direction), so if we weighted hue the
-    same as for a vivid team kit, the referee could coincidentally land
-    close to a team by pure hue-noise. Instead, hue's weight scales down
-    with how UNSATURATED either color is, and that weight gets shifted
-    onto saturation/value instead - which are the features that actually
-    separate "vivid team color" from "black/gray officiating kit."
+    Weighted HSV distance, with hue's weight scaled down when either
+    color is low-saturation (near-black/gray/white) - hue is unreliable
+    for such colors, so leaning on it would let a referee's black kit
+    coincidentally match a team by hue-noise alone.
     """
     h1, s1, v1 = hsv1
     h2, s2, v2 = hsv2
@@ -117,7 +133,7 @@ def _hsv_distance(hsv1, hsv2):
     ds = abs(s1 - s2)
     dv = abs(v1 - v2)
 
-    hue_reliability = min(s1, s2)  # low if either color is near-grayscale
+    hue_reliability = min(s1, s2)
     effective_hue_weight = HUE_WEIGHT * hue_reliability
     remaining_weight = 1 - effective_hue_weight
     other_total = SATURATION_WEIGHT + VALUE_WEIGHT
@@ -141,13 +157,15 @@ def classify_teams(
 ):
     """
     home_color/away_color/home_gk_color/away_gk_color: hex strings like
-    "#3D8B5F". GK colors are optional - if not given, that reference is
-    simply skipped (players won't be able to match it).
+    "#3D8B5F", ideally sampled from the actual footage (see module
+    docstring) rather than guessed. GK colors are optional - if not
+    given, that reference is simply skipped.
 
     Returns a summary dict, and writes:
       - annotated_output_path: video with boxes colored/labeled by team
+        (and the ball drawn too, if ball_tracking_csv_path is given)
       - classification_csv_path: one row per track_id with its assigned
-        team and match confidence (1 - distance, roughly 0 to 1)
+        team, match confidence, and sample count
     """
     video_path = Path(video_path)
     player_tracking_csv_path = Path(player_tracking_csv_path)
@@ -221,6 +239,10 @@ def classify_teams(
     # ---- Classify each track from its median color across all its samples ----
     track_assignments = {}  # track_id -> (label, confidence)
     for track_id, samples in track_color_samples.items():
+        if len(samples) < MIN_SAMPLES_FOR_CLASSIFICATION:
+            track_assignments[track_id] = ("insufficient_data", None)
+            continue
+
         samples_arr = np.array(samples)
         median_hsv = tuple(np.median(samples_arr, axis=0))
 
@@ -241,7 +263,7 @@ def classify_teams(
         for track_id, (label, confidence) in sorted(track_assignments.items()):
             writer.writerow([track_id, label, confidence, len(track_color_samples[track_id])])
 
-    # ---- Pass 2: re-read video, draw team-colored/labeled boxes ----
+    # ---- Pass 2: re-read video, draw team-colored/labeled boxes + ball ----
     cap = cv2.VideoCapture(str(video_path))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -264,7 +286,7 @@ def classify_teams(
 
         if frame_index in ball_by_frame:
             bx, by, is_interp = ball_by_frame[frame_index]
-            ball_color = (0, 140, 255) if is_interp else (0, 215, 255)  # dimmer if estimated
+            ball_color = (0, 140, 255) if is_interp else (0, 215, 255)
             cv2.circle(frame, (int(bx), int(by)), 6, ball_color, -1 if not is_interp else 2)
 
         writer_out.write(frame)
@@ -284,7 +306,7 @@ def classify_teams(
         label_counts[label] += 1
 
     summary = {
-        "total_tracks_classified": len(track_assignments),
+        "total_tracks": len(track_assignments),
         **{f"count_{label}": count for label, count in label_counts.items()},
         "annotated_output_path": str(annotated_output_path),
         "classification_csv_path": str(classification_csv_path),
