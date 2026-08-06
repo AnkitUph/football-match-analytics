@@ -1,1 +1,1 @@
-/home/ankit/football_try/team_assigner/__init__.py /home/ankit/football_try/team_assigner/team_assigner.py
+from .team_assigner import TeamAssigner
