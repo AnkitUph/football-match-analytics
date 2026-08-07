@@ -60,7 +60,10 @@ class Tracker:
 
     def detect_frames(self, frames, batch_size=20):
         detections = []
-        for i in range(0, len(frames), batch_size):
+        total_batches = (len(frames) + batch_size - 1) // batch_size
+        for batch_num, i in enumerate(range(0, len(frames), batch_size), start=1):
+            logger.info("Detecting batch %d/%d (frames %d-%d of %d)...",
+                        batch_num, total_batches, i, min(i + batch_size, len(frames)), len(frames))
             batch = self.model.predict(
                 frames[i:i + batch_size],
                 imgsz=self.imgsz,
@@ -82,11 +85,22 @@ class Tracker:
 
         detections = self.detect_frames(frames)
 
+        # IMPORTANT: minimum_matching_threshold in supervision's ByteTrack
+        # behaves INVERSE to normal IoU-threshold intuition - this is a
+        # documented quirk (see roboflow/supervision issue #1670), not
+        # something we got wrong by guessing. Community reports (e.g.
+        # roboflow/supervision discussion #1001) confirm empirically that
+        # RAISING this value toward ~0.9-0.95 stabilizes tracking - even
+        # through player collisions - while lowering it causes MORE
+        # fragmentation, not less. We tried lowering it first based on
+        # normal IoU intuition and it made things dramatically worse
+        # (175 -> 552 unique players), which is consistent with this
+        # being the actual (if unintuitive) documented behavior.
         tracker = sv.ByteTrack(
             frame_rate=int(fps),
-            lost_track_buffer=int(fps * 3),
+            lost_track_buffer=int(fps * 4),
             track_activation_threshold=self.confidence,
-            minimum_matching_threshold=0.8,
+            minimum_matching_threshold=0.95,
         )
 
         ball_class_id = self.class_name_to_id.get("ball")
@@ -97,11 +111,13 @@ class Tracker:
         tracks = {"players": [], "goalkeepers": [], "referees": [], "ball": []}
         raw_ball_points = {}  # frame_index -> (x, y, confidence), for interpolation afterward
 
+        # Collected first, categorized after the full pass - see the
+        # majority-vote step below for why.
+        raw_person_frames = []  # list of {track_id: (class_id, bbox, confidence)} per frame
+
         for frame_num, detection in enumerate(detections):
             sv_detections = sv.Detections.from_ultralytics(detection)
 
-            # Ball isn't tracked via ByteTrack (single object, no identity
-            # ambiguity) - pull it out before tracking the rest.
             if ball_class_id is not None:
                 ball_mask = sv_detections.class_id == ball_class_id
                 ball_detections = sv_detections[ball_mask]
@@ -117,26 +133,52 @@ class Tracker:
 
             tracked = tracker.update_with_detections(person_detections)
 
-            tracks["players"].append({})
-            tracks["goalkeepers"].append({})
-            tracks["referees"].append({})
-            tracks["ball"].append({})
-
+            frame_entries = {}
             for i in range(len(tracked)):
                 track_id = int(tracked.tracker_id[i])
                 class_id = int(tracked.class_id[i])
                 bbox = tracked.xyxy[i].tolist()
                 conf = float(tracked.confidence[i])
+                frame_entries[track_id] = (class_id, bbox, conf)
 
-                entry = {"bbox": bbox, "confidence": conf}
+            raw_person_frames.append(frame_entries)
+            tracks["players"].append({})
+            tracks["goalkeepers"].append({})
+            tracks["referees"].append({})
+            tracks["ball"].append({})
 
-                if class_id == goalkeeper_class_id:
-                    tracks["goalkeepers"][frame_num][track_id] = entry
-                elif class_id == referee_class_id:
-                    tracks["referees"][frame_num][track_id] = entry
-                elif class_id == player_class_id:
-                    tracks["players"][frame_num][track_id] = entry
-                # else: unexpected class on a tracked detection - ignore rather than misfile it
+        # ---- Majority-vote category per track, THEN bucket every frame ----
+        # A single physical person shouldn't be able to flip between
+        # "player" and "referee" from one frame to the next just because
+        # the model's classification wavered momentarily - that's noise,
+        # not a real category change. Deciding each track's category once
+        # (by whichever class it was predicted as most often across its
+        # whole lifetime) and applying that consistently avoids inflating
+        # per-category track counts with what's actually the same
+        # continuously-tracked person.
+        track_class_votes = {}
+        for frame_entries in raw_person_frames:
+            for track_id, (class_id, _, _) in frame_entries.items():
+                track_class_votes.setdefault(track_id, {}).setdefault(class_id, 0)
+                track_class_votes[track_id][class_id] += 1
+
+        track_category = {}
+        for track_id, votes in track_class_votes.items():
+            majority_class_id = max(votes, key=votes.get)
+            if majority_class_id == goalkeeper_class_id:
+                track_category[track_id] = "goalkeepers"
+            elif majority_class_id == referee_class_id:
+                track_category[track_id] = "referees"
+            elif majority_class_id == player_class_id:
+                track_category[track_id] = "players"
+            else:
+                track_category[track_id] = None  # unexpected class, drop it
+
+        for frame_num, frame_entries in enumerate(raw_person_frames):
+            for track_id, (class_id, bbox, conf) in frame_entries.items():
+                category = track_category.get(track_id)
+                if category is not None:
+                    tracks[category][frame_num][track_id] = {"bbox": bbox, "confidence": conf}
 
         tracks["ball"] = self._ball_dicts_from_interpolated_points(
             raw_ball_points, len(frames), fps

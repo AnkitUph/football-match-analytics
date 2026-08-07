@@ -123,11 +123,11 @@ def main(video_path, output_dir, model_path="ai_engine/models/best.pt",
             team_assigner.assign_team_colors(frames[calibration_frame_num], tracks["players"][calibration_frame_num])
 
             player_teams = {}
-            for frame in tracks["players"]:
+            for frame_num, frame in enumerate(tracks["players"]):
                 for track_id, info in frame.items():
                     if track_id not in player_teams:
                         player_teams[track_id] = team_assigner.get_player_team(
-                            frames[calibration_frame_num], info["bbox"], track_id
+                            frames[frame_num], info["bbox"], track_id
                         )
 
             gk_teams = {}
