@@ -25,3 +25,7 @@ torchvision==0.28.0+cpu
 
 # Add to requirements.txt - Stage 2 (tracking)
 supervision>=0.24,<1
+
+# Add to requirements.txt
+jupyter
+roboflow

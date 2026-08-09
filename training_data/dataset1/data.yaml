@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 5
+names: ['Keeper', 'another-player', 'ball', 'player-white', 'referee']
+
+roboflow:
+  workspace: roboflowjvuqo11111
+  project: football-players-detection-3zvbc-szywq
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/roboflowjvuqo11111/football-players-detection-3zvbc-szywq/dataset/2
