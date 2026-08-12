@@ -1,3 +1,4 @@
+
 """
 Tracking runner for the football AI pipeline.
 
@@ -11,17 +12,18 @@ Pipeline:
       ↓
     Track / TrackObservation schemas
       ↓
+    Appearance Embeddings
+      ↓
     Tracking statistics
 
 This phase intentionally does NOT perform:
-    - global identity merging
-    - appearance embeddings
-    - team assignment
-    - jersey-number recognition
-    - homography
-    - heatmap generation
 
-Those will be added as separate pipeline stages.
+- global identity merging
+- team assignment
+- jersey-number recognition
+- homography
+- heatmap generation
+- event detection
 """
 
 from __future__ import annotations
@@ -44,25 +46,76 @@ def run_tracking(
     fps: float | None = None,
     imgsz: int = 1280,
     confidence: float = 0.25,
-):
+
+    # ========================================================
+    # BYTE TRACK CONFIGURATION
+    # ========================================================
+
+    track_activation_threshold: float = 0.40,
+    lost_track_buffer: int = 100,
+    minimum_matching_threshold: float = 0.70,
+    minimum_consecutive_frames: int = 2,
+
+    # ========================================================
+    # APPEARANCE CONFIGURATION
+    # ========================================================
+
+    appearance_model_name: str = "osnet_x1_0",
+    appearance_device: str = "cpu",
+    appearance_interval: int = 10,
+    appearance_refresh_on_new_track: bool = True,
+) -> ByteTrackTracker:
     """
     Run YOLO detection + ByteTrack over a video.
 
-    Returns:
-        ByteTrackTracker instance.
+    ByteTrack configuration is exposed here so that we can
+    run controlled experiments without modifying the tracker
+    implementation every time.
 
-    The returned tracker contains:
+    Args:
+        video_path:
+            Input football video.
 
-        tracker.current_tracks
-            Tracks active in the latest frame.
+        model_path:
+            YOLO model path.
 
-        tracker.track_history
-            Complete trajectory history of every ByteTrack ID.
+        fps:
+            Optional FPS override.
+
+        imgsz:
+            YOLO inference image size.
+
+        confidence:
+            YOLO detection confidence threshold.
+
+        track_activation_threshold:
+            ByteTrack track activation threshold.
+
+        lost_track_buffer:
+            Number of frames a lost track remains recoverable.
+
+        minimum_matching_threshold:
+            ByteTrack matching threshold.
+
+        minimum_consecutive_frames:
+            Consecutive detections required before activation.
+
+        appearance_model_name:
+            OSNet/TorchReID model.
+
+        appearance_device:
+            Appearance extraction device.
+
+        appearance_interval:
+            OSNet refresh interval.
+
+        appearance_refresh_on_new_track:
+            Immediately extract appearance for new tracks.
     """
 
-    # ============================================================
+    # ========================================================
     # OPEN VIDEO
-    # ============================================================
+    # ========================================================
 
     cap = cv2.VideoCapture(video_path)
 
@@ -71,465 +124,605 @@ def run_tracking(
             f"Unable to open video: {video_path}"
         )
 
-    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    try:
 
-    if fps is None or fps <= 0:
-        fps = video_fps
+        # ====================================================
+        # VIDEO METADATA
+        # ====================================================
 
-    if fps is None or fps <= 0:
-        fps = 25.0
-
-    fps = float(fps)
-
-    total_frames = int(
-        cap.get(cv2.CAP_PROP_FRAME_COUNT)
-    )
-
-    video_width = int(
-        cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-    )
-
-    video_height = int(
-        cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    )
-
-    logger.info(
-        "Video opened: %s",
-        video_path,
-    )
-
-    logger.info(
-        "Resolution: %dx%d | FPS: %.2f | Frames: %d",
-        video_width,
-        video_height,
-        fps,
-        total_frames,
-    )
-
-    # ============================================================
-    # DETECTOR
-    # ============================================================
-
-    detector = Detector(
-        model_path=model_path,
-        imgsz=imgsz,
-        confidence=confidence,
-    )
-
-    logger.info(
-        "Detector initialized"
-    )
-
-    logger.info(
-        "Classes: %s",
-        detector.class_names,
-    )
-
-    # ============================================================
-    # BYTE TRACK
-    # ============================================================
-
-    tracker = ByteTrackTracker(
-        fps=fps,
-        appearance_model_name="osnet_x1_0",
-        appearance_device="cpu",
-        appearance_interval=10,
-        appearance_refresh_on_new_track=True,
-    )
-
-    logger.info(
-        "ByteTrack initialized"
-    )
-
-    # ============================================================
-    # STATISTICS
-    # ============================================================
-
-    frame_number = 0
-
-    total_detections = 0
-
-    # Every unique ByteTrack ID.
-    unique_ids = set()
-
-    # Track ID -> number of frames observed.
-    id_frame_counts: Dict[int, int] = defaultdict(int)
-
-    # Track ID -> class name.
-    id_classes: Dict[int, str] = {}
-
-    # Number of active tracks per class per frame.
-    active_per_frame = defaultdict(list)
-
-    # ============================================================
-    # FRAME LOOP
-    # ============================================================
-
-    while True:
-
-        ok, frame = cap.read()
-
-        if not ok:
-            break
-
-        # --------------------------------------------------------
-        # YOLO DETECTION
-        # --------------------------------------------------------
-
-        detections = detector.detect_frame(
-            frame,
-            frame_number,
+        video_fps = cap.get(
+            cv2.CAP_PROP_FPS
         )
 
-        total_detections += len(detections)
+        if fps is None or fps <= 0:
+            fps = video_fps
 
-        # --------------------------------------------------------
+        if fps is None or fps <= 0:
+            fps = 25.0
+
+        fps = float(fps)
+
+        total_frames = int(
+            cap.get(
+                cv2.CAP_PROP_FRAME_COUNT
+            )
+        )
+
+        video_width = int(
+            cap.get(
+                cv2.CAP_PROP_FRAME_WIDTH
+            )
+        )
+
+        video_height = int(
+            cap.get(
+                cv2.CAP_PROP_FRAME_HEIGHT
+            )
+        )
+
+        logger.info(
+            "Video opened: %s",
+            video_path,
+        )
+
+        logger.info(
+            "Resolution: %dx%d | FPS: %.2f | Frames: %d",
+            video_width,
+            video_height,
+            fps,
+            total_frames,
+        )
+
+        # ====================================================
+        # DETECTOR
+        # ====================================================
+
+        detector = Detector(
+            model_path=model_path,
+            imgsz=imgsz,
+            confidence=confidence,
+        )
+
+        logger.info(
+            "Detector initialized"
+        )
+
+        logger.info(
+            "Classes: %s",
+            detector.class_names,
+        )
+
+        # ====================================================
         # BYTE TRACK
-        # --------------------------------------------------------
+        # ====================================================
 
-        tracks = tracker.update(
-            detections,
-            frame_number,
-            frame,
+        tracker = ByteTrackTracker(
+            fps=fps,
+
+            # ------------------------------------------------
+            # ByteTrack
+            # ------------------------------------------------
+
+            track_activation_threshold=(
+                track_activation_threshold
+            ),
+
+            lost_track_buffer=(
+                lost_track_buffer
+            ),
+
+            minimum_matching_threshold=(
+                minimum_matching_threshold
+            ),
+
+            minimum_consecutive_frames=(
+                minimum_consecutive_frames
+            ),
+
+            # ------------------------------------------------
+            # Appearance
+            # ------------------------------------------------
+
+            appearance_model_name=(
+                appearance_model_name
+            ),
+
+            appearance_device=(
+                appearance_device
+            ),
+
+            appearance_interval=(
+                appearance_interval
+            ),
+
+            appearance_refresh_on_new_track=(
+                appearance_refresh_on_new_track
+            ),
         )
 
-        # --------------------------------------------------------
-        # CURRENT FRAME TRACKS
-        #
-        # IMPORTANT:
-        # `tracks` is already the current-frame list.
-        #
-        # We don't use:
-        #
-        #     track.track_id
-        #
-        # because our Track schema uses:
-        #
-        #     track.local_id
-        # --------------------------------------------------------
+        logger.info(
+            "ByteTrack configuration: "
+            "activation=%.2f | "
+            "lost_buffer=%d | "
+            "matching=%.2f | "
+            "min_consecutive=%d",
+            track_activation_threshold,
+            lost_track_buffer,
+            minimum_matching_threshold,
+            minimum_consecutive_frames,
+        )
 
-        for track in tracks:
+        # ====================================================
+        # STATISTICS
+        # ====================================================
 
-            track_id = track.local_id
+        frame_number = 0
+        total_detections = 0
 
-            unique_ids.add(track_id)
+        unique_ids = set()
 
-            id_frame_counts[track_id] += 1
+        id_frame_counts: Dict[int, int] = (
+            defaultdict(int)
+        )
 
-            id_classes[track_id] = (
-                track.class_name
-            )
+        id_classes: Dict[int, str] = {}
 
-            active_per_frame[
-                track.class_name
-            ].append(track_id)
+        # ====================================================
+        # FRAME LOOP
+        # ====================================================
 
-        # --------------------------------------------------------
-        # PROGRESS LOGGING
-        # --------------------------------------------------------
+        while True:
 
-        frame_number += 1
+            ok, frame = cap.read()
 
-        if frame_number % 100 == 0:
+            if not ok:
+                break
 
-            active_tracks = len(tracks)
+            # ------------------------------------------------
+            # YOLO
+            # ------------------------------------------------
 
-            logger.info(
-                "Processed %d/%d frames | "
-                "detections=%d | "
-                "active tracks=%d | "
-                "unique ByteTrack IDs=%d",
+            detections = detector.detect_frame(
+                frame,
                 frame_number,
-                total_frames,
-                total_detections,
-                active_tracks,
-                len(unique_ids),
             )
 
-    cap.release()
+            total_detections += len(
+                detections
+            )
 
-    # ============================================================
-    # FINAL SUMMARY
-    # ============================================================
+            # ------------------------------------------------
+            # BYTE TRACK
+            # ------------------------------------------------
 
-    class_id_counts = defaultdict(int)
+            tracks = tracker.update(
+                detections=detections,
+                frame_index=frame_number,
+                frame=frame,
+            )
 
-    for track_id, class_name in id_classes.items():
-        class_id_counts[class_name] += 1
+            # ------------------------------------------------
+            # CURRENT FRAME TRACKS
+            # ------------------------------------------------
 
-    # ============================================================
-    # PRINT SUMMARY
-    # ============================================================
+            for track in tracks:
 
-    print()
-    print("=" * 70)
-    print("BYTE TRACK BASELINE")
-    print("=" * 70)
+                track_id = track.local_id
 
-    print(
-        f"Frames: {frame_number}"
-    )
+                unique_ids.add(
+                    track_id
+                )
 
-    print(
-        f"FPS: {fps:.2f}"
-    )
+                id_frame_counts[
+                    track_id
+                ] += 1
 
-    print(
-        f"Resolution: {video_width}x{video_height}"
-    )
+                id_classes[
+                    track_id
+                ] = track.class_name
 
-    print(
-        f"Total detections: {total_detections}"
-    )
+            # ------------------------------------------------
+            # Advance frame
+            # ------------------------------------------------
 
-    print(
-        f"Unique ByteTrack IDs: {len(unique_ids)}"
-    )
+            frame_number += 1
 
-    print()
+            # ------------------------------------------------
+            # Progress logging
+            # ------------------------------------------------
 
-    # ============================================================
-    # UNIQUE IDS BY CLASS
-    # ============================================================
+            if frame_number % 100 == 0:
 
-    print(
-        "Unique IDs by class:"
-    )
+                logger.info(
+                    "Processed %d/%d frames | "
+                    "detections=%d | "
+                    "active tracks=%d | "
+                    "unique ByteTrack IDs=%d",
+                    frame_number,
+                    total_frames,
+                    total_detections,
+                    len(tracks),
+                    len(unique_ids),
+                )
 
-    for class_name, count in sorted(
-        class_id_counts.items()
-    ):
-        print(
-            f"  {class_name}: {count}"
+        # ====================================================
+        # FINAL SUMMARY
+        # ====================================================
+
+        class_id_counts = defaultdict(
+            int
         )
 
-    print()
-
-    # ============================================================
-    # TRACK LIFETIME STATISTICS
-    # ============================================================
-
-    print(
-        "Track lifetime statistics:"
-    )
-
-    if id_frame_counts:
-
-        lifetimes = list(
-            id_frame_counts.values()
-        )
-
-        print(
-            f"  Shortest: {min(lifetimes)} frames"
-        )
-
-        print(
-            f"  Longest: {max(lifetimes)} frames"
-        )
-
-        print(
-            f"  Average: "
-            f"{sum(lifetimes) / len(lifetimes):.2f} frames"
-        )
-
-        # --------------------------------------------------------
-        # Median
-        # --------------------------------------------------------
-
-        sorted_lifetimes = sorted(
-            lifetimes
-        )
-
-        middle = len(
-            sorted_lifetimes
-        ) // 2
-
-        if len(sorted_lifetimes) % 2 == 0:
-
-            median = (
-                sorted_lifetimes[middle - 1]
-                + sorted_lifetimes[middle]
-            ) / 2
-
-        else:
-            median = sorted_lifetimes[middle]
-
-        print(
-            f"  Median: {median:.0f} frames"
-        )
-
-    else:
-
-        print(
-            "  No tracks created."
-        )
-
-    print()
-
-    # ============================================================
-    # ACTIVE TRACK STATISTICS
-    # ============================================================
-
-    print(
-        "Final active tracks:"
-    )
-
-    final_tracks = tracker.get_current_tracks()
-
-    final_by_class = defaultdict(int)
-
-    for track in final_tracks:
-
-        final_by_class[
-            track.class_name
-        ] += 1
-
-    for class_name, count in sorted(
-        final_by_class.items()
-    ):
-        print(
-            f"  {class_name}: {count}"
-        )
-
-    print()
-
-    # ============================================================
-    # LONGEST TRACKS
-    # ============================================================
-
-    print(
-        "Top 20 longest tracks:"
-    )
-
-    longest_tracks = sorted(
-        id_frame_counts.items(),
-        key=lambda item: item[1],
-        reverse=True,
-    )[:20]
-
-    for track_id, lifetime in longest_tracks:
-
-        class_name = id_classes.get(
+        for (
             track_id,
-            "unknown",
-        )
+            class_name,
+        ) in id_classes.items():
 
-        history = tracker.get_track(
-            track_id
-        )
+            class_id_counts[
+                class_name
+            ] += 1
 
-        first_frame = (
-            history.first_frame
-            if history is not None
-            else None
-        )
+        print()
+        print("=" * 70)
+        print("BYTE TRACK BASELINE")
+        print("=" * 70)
 
-        last_frame = (
-            history.last_frame
-            if history is not None
-            else None
+        print(
+            f"Frames: {frame_number}"
         )
 
         print(
-            f"  ID {track_id:3d} | "
-            f"{class_name:12s} | "
-            f"{lifetime:5d} frames | "
-            f"{first_frame} -> {last_frame}"
+            f"FPS: {fps:.2f}"
         )
 
-    print()
-
-    # ============================================================
-    # TRAJECTORY HISTORY SUMMARY
-    # ============================================================
-
-    print(
-        "Trajectory history:"
-    )
-
-    history = tracker.get_track_history()
-
-    print(
-        f"  Stored tracks: {len(history)}"
-    )
-
-    total_observations = sum(
-        len(track.observations)
-        for track in history.values()
-    )
-
-    print(
-        f"  Stored observations: "
-        f"{total_observations}"
-    )
-
-    print()
-
-    # ============================================================
-    # TRACK QUALITY BREAKDOWN
-    # ============================================================
-
-    print(
-        "Track quality:"
-    )
-
-    if id_frame_counts:
-
-        # 1 second = approximately FPS frames
-        one_second = max(
-            1,
-            int(round(fps)),
+        print(
+            f"Resolution: "
+            f"{video_width}x{video_height}"
         )
 
-        short_tracks = sum(
-            1
-            for lifetime in id_frame_counts.values()
-            if lifetime < one_second
+        print(
+            f"Total detections: "
+            f"{total_detections}"
         )
 
-        medium_tracks = sum(
-            1
-            for lifetime in id_frame_counts.values()
-            if one_second <= lifetime < 5 * one_second
+        print(
+            f"Unique ByteTrack IDs: "
+            f"{len(unique_ids)}"
         )
 
-        long_tracks = sum(
-            1
-            for lifetime in id_frame_counts.values()
-            if lifetime >= 5 * one_second
+        print()
+
+        # ====================================================
+        # CONFIGURATION
+        # ====================================================
+
+        print(
+            "ByteTrack configuration:"
+        )
+
+        print(
+            f"  Activation threshold: "
+            f"{track_activation_threshold:.2f}"
+        )
+
+        print(
+            f"  Lost track buffer: "
+            f"{lost_track_buffer} frames "
+            f"({lost_track_buffer / fps:.2f}s)"
+        )
+
+        print(
+            f"  Matching threshold: "
+            f"{minimum_matching_threshold:.2f}"
+        )
+
+        print(
+            f"  Minimum consecutive frames: "
+            f"{minimum_consecutive_frames}"
+        )
+
+        print()
+
+        # ====================================================
+        # UNIQUE IDS BY CLASS
+        # ====================================================
+
+        print(
+            "Unique IDs by class:"
+        )
+
+        for (
+            class_name,
+            count,
+        ) in sorted(
+            class_id_counts.items()
+        ):
+
+            print(
+                f"  {class_name}: {count}"
+            )
+
+        print()
+
+        # ====================================================
+        # TRACKING QUALITY
+        # ====================================================
+
+        tracking_stats = (
+            tracker.get_tracking_statistics()
+        )
+
+        print(
+            "Tracking quality:"
+        )
+
+        print(
+            f"  Average lifetime: "
+            f"{tracking_stats['average_track_lifetime_frames']:.2f} frames "
+            f"({tracking_stats['average_track_lifetime_seconds']:.2f}s)"
+        )
+
+        print(
+            f"  Median lifetime: "
+            f"{tracking_stats['median_track_lifetime_frames']:.0f} frames"
         )
 
         print(
             f"  < 1 second: "
-            f"{short_tracks}"
+            f"{tracking_stats['short_tracks_under_1_second']}"
         )
 
         print(
             f"  1-5 seconds: "
-            f"{medium_tracks}"
+            f"{tracking_stats['medium_tracks_1_to_5_seconds']}"
         )
 
         print(
             f"  >= 5 seconds: "
-            f"{long_tracks}"
+            f"{tracking_stats['long_tracks_over_5_seconds']}"
         )
 
-    print()
+        print()
 
-    print(
-        "=" * 70
-    )
+        # ====================================================
+        # FINAL ACTIVE TRACKS
+        # ====================================================
 
-    print(
-        "BYTE TRACK BASELINE COMPLETE"
-    )
+        print(
+            "Final active tracks:"
+        )
 
-    print(
-        "=" * 70
-    )
+        final_tracks = (
+            tracker.get_current_tracks()
+        )
 
-    # ============================================================
-    # RETURN TRACKER
-    # ============================================================
+        final_by_class = defaultdict(
+            int
+        )
 
-    return tracker
+        for track in final_tracks:
+
+            final_by_class[
+                track.class_name
+            ] += 1
+
+        if final_by_class:
+
+            for (
+                class_name,
+                count,
+            ) in sorted(
+                final_by_class.items()
+            ):
+
+                print(
+                    f"  {class_name}: {count}"
+                )
+
+        else:
+
+            print(
+                "  None"
+            )
+
+        print()
+
+        # ====================================================
+        # LONGEST TRACKS
+        # ====================================================
+
+        print(
+            "Top 20 longest tracks:"
+        )
+
+        longest_tracks = sorted(
+            id_frame_counts.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:20]
+
+        if longest_tracks:
+
+            for (
+                track_id,
+                lifetime,
+            ) in longest_tracks:
+
+                class_name = (
+                    id_classes.get(
+                        track_id,
+                        "unknown",
+                    )
+                )
+
+                history = (
+                    tracker.get_track(
+                        track_id
+                    )
+                )
+
+                first_frame = (
+                    history.first_frame
+                    if history is not None
+                    else None
+                )
+
+                last_frame = (
+                    history.last_frame
+                    if history is not None
+                    else None
+                )
+
+                print(
+                    f"  ID {track_id:3d} | "
+                    f"{class_name:12s} | "
+                    f"{lifetime:5d} frames | "
+                    f"{first_frame} -> "
+                    f"{last_frame}"
+                )
+
+        else:
+
+            print(
+                "  None"
+            )
+
+        print()
+
+        # ====================================================
+        # TRAJECTORY HISTORY
+        # ====================================================
+
+        history = (
+            tracker.get_track_history()
+        )
+
+        total_observations = sum(
+            len(track.observations)
+            for track in history.values()
+        )
+
+        print(
+            "Trajectory history:"
+        )
+
+        print(
+            f"  Stored tracks: "
+            f"{len(history)}"
+        )
+
+        print(
+            f"  Stored observations: "
+            f"{total_observations}"
+        )
+
+        print()
+
+        # ====================================================
+        # APPEARANCE STATISTICS
+        # ====================================================
+
+        print(
+            "Appearance statistics:"
+        )
+
+        appearance_stats = (
+            tracker.get_appearance_statistics()
+        )
+
+        print(
+            f"  Model: "
+            f"{appearance_stats['model']}"
+        )
+
+        print(
+            f"  Device: "
+            f"{appearance_stats['device']}"
+        )
+
+        print(
+            f"  Appearance interval: "
+            f"{appearance_stats['appearance_interval']} frames"
+        )
+
+        print(
+            f"  Extraction attempts: "
+            f"{appearance_stats['extraction_attempts']}"
+        )
+
+        print(
+            f"  OSNet extractions performed: "
+            f"{appearance_stats['osnet_extractions_performed']}"
+        )
+
+        print(
+            f"  Embeddings extracted: "
+            f"{appearance_stats['embeddings_extracted']}"
+        )
+
+        print(
+            f"  Embeddings propagated: "
+            f"{appearance_stats['embeddings_propagated']}"
+        )
+
+        print(
+            f"  Extraction failures: "
+            f"{appearance_stats['extraction_failures']}"
+        )
+
+        print(
+            f"  Tracks without embedding: "
+            f"{appearance_stats['tracks_without_embedding']}"
+        )
+
+        print(
+            f"  Non-person observations skipped: "
+            f"{appearance_stats['skipped_non_person']}"
+        )
+
+        print(
+            f"  Extraction success rate: "
+            f"{appearance_stats['success_rate']:.2%}"
+        )
+
+        print()
+
+        # ====================================================
+        # APPEARANCE CACHE
+        # ====================================================
+
+        cached_embeddings = len(
+            tracker.last_appearance_embeddings
+        )
+
+        print(
+            "Appearance cache:"
+        )
+
+        print(
+            f"  Tracks with cached embeddings: "
+            f"{cached_embeddings}"
+        )
+
+        print()
+
+        print("=" * 70)
+        print("BYTE TRACK BASELINE COMPLETE")
+        print("=" * 70)
+
+        logger.info(
+            "Tracking completed successfully: "
+            "frames=%d, detections=%d, "
+            "unique_ids=%d, stored_tracks=%d",
+            frame_number,
+            total_detections,
+            len(unique_ids),
+            len(history),
+        )
+
+        return tracker
+
+    finally:
+
+        cap.release()
+

@@ -116,7 +116,13 @@ class AppearanceMatcher:
         self.accepted_matches = 0
         self.rejected_matches = 0
 
+        # Number of comparisons where one or both embeddings
+        # were explicitly missing (None).
         self.missing_embeddings = 0
+
+        # Number of comparisons where embeddings existed but
+        # were malformed, incompatible, non-finite, too small,
+        # zero-norm, etc.
         self.invalid_embeddings = 0
 
         self.similarity_scores: list[float] = []
@@ -145,10 +151,19 @@ class AppearanceMatcher:
             Float in [-1, 1], normally [0, 1] for OSNet
             embeddings.
 
-            None if either embedding is invalid.
+            None if either embedding is missing or invalid.
         """
 
         self.comparisons += 1
+
+        # -----------------------------------------------------
+        # Explicitly distinguish missing embeddings from
+        # malformed embeddings.
+        # -----------------------------------------------------
+
+        if embedding_a is None or embedding_b is None:
+            self.missing_embeddings += 1
+            return None
 
         vector_a = self._prepare_embedding(
             embedding_a
@@ -159,8 +174,13 @@ class AppearanceMatcher:
         )
 
         if vector_a is None or vector_b is None:
-            self.missing_embeddings += 1
+            self.invalid_embeddings += 1
+
             return None
+
+        # -----------------------------------------------------
+        # Shape safety
+        # -----------------------------------------------------
 
         if vector_a.shape != vector_b.shape:
             self.invalid_embeddings += 1
@@ -173,19 +193,39 @@ class AppearanceMatcher:
 
             return None
 
-        norm_a = np.linalg.norm(vector_a)
-        norm_b = np.linalg.norm(vector_b)
+        # -----------------------------------------------------
+        # Norm safety
+        #
+        # _prepare_embedding() already normalizes vectors,
+        # but retain this defensive check.
+        # -----------------------------------------------------
+
+        norm_a = np.linalg.norm(
+            vector_a
+        )
+
+        norm_b = np.linalg.norm(
+            vector_b
+        )
 
         if norm_a <= 1e-12 or norm_b <= 1e-12:
             self.invalid_embeddings += 1
+
             return None
+
+        # -----------------------------------------------------
+        # Cosine similarity
+        # -----------------------------------------------------
 
         similarity = float(
             np.dot(vector_a, vector_b)
             / (norm_a * norm_b)
         )
 
-        # Numerical safety.
+        # -----------------------------------------------------
+        # Numerical safety
+        # -----------------------------------------------------
+
         similarity = float(
             np.clip(
                 similarity,
@@ -195,6 +235,7 @@ class AppearanceMatcher:
         )
 
         self.valid_comparisons += 1
+
         self.similarity_scores.append(
             similarity
         )
@@ -221,9 +262,11 @@ class AppearanceMatcher:
 
         if similarity >= self.minimum_similarity:
             self.accepted_matches += 1
+
             return True
 
         self.rejected_matches += 1
+
         return False
 
     def is_strong_match(
@@ -392,7 +435,10 @@ class AppearanceMatcher:
     def find_best_match(
         self,
         query_embedding: Optional[Sequence[float]],
-        candidate_embeddings: dict[str, Sequence[float]],
+        candidate_embeddings: dict[
+            str,
+            Sequence[float],
+        ],
         minimum_similarity: Optional[float] = None,
     ) -> Optional[tuple[str, float]]:
         """
@@ -470,6 +516,9 @@ class AppearanceMatcher:
     ) -> Optional[np.ndarray]:
         """
         Validate and normalize an embedding.
+
+        Returns:
+            Normalized float32 vector or None if invalid.
         """
 
         if embedding is None:
@@ -480,11 +529,20 @@ class AppearanceMatcher:
                 embedding,
                 dtype=np.float32,
             )
+
         except (TypeError, ValueError):
             return None
 
+        # -----------------------------------------------------
+        # Must be a single vector.
+        # -----------------------------------------------------
+
         if vector.ndim != 1:
             return None
+
+        # -----------------------------------------------------
+        # Minimum dimension safety.
+        # -----------------------------------------------------
 
         if (
             len(vector)
@@ -492,10 +550,18 @@ class AppearanceMatcher:
         ):
             return None
 
+        # -----------------------------------------------------
+        # Reject NaN / Inf.
+        # -----------------------------------------------------
+
         if not np.all(
             np.isfinite(vector)
         ):
             return None
+
+        # -----------------------------------------------------
+        # Reject zero / near-zero vectors.
+        # -----------------------------------------------------
 
         norm = np.linalg.norm(
             vector
@@ -503,6 +569,10 @@ class AppearanceMatcher:
 
         if norm <= 1e-12:
             return None
+
+        # -----------------------------------------------------
+        # L2 normalization.
+        # -----------------------------------------------------
 
         vector = vector / norm
 
@@ -514,7 +584,9 @@ class AppearanceMatcher:
     # DIAGNOSTICS
     # =========================================================
 
-    def get_statistics(self) -> dict:
+    def get_statistics(
+        self,
+    ) -> dict:
         """
         Return appearance matching statistics.
         """
@@ -547,7 +619,9 @@ class AppearanceMatcher:
             "strong_similarity": (
                 self.strong_similarity
             ),
-            "comparisons": self.comparisons,
+            "comparisons": (
+                self.comparisons
+            ),
             "valid_comparisons": (
                 self.valid_comparisons
             ),
@@ -570,7 +644,9 @@ class AppearanceMatcher:
             },
         }
 
-    def reset_statistics(self) -> None:
+    def reset_statistics(
+        self,
+    ) -> None:
         """
         Reset matcher diagnostics without changing
         configuration.
@@ -578,8 +654,11 @@ class AppearanceMatcher:
 
         self.comparisons = 0
         self.valid_comparisons = 0
+
         self.accepted_matches = 0
         self.rejected_matches = 0
+
         self.missing_embeddings = 0
         self.invalid_embeddings = 0
+
         self.similarity_scores.clear()

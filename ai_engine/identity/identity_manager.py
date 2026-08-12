@@ -1,5 +1,6 @@
+
 """
-Global Identity Manager V3.
+Global Identity Manager V5.
 
 Converts short-term ByteTrack fragments into persistent
 global identities.
@@ -25,6 +26,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from typing import Any, Dict, Iterable, Optional
+from unittest import result
 
 from ai_engine.identity.identity_matcher import (
     IdentityMatcher,
@@ -35,6 +37,7 @@ from ai_engine.identity.identity_matching_evaluation import (
     IdentityMatchingEvaluation,
 )
 
+from ai_engine.schemas import track
 from ai_engine.schemas.track import (
     Identity,
     MatchTracks,
@@ -57,6 +60,10 @@ class AppearanceDiagnostics:
 
     A candidate rejected before appearance evaluation is NOT
     counted as a missing embedding.
+
+    A candidate requiring appearance comparison is counted in
+    candidates_requiring_appearance before the comparison result
+    is recorded.
     """
 
     def __init__(
@@ -80,26 +87,32 @@ class AppearanceDiagnostics:
         self.candidates_requiring_appearance = 0
 
         self.comparisons = 0
-
         self.valid_comparisons = 0
-
         self.missing_embeddings = 0
 
         self.accepted_matches = 0
-
         self.rejected_matches = 0
 
         self.strong_matches = 0
-
         self.weak_matches = 0
 
         self.similarities: list[float] = []
-
         self.accepted_similarities: list[float] = []
-
         self.rejected_similarities: list[float] = []
 
         self.rejection_reasons = defaultdict(int)
+
+    def record_candidate(self) -> None:
+        """
+        Record that the matcher reached the appearance stage.
+
+        This is intentionally separate from record() because
+        candidates_requiring_appearance describes candidates that
+        reached appearance evaluation, regardless of whether the
+        embedding comparison succeeds.
+        """
+
+        self.candidates_requiring_appearance += 1
 
     def record(
         self,
@@ -110,12 +123,19 @@ class AppearanceDiagnostics:
 
         self.comparisons += 1
 
-        # Appearance unavailable.
+        # ----------------------------------------------------
+        # Appearance unavailable
+        # ----------------------------------------------------
+
         if similarity < 0.0:
 
             self.missing_embeddings += 1
 
             return
+
+        # ----------------------------------------------------
+        # Valid appearance comparison
+        # ----------------------------------------------------
 
         self.valid_comparisons += 1
 
@@ -125,6 +145,10 @@ class AppearanceDiagnostics:
             similarity
         )
 
+        # ----------------------------------------------------
+        # Strength classification
+        # ----------------------------------------------------
+
         if similarity >= self.strong_similarity:
 
             self.strong_matches += 1
@@ -132,6 +156,10 @@ class AppearanceDiagnostics:
         elif similarity >= self.minimum_similarity:
 
             self.weak_matches += 1
+
+        # ----------------------------------------------------
+        # Accepted / rejected
+        # ----------------------------------------------------
 
         if accepted:
 
@@ -254,7 +282,11 @@ class AppearanceDiagnostics:
 class GlobalIdentityManager:
     """
     Merge ByteTrack fragments into persistent identities.
+
+    Current identity matching pipeline: V5.
     """
+
+    VERSION = "v5.1"
 
     DEFAULT_CLASSES = {
         "player",
@@ -304,9 +336,7 @@ class GlobalIdentityManager:
         # ----------------------------------------------------
 
         self.total_tracks_processed = 0
-
         self.total_tracks_merged = 0
-
         self.total_new_identities = 0
 
         # ----------------------------------------------------
@@ -420,10 +450,8 @@ class GlobalIdentityManager:
 
             else:
 
-                identity = (
-                    self._create_identity(
-                        track
-                    )
+                self._create_identity(
+                    track
                 )
 
                 self.total_new_identities += 1
@@ -442,26 +470,23 @@ class GlobalIdentityManager:
         self,
         tracks: Iterable[Track],
         fps: float = 25.0,
-        frame_width: Optional[int] = None,
-        frame_height: Optional[int] = None,
-    ) -> MatchTracks:
+    ) -> list[MatchTracks]:
 
-        tracks = list(tracks)
+        match_tracks = []
 
-        identities = self.build_identities(
-            tracks
-        )
+        for track in tracks:
 
-        return MatchTracks(
-            tracks={
-                track.local_id: track
-                for track in tracks
-            },
-            identities=identities,
-            fps=float(fps),
-            frame_width=frame_width,
-            frame_height=frame_height,
-        )
+            if not self._is_valid_track(track):
+                continue
+
+            match_tracks.append(
+                MatchTracks(
+                    track=track,
+                    fps=fps,
+                )
+            )
+
+        return match_tracks
 
     # ========================================================
     # RESET
@@ -469,19 +494,19 @@ class GlobalIdentityManager:
 
     def reset(self) -> None:
 
-        self.identities.clear()
+        self.identities = {}
 
         self._next_identity_number = 1
 
         self.total_tracks_processed = 0
-
         self.total_tracks_merged = 0
-
         self.total_new_identities = 0
 
-        self.match_diagnostics.clear()
+        self.match_diagnostics = []
 
-        self.rejection_counters.clear()
+        self.rejection_counters = defaultdict(
+            int
+        )
 
         self.appearance_diagnostics.reset()
 
@@ -490,7 +515,7 @@ class GlobalIdentityManager:
         )
 
     # ========================================================
-    # FIND BEST IDENTITY
+    # BEST IDENTITY
     # ========================================================
 
     def _find_best_identity(
@@ -501,20 +526,15 @@ class GlobalIdentityManager:
         Optional[MatchResult],
     ]:
 
-        best_identity: Optional[
-            Identity
-        ] = None
-
-        best_result: Optional[
-            MatchResult
-        ] = None
+        best_identity = None
+        best_result = None
 
         for identity in self.identities.values():
 
-            if not identity.active:
-                continue
-
-            if identity.class_name != track.class_name:
+            if (
+                identity.class_name
+                != track.class_name
+            ):
                 continue
 
             result = self.matcher.match(
@@ -522,72 +542,26 @@ class GlobalIdentityManager:
                 identity,
             )
 
-            accepted = (
-                result.matched
-                and result.score
-                >= self.minimum_match_score
-            )
-
-            reason = (
-                "accepted"
-                if accepted
-                else result.reason
-            )
-
-            self.rejection_counters[
-                result.reason
-            ] += 1
-
-            # ------------------------------------------------
-            # Appearance is only meaningful if matcher
-            # reached the appearance stage.
-            # ------------------------------------------------
-
-            if result.reason not in {
-                "track_overlaps_identity",
-                "temporal_gap_too_large",
-                "spatial_distance_too_large",
-                "motion_difference_too_large",
-                "class_mismatch",
-                "track_has_no_observations",
-                "identity_has_no_observations",
-                "spatial_information_unavailable",
-            }:
-
-                self.appearance_diagnostics.record(
-                    similarity=(
-                        result.appearance_similarity
-                    ),
-                    accepted=accepted,
-                    reason=reason,
-                )
-
-                self.appearance_diagnostics.candidates_requiring_appearance += 1
-
-            # ------------------------------------------------
-            # Diagnostic record
-            # ------------------------------------------------
-
-            self._record_diagnostic(
+            self._record_match_diagnostic(
                 track,
                 identity,
                 result,
-                accepted,
-                reason,
             )
 
-            if not accepted:
-                continue
-
             if (
-                best_result is None
-                or result.score
-                > best_result.score
+                result.matched
+                and result.score
+                >= self.minimum_match_score
             ):
 
-                best_identity = identity
+                if (
+                    best_result is None
+                    or result.score
+                    > best_result.score
+                ):
 
-                best_result = result
+                    best_identity = identity
+                    best_result = result
 
         return (
             best_identity,
@@ -598,204 +572,244 @@ class GlobalIdentityManager:
     # DIAGNOSTICS
     # ========================================================
 
-    def _record_diagnostic(
-        self,
-        track: Track,
-        identity: Identity,
-        result: MatchResult,
-        accepted: bool,
-        reason: str,
+    def _record_match_diagnostic(
+    self,
+    track: Track,
+    identity: Identity,
+    result: MatchResult,
     ) -> None:
 
-        self.match_diagnostics.append(
-            {
-                "track_id": (
-                    track.local_id
-                ),
-
-                "identity_id": (
-                    identity.identity_id
-                ),
-
-                "identity_source_track_ids": list(
-                    identity.source_track_ids
-                ),
-
-                "identity_first_frame": (
-                    identity.first_frame
-                ),
-
-                "identity_last_frame": (
-                    identity.last_frame
-                ),
-
-                "matched": bool(
-                    result.matched
-                ),
-
-                "score": float(
-                    result.score
-                ),
-
-                "temporal_gap": int(
-                    result.temporal_gap
-                ),
-
-                "spatial_distance": float(
-                    result.spatial_distance
-                ),
-
-                "motion_difference": float(
-                    result.motion_difference
-                ),
-
-                "appearance_similarity": float(
-                    result.appearance_similarity
-                ),
-
-                "team_match": (
-                    result.team_match
-                ),
-
-                "jersey_match": (
-                    result.jersey_match
-                ),
-
-                "accepted": bool(
-                    accepted
-                ),
-
-                "reason": reason,
-            }
+        appearance_similarity = getattr(
+            result,
+            "appearance_similarity",
+            -1.0,
         )
 
-    def get_match_diagnostics(self) -> dict:
+    # ----------------------------------------------------
+    # Detect whether appearance was actually evaluated.
+    #
+    # A non-negative similarity means the matcher reached
+    # the appearance stage.
+    # ----------------------------------------------------
 
-        diagnostics = (
+        if appearance_similarity >= 0.0:
+
+            self.appearance_diagnostics.record_candidate()
+
+    # ----------------------------------------------------
+    # Store the COMPLETE V5.1 MatchResult.
+    #
+    # This is important for low-score inspection.
+    # Previously temporal_gap, spatial_distance,
+    # motion_difference, and appearance_evaluated were
+    # discarded here.
+    # ----------------------------------------------------
+
+        diagnostic = {
+            "track_id": track.local_id,
+
+            "identity_id": (
+                identity.identity_id
+            ),
+
+            "matched": (
+                result.matched
+            ),
+
+            "score": (
+                result.score
+            ),
+
+            "temporal_gap": (
+                result.temporal_gap
+            ),
+
+            "spatial_distance": (
+                result.spatial_distance
+            ),
+
+            "motion_difference": (
+                result.motion_difference
+            ),
+
+            "appearance_similarity": (
+                result.appearance_similarity
+            ),
+
+            "appearance_evaluated": (
+                result.appearance_evaluated
+            ),
+
+            "team_match": (
+                result.team_match
+            ),
+
+            "jersey_match": (
+                result.jersey_match
+            ),
+
+            "reason": (
+                result.reason
+            ),
+        }
+
+        self.match_diagnostics.append(
+            diagnostic
+        )
+
+        reason = diagnostic["reason"]
+
+        if not result.matched:
+
+            if reason:
+
+                self.rejection_counters[
+                    reason
+                ] += 1
+
+    # ----------------------------------------------------
+    # Record appearance result.
+    # ----------------------------------------------------
+
+        if appearance_similarity >= 0.0:
+
+            self.appearance_diagnostics.record(
+                similarity=(
+                    appearance_similarity
+                ),
+                accepted=result.matched,
+                reason=reason,
+            )
+
+
+
+  # ========================================================
+    # MATCH DIAGNOSTICS SUMMARY
+    # ========================================================
+
+    def get_match_diagnostics(
+        self,
+    ) -> dict[str, Any]:
+
+        candidates_checked = len(
             self.match_diagnostics
         )
 
         accepted = [
             item
-            for item in diagnostics
-            if item["accepted"]
+            for item in self.match_diagnostics
+            if item["matched"]
         ]
 
         rejected = [
             item
-            for item in diagnostics
-            if not item["accepted"]
+            for item in self.match_diagnostics
+            if not item["matched"]
         ]
-
-        rejection_reasons: dict[
-            str,
-            int,
-        ] = {}
-
-        for item in rejected:
-
-            reason = item["reason"]
-
-            rejection_reasons[reason] = (
-                rejection_reasons.get(
-                    reason,
-                    0,
-                )
-                + 1
-            )
 
         accepted_scores = [
             item["score"]
             for item in accepted
+            if item["score"] is not None
         ]
+
+        accepted_appearance = [
+            item["appearance_similarity"]
+            for item in accepted
+            if item["appearance_similarity"] >= 0.0
+        ]
+
+        team_matches = sum(
+            1
+            for item in accepted
+            if item["team_match"]
+        )
+
+        jersey_matches = sum(
+            1
+            for item in accepted
+            if item["jersey_match"]
+        )
 
         if accepted_scores:
 
-            score_min = min(
-                accepted_scores
-            )
-
-            score_max = max(
-                accepted_scores
-            )
-
-            score_avg = (
-                sum(accepted_scores)
-                / len(accepted_scores)
-            )
+            accepted_score = {
+                "min": min(
+                    accepted_scores
+                ),
+                "max": max(
+                    accepted_scores
+                ),
+                "avg": (
+                    sum(accepted_scores)
+                    / len(accepted_scores)
+                ),
+            }
 
         else:
 
-            score_min = 0.0
+            accepted_score = {
+                "min": 0.0,
+                "max": 0.0,
+                "avg": 0.0,
+            }
 
-            score_max = 0.0
+        if accepted_appearance:
 
-            score_avg = 0.0
+            appearance = {
+                "matches_with_embeddings": (
+                    len(
+                        accepted_appearance
+                    )
+                ),
+                "average_similarity": (
+                    sum(
+                        accepted_appearance
+                    )
+                    / len(
+                        accepted_appearance
+                    )
+                ),
+            }
 
-        appearance_values = [
-            item[
-                "appearance_similarity"
-            ]
-            for item in accepted
-            if item[
-                "appearance_similarity"
-            ] >= 0.0
-        ]
+        else:
 
-        appearance_avg = (
-            sum(appearance_values)
-            / len(appearance_values)
-            if appearance_values
-            else 0.0
-        )
+            appearance = {
+                "matches_with_embeddings": 0,
+                "average_similarity": 0.0,
+            }
 
         return {
-            "candidates_checked": len(
-                diagnostics
+            "candidates_checked": (
+                candidates_checked
             ),
 
-            "accepted_matches": len(
-                accepted
+            "accepted_matches": (
+                len(accepted)
             ),
 
-            "rejected_matches": len(
-                rejected
+            "rejected_matches": (
+                len(rejected)
             ),
 
-            "rejection_reasons": (
-                rejection_reasons
+            "rejection_reasons": dict(
+                self.rejection_counters
             ),
 
-            "accepted_score": {
-                "min": score_min,
-                "max": score_max,
-                "avg": score_avg,
-            },
-
-            "appearance": {
-                "matches_with_embeddings": len(
-                    appearance_values
-                ),
-
-                "average_similarity": (
-                    appearance_avg
-                ),
-            },
-
-            "team_matches": sum(
-                1
-                for item in accepted
-                if item[
-                    "team_match"
-                ] is True
+            "accepted_score": (
+                accepted_score
             ),
 
-            "jersey_matches": sum(
-                1
-                for item in accepted
-                if item[
-                    "jersey_match"
-                ] is True
+            "appearance": (
+                appearance
+            ),
+
+            "team_matches": (
+                team_matches
+            ),
+
+            "jersey_matches": (
+                jersey_matches
             ),
         }
 
@@ -862,6 +876,11 @@ class GlobalIdentityManager:
         )
 
         logger.info(
+            "Weak matches: %d",
+            summary["weak_matches"],
+        )
+
+        logger.info(
             "Similarity: %s",
             summary["similarity"],
         )
@@ -882,44 +901,329 @@ class GlobalIdentityManager:
         )
 
     # ========================================================
-    # EVALUATION
+    # V5 EVALUATION
     # ========================================================
+
+    def _build_v5_evaluation_summary(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Build the canonical V5 appearance evaluation.
+
+        This deliberately uses AppearanceDiagnostics as the
+        source of truth.
+
+        This prevents the evaluation layer from incorrectly
+        reporting:
+
+            appearance_accepted = 0
+
+        when appearance diagnostics already show accepted
+        appearance matches.
+        """
+
+        appearance = (
+            self.appearance_diagnostics
+            .get_summary()
+        )
+
+        candidates = len(
+            self.match_diagnostics
+        )
+
+        appearance_comparisons = (
+            appearance["comparisons"]
+        )
+
+        appearance_accepted = (
+            appearance["accepted_matches"]
+        )
+
+        appearance_rejected = (
+            appearance["rejected_matches"]
+        )
+
+        strong_matches = (
+            appearance["strong_matches"]
+        )
+
+        average_similarity = (
+            appearance["similarity"]["avg"]
+        )
+
+        accepted_average_similarity = (
+            appearance[
+                "accepted_similarity"
+            ]["avg"]
+        )
+
+        rejected_average_similarity = (
+            appearance[
+                "rejected_similarity"
+            ]["avg"]
+        )
+
+        # ----------------------------------------------------
+        # Risk assessment
+        # ----------------------------------------------------
+
+        risky_matches = 0
+
+        if appearance_accepted > 0:
+
+            for similarity in (
+                self.appearance_diagnostics
+                .accepted_similarities
+            ):
+
+                # Accepted matches below the normal
+                # appearance threshold are considered risky.
+                if (
+                    similarity
+                    < self.appearance_diagnostics
+                    .minimum_similarity
+                ):
+                    risky_matches += 1
+
+        # ----------------------------------------------------
+        # Recommendation
+        # ----------------------------------------------------
+
+        if appearance_accepted == 0:
+
+            if appearance_comparisons == 0:
+
+                recommendation = (
+                    "NO APPEARANCE MATCHES: "
+                    "no valid appearance comparisons "
+                    "were recorded."
+                )
+
+            else:
+
+                recommendation = (
+                    "WEAK: no accepted appearance "
+                    "matches were recorded."
+                )
+
+        elif risky_matches > 0:
+
+            recommendation = (
+                "REVIEW: a significant portion of "
+                "accepted appearance matches are "
+                "potentially risky."
+            )
+
+        elif (
+            accepted_average_similarity
+            >= self.appearance_diagnostics
+            .strong_similarity
+        ):
+
+            recommendation = (
+                "EXCELLENT: appearance matching "
+                "quality is strong; keep the current "
+                "threshold for further validation."
+            )
+
+        elif (
+            accepted_average_similarity
+            >= self.appearance_diagnostics
+            .minimum_similarity
+        ):
+
+            recommendation = (
+                "GOOD: accepted appearance matches "
+                "are above the minimum threshold; "
+                "continue validation."
+            )
+
+        else:
+
+            recommendation = (
+                "WEAK: accepted appearance "
+                "similarity is low; review the "
+                "appearance threshold and embedding "
+                "quality."
+            )
+
+        return {
+            "candidates": candidates,
+
+            "appearance_comparisons": (
+                appearance_comparisons
+            ),
+
+            "appearance_accepted": (
+                appearance_accepted
+            ),
+
+            "appearance_rejected": (
+                appearance_rejected
+            ),
+
+            "strong_matches": (
+                strong_matches
+            ),
+
+            "average_similarity": (
+                average_similarity
+            ),
+
+            "accepted_average_similarity": (
+                accepted_average_similarity
+            ),
+
+            "rejected_average_similarity": (
+                rejected_average_similarity
+            ),
+
+            "risky_matches": (
+                risky_matches
+            ),
+
+            "recommendation": (
+                recommendation
+            ),
+        }
 
     def get_identity_matching_evaluation(
         self,
     ) -> dict[str, Any]:
 
+        # Keep the underlying evaluator synchronized.
         self.identity_matching_evaluation.diagnostics = list(
             self.match_diagnostics
         )
 
-        return (
+        report = (
             self.identity_matching_evaluation
             .get_report()
         )
+
+        # ----------------------------------------------------
+        # Override the appearance section with the canonical
+        # V5 diagnostics.
+        # ----------------------------------------------------
+
+        v5_summary = (
+            self._build_v5_evaluation_summary()
+        )
+
+        report.update(
+            v5_summary
+        )
+
+        return report
 
     def get_identity_matching_evaluation_summary(
         self,
     ) -> dict[str, Any]:
 
+        # Keep evaluator state synchronized.
         self.identity_matching_evaluation.diagnostics = list(
             self.match_diagnostics
         )
 
-        return (
+        summary = (
             self.identity_matching_evaluation
             .get_summary()
         )
+
+        # ----------------------------------------------------
+        # Canonical V5 appearance evaluation.
+        # ----------------------------------------------------
+
+        v5_summary = (
+            self._build_v5_evaluation_summary()
+        )
+
+        summary.update(
+            v5_summary
+        )
+
+        return summary
 
     def log_identity_matching_evaluation(
         self,
     ) -> None:
 
-        self.identity_matching_evaluation.diagnostics = list(
-            self.match_diagnostics
+        evaluation = (
+            self.get_identity_matching_evaluation()
         )
 
-        self.identity_matching_evaluation.log_report()
+        logger.info(
+            "IDENTITY MATCHING %s EVALUATION",
+            self.VERSION.upper(),
+        )
+
+        logger.info(
+            "Candidates: %d",
+            evaluation["candidates"],
+        )
+
+        logger.info(
+            "Appearance comparisons: %d",
+            evaluation[
+                "appearance_comparisons"
+            ],
+        )
+
+        logger.info(
+            "Appearance accepted: %d",
+            evaluation[
+                "appearance_accepted"
+            ],
+        )
+
+        logger.info(
+            "Appearance rejected: %d",
+            evaluation[
+                "appearance_rejected"
+            ],
+        )
+
+        logger.info(
+            "Strong matches: %d",
+            evaluation[
+                "strong_matches"
+            ],
+        )
+
+        logger.info(
+            "Average appearance similarity: %.4f",
+            evaluation[
+                "average_similarity"
+            ],
+        )
+
+        logger.info(
+            "Accepted appearance similarity: %.4f",
+            evaluation[
+                "accepted_average_similarity"
+            ],
+        )
+
+        logger.info(
+            "Rejected appearance similarity: %.4f",
+            evaluation[
+                "rejected_average_similarity"
+            ],
+        )
+
+        logger.info(
+            "Risky matches: %d",
+            evaluation[
+                "risky_matches"
+            ],
+        )
+
+        logger.info(
+            "Recommendation: %s",
+            evaluation[
+                "recommendation"
+            ],
+        )
 
     # ========================================================
     # GENERAL LOGGING
@@ -934,7 +1238,8 @@ class GlobalIdentityManager:
         )
 
         logger.info(
-            "GLOBAL IDENTITY V3 DIAGNOSTICS"
+            "GLOBAL IDENTITY %s DIAGNOSTICS",
+            self.VERSION.upper(),
         )
 
         logger.info(
@@ -1209,7 +1514,21 @@ class GlobalIdentityManager:
         )
 
         return {
-            "version": "v3",
+            # ------------------------------------------------
+            # V5 VERSION
+            # ------------------------------------------------
+
+            "version": self.VERSION,
+
+            "matcher_version": getattr(
+                self.matcher,
+                "VERSION",
+                self.VERSION,
+            ),
+
+            # ------------------------------------------------
+            # Track statistics
+            # ------------------------------------------------
 
             "tracks_processed": (
                 self.total_tracks_processed
@@ -1230,6 +1549,10 @@ class GlobalIdentityManager:
             "identities_by_class": (
                 by_class
             ),
+
+            # ------------------------------------------------
+            # Match statistics
+            # ------------------------------------------------
 
             "candidates_checked": (
                 diagnostics[
@@ -1267,14 +1590,26 @@ class GlobalIdentityManager:
                 ]
             ),
 
+            # ------------------------------------------------
+            # Appearance diagnostics
+            # ------------------------------------------------
+
             "appearance_diagnostics": (
                 self.appearance_diagnostics
                 .get_summary()
             ),
 
+            # ------------------------------------------------
+            # V5 evaluation
+            # ------------------------------------------------
+
             "identity_matching_evaluation": (
                 evaluation_summary
             ),
+
+            # ------------------------------------------------
+            # Other matching signals
+            # ------------------------------------------------
 
             "team_matches": (
                 diagnostics[
@@ -1294,3 +1629,4 @@ class GlobalIdentityManager:
     ) -> dict:
 
         return self.get_statistics()
+

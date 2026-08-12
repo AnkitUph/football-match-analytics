@@ -1,32 +1,35 @@
-
 """
-Global Identity Matcher V4.
+Global Identity Matcher V5.1.
 
 Compares a ByteTrack track fragment against an existing
 global Identity.
 
-Signals:
+V5.1 goals
+----------
+1. Hard class compatibility.
+2. Hard temporal continuity gate.
+3. Hard spatial continuity gate.
+4. Motion consistency gate.
+5. Appearance evaluated only after geometry passes.
+6. Multi-embedding OSNet appearance matching.
+7. Tiered appearance acceptance.
+8. Weak appearance cannot rescue weak geometry.
+9. Strong appearance may relax geometry slightly.
+10. Long temporal gaps require stronger evidence.
+11. Team and jersey evidence remain optional.
+12. Matcher never mutates Track or Identity.
+13. Explicit diagnostic reason codes.
+14. Explicit appearance_evaluated flag.
 
-1. Class compatibility
-2. Temporal continuity
-3. Spatial continuity
-4. Motion similarity
-5. Appearance similarity
-6. Team consistency
-7. Jersey-number consistency
+Appearance result
+-----------------
+appearance_similarity:
+    [0, 1] -> valid comparison
+    -1.0    -> appearance unavailable
 
-V4 improvements:
-
-- Strong temporal/spatial/motion gating.
-- Multi-embedding OSNet appearance matching.
-- More conservative appearance acceptance.
-- Strong appearance can provide additional confidence.
-- Weak appearance requires stronger geometric evidence.
-- Explicit team/jersey contradictions are rejected.
-- Missing team/jersey evidence is neutral.
-- Appearance is evaluated only after geometric gating.
-- Missing appearance is different from appearance mismatch.
-- Matcher NEVER mutates Track or Identity.
+appearance_evaluated:
+    True  -> matcher reached appearance stage
+    False -> matcher rejected before appearance stage
 """
 
 from __future__ import annotations
@@ -42,113 +45,114 @@ from ai_engine.schemas.track import Identity, Track
 # MATCH RESULT
 # ============================================================
 
-
 @dataclass
 class MatchResult:
-    """
-    Result of comparing a Track against an Identity.
-    """
-
     matched: bool
-
     score: float
 
     temporal_gap: int
-
     spatial_distance: float
-
     motion_difference: float
 
     appearance_similarity: float
 
-    team_match: Optional[bool]
+    # IMPORTANT:
+    # Distinguishes:
+    #
+    #   appearance not evaluated
+    #       from
+    #
+    #   appearance evaluated but unavailable.
+    appearance_evaluated: bool
 
+    team_match: Optional[bool]
     jersey_match: Optional[bool]
 
     reason: str = ""
 
 
 # ============================================================
-# MATCHER V4
+# MATCHER
 # ============================================================
 
-
 class IdentityMatcher:
-    """
-    Global identity matcher V4.
 
-    Matching flow:
-
-        class
-          ↓
-        temporal gate
-          ↓
-        spatial gate
-          ↓
-        motion gate
-          ↓
-        appearance
-          ↓
-        team
-          ↓
-        jersey
-          ↓
-        weighted score
-          ↓
-        evidence-strength validation
-          ↓
-        final decision
-    """
+    VERSION = "v5.1"
 
     def __init__(
         self,
-        max_temporal_gap: int = 75,
-        max_spatial_distance: float = 350.0,
-        max_motion_difference: float = 100.0,
 
         # ----------------------------------------------------
-        # Appearance
+        # HARD GEOMETRIC LIMITS
+        # ----------------------------------------------------
+
+        max_temporal_gap: int = 75,
+        max_spatial_distance: float = 300.0,
+        max_motion_difference: float = 80.0,
+
+        # ----------------------------------------------------
+        # APPEARANCE
         # ----------------------------------------------------
 
         minimum_appearance_similarity: float = 0.72,
+        appearance_normal_similarity: float = 0.78,
         appearance_strong_similarity: float = 0.85,
+
         appearance_recent_embeddings: int = 20,
         appearance_average_top_k: int = 5,
 
         # ----------------------------------------------------
-        # Weights
+        # WEIGHTS
         # ----------------------------------------------------
 
         temporal_weight: float = 0.10,
         spatial_weight: float = 0.25,
-        motion_weight: float = 0.15,
-        appearance_weight: float = 0.43,
-        team_weight: float = 0.04,
+        motion_weight: float = 0.20,
+        appearance_weight: float = 0.35,
+        team_weight: float = 0.07,
         jersey_weight: float = 0.03,
 
         # ----------------------------------------------------
-        # Final decision
+        # FINAL SCORE
         # ----------------------------------------------------
 
         minimum_match_score: float = 0.60,
 
-        # Weak appearance matches need stronger
-        # geometric evidence.
-        weak_appearance_min_score: float = 0.68,
+        # ----------------------------------------------------
+        # GEOMETRY QUALITY
+        # ----------------------------------------------------
 
-        # Strong appearance matches can tolerate
-        # slightly weaker geometry.
-        strong_appearance_min_score: float = 0.55,
+        strong_spatial_ratio: float = 0.35,
+        strong_motion_ratio: float = 0.40,
 
-        # When appearance is weak, require this combined
-        # geometric confidence.
-        weak_appearance_geometry_score: float = 0.62,
+        # ----------------------------------------------------
+        # LONG GAP
+        # ----------------------------------------------------
 
+        long_gap_ratio: float = 0.50,
+        long_gap_min_appearance: float = 0.78,
+
+        # ----------------------------------------------------
+        # WEAK APPEARANCE
+        # ----------------------------------------------------
+
+        weak_appearance_max_spatial_ratio: float = 0.20,
+        weak_appearance_max_motion_ratio: float = 0.25,
+        weak_appearance_min_score: float = 0.72,
+
+        # ----------------------------------------------------
+        # STRONG APPEARANCE
+        # ----------------------------------------------------
+
+        strong_appearance_max_spatial_ratio: float = 0.85,
+        strong_appearance_max_motion_ratio: float = 0.90,
+
+        # ----------------------------------------------------
+        # SAFETY
+        # ----------------------------------------------------
+
+        minimum_observations_for_motion: int = 2,
     ) -> None:
-
-        # ====================================================
-        # VALIDATION
-        # ====================================================
 
         if max_temporal_gap < 0:
             raise ValueError(
@@ -165,69 +169,78 @@ class IdentityMatcher:
                 "max_motion_difference must be > 0."
             )
 
-        if not 0.0 <= minimum_appearance_similarity <= 1.0:
-            raise ValueError(
-                "minimum_appearance_similarity "
-                "must be between 0 and 1."
-            )
+        appearance_thresholds = (
+            minimum_appearance_similarity,
+            appearance_normal_similarity,
+            appearance_strong_similarity,
+        )
 
-        if not 0.0 <= appearance_strong_similarity <= 1.0:
-            raise ValueError(
-                "appearance_strong_similarity "
-                "must be between 0 and 1."
-            )
-
-        if (
-            appearance_strong_similarity
-            < minimum_appearance_similarity
+        if any(
+            not 0.0 <= value <= 1.0
+            for value in appearance_thresholds
         ):
             raise ValueError(
-                "appearance_strong_similarity must be "
-                ">= minimum_appearance_similarity."
+                "Appearance thresholds must be between 0 and 1."
+            )
+
+        if not (
+            minimum_appearance_similarity
+            <= appearance_normal_similarity
+            <= appearance_strong_similarity
+        ):
+            raise ValueError(
+                "Appearance thresholds must satisfy "
+                "minimum <= normal <= strong."
             )
 
         if not 0.0 <= minimum_match_score <= 1.0:
             raise ValueError(
-                "minimum_match_score must be "
-                "between 0 and 1."
+                "minimum_match_score must be between 0 and 1."
+            )
+
+        ratios = (
+            strong_spatial_ratio,
+            strong_motion_ratio,
+            long_gap_ratio,
+            weak_appearance_max_spatial_ratio,
+            weak_appearance_max_motion_ratio,
+            strong_appearance_max_spatial_ratio,
+            strong_appearance_max_motion_ratio,
+        )
+
+        if any(
+            not 0.0 <= value <= 1.0
+            for value in ratios
+        ):
+            raise ValueError(
+                "Geometry ratios must be between 0 and 1."
+            )
+
+        if not 0.0 <= long_gap_min_appearance <= 1.0:
+            raise ValueError(
+                "long_gap_min_appearance must be between 0 and 1."
             )
 
         if not 0.0 <= weak_appearance_min_score <= 1.0:
             raise ValueError(
-                "weak_appearance_min_score must be "
-                "between 0 and 1."
+                "weak_appearance_min_score must be between 0 and 1."
             )
 
-        if not 0.0 <= strong_appearance_min_score <= 1.0:
+        if minimum_observations_for_motion < 2:
             raise ValueError(
-                "strong_appearance_min_score must be "
-                "between 0 and 1."
+                "minimum_observations_for_motion must be >= 2."
             )
 
-        if not 0.0 <= weak_appearance_geometry_score <= 1.0:
-            raise ValueError(
-                "weak_appearance_geometry_score must be "
-                "between 0 and 1."
-            )
-
-        # ====================================================
-        # CONFIGURATION
-        # ====================================================
-
-        self.max_temporal_gap = int(
-            max_temporal_gap
-        )
-
-        self.max_spatial_distance = float(
-            max_spatial_distance
-        )
-
-        self.max_motion_difference = float(
-            max_motion_difference
-        )
+        self.max_temporal_gap = int(max_temporal_gap)
+        self.max_spatial_distance = float(max_spatial_distance)
+        self.max_motion_difference = float(max_motion_difference)
 
         self.minimum_appearance_similarity = float(
             minimum_appearance_similarity
+        )
+
+        self.appearance_normal_similarity = float(
+            appearance_normal_similarity
         )
 
         self.appearance_strong_similarity = float(
@@ -248,21 +261,45 @@ class IdentityMatcher:
             minimum_match_score
         )
 
+        self.strong_spatial_ratio = float(
+            strong_spatial_ratio
+        )
+
+        self.strong_motion_ratio = float(
+            strong_motion_ratio
+        )
+
+        self.long_gap_ratio = float(
+            long_gap_ratio
+        )
+
+        self.long_gap_min_appearance = float(
+            long_gap_min_appearance
+        )
+
+        self.weak_appearance_max_spatial_ratio = float(
+            weak_appearance_max_spatial_ratio
+        )
+
+        self.weak_appearance_max_motion_ratio = float(
+            weak_appearance_max_motion_ratio
+        )
+
         self.weak_appearance_min_score = float(
             weak_appearance_min_score
         )
 
-        self.strong_appearance_min_score = float(
-            strong_appearance_min_score
+        self.strong_appearance_max_spatial_ratio = float(
+            strong_appearance_max_spatial_ratio
         )
 
-        self.weak_appearance_geometry_score = float(
-            weak_appearance_geometry_score
+        self.strong_appearance_max_motion_ratio = float(
+            strong_appearance_max_motion_ratio
         )
 
-        # ====================================================
-        # NORMALIZE WEIGHTS
-        # ====================================================
+        self.minimum_observations_for_motion = int(
+            minimum_observations_for_motion
+        )
 
         weights = {
             "temporal": float(temporal_weight),
@@ -281,14 +318,11 @@ class IdentityMatcher:
                 "Matcher weights cannot be negative."
             )
 
-        total_weight = sum(
-            weights.values()
-        )
+        total_weight = sum(weights.values())
 
         if total_weight <= 0:
             raise ValueError(
-                "Matcher weights must sum to "
-                "a positive value."
+                "Matcher weights must sum to a positive value."
             )
 
         self.temporal_weight = (
@@ -324,15 +358,6 @@ class IdentityMatcher:
         track: Track,
         identity: Identity,
     ) -> MatchResult:
-        """
-        Compare Track against Identity.
-
-        The matcher never mutates either object.
-        """
-
-        # ====================================================
-        # BASIC VALIDATION
-        # ====================================================
 
         if not track.observations:
             return self._failed_result(
@@ -344,9 +369,9 @@ class IdentityMatcher:
                 reason="identity_has_no_observations"
             )
 
-        # ====================================================
+        # ----------------------------------------------------
         # CLASS
-        # ====================================================
+        # ----------------------------------------------------
 
         if track.class_name != identity.class_name:
             return self._failed_result(
@@ -357,17 +382,15 @@ class IdentityMatcher:
                 reason="class_mismatch",
             )
 
-        # ====================================================
-        # TEMPORAL GATE
-        # ====================================================
+        # ----------------------------------------------------
+        # TEMPORAL
+        # ----------------------------------------------------
 
         temporal_gap = self._temporal_gap(
             track,
             identity,
         )
 
-        # A global identity and new fragment
-        # cannot overlap.
         if temporal_gap < 0:
             return self._failed_result(
                 temporal_gap=temporal_gap,
@@ -380,9 +403,9 @@ class IdentityMatcher:
                 reason="temporal_gap_too_large",
             )
 
-        # ====================================================
-        # SPATIAL GATE
-        # ====================================================
+        # ----------------------------------------------------
+        # SPATIAL
+        # ----------------------------------------------------
 
         spatial_distance = self._spatial_distance(
             track,
@@ -396,16 +419,9 @@ class IdentityMatcher:
                 reason="spatial_information_unavailable",
             )
 
-        if spatial_distance > self.max_spatial_distance:
-            return self._failed_result(
-                temporal_gap=temporal_gap,
-                spatial_distance=spatial_distance,
-                reason="spatial_distance_too_large",
-            )
-
-        # ====================================================
-        # MOTION GATE
-        # ====================================================
+        # ----------------------------------------------------
+        # MOTION
+        # ----------------------------------------------------
 
         motion_difference = self._motion_difference(
             track,
@@ -413,54 +429,22 @@ class IdentityMatcher:
             temporal_gap,
         )
 
-        # Missing motion is neutral.
+        # Missing motion is not a rejection.
         if motion_difference == float("inf"):
             motion_difference = 0.0
 
-        if motion_difference > self.max_motion_difference:
-            return self._failed_result(
-                temporal_gap=temporal_gap,
-                spatial_distance=spatial_distance,
-                motion_difference=motion_difference,
-                reason="motion_difference_too_large",
-            )
+        # ----------------------------------------------------
+        # NORMALIZED GEOMETRY
+        # ----------------------------------------------------
 
-        # ====================================================
-        # APPEARANCE
-        # ====================================================
-
-        appearance_similarity = (
-            self._appearance_similarity(
-                track,
-                identity,
-            )
+        spatial_ratio = (
+            spatial_distance
+            / self.max_spatial_distance
         )
 
-        # ====================================================
-        # TEAM
-        # ====================================================
-
-        team_match = self._team_match(
-            track,
-            identity,
-        )
-
-        # ====================================================
-        # JERSEY
-        # ====================================================
-
-        jersey_match = self._jersey_match(
-            track,
-            identity,
-        )
-
-        # ====================================================
-        # NORMALIZED SIGNALS
-        # ====================================================
-
-        temporal_score = self._temporal_score(
-            temporal_gap,
-            self.max_temporal_gap,
+        motion_ratio = (
+            motion_difference
+            / self.max_motion_difference
         )
 
         spatial_score = self._distance_score(
@@ -473,123 +457,91 @@ class IdentityMatcher:
             self.max_motion_difference,
         )
 
-        # ====================================================
-        # GEOMETRIC EVIDENCE
-        # ====================================================
-
-        geometry_score = (
-            temporal_score * self.temporal_weight
-            + spatial_score * self.spatial_weight
-            + motion_score * self.motion_weight
+        temporal_score = self._temporal_score(
+            temporal_gap,
+            self.max_temporal_gap,
         )
 
-        geometry_weight = (
-            self.temporal_weight
-            + self.spatial_weight
-            + self.motion_weight
+        # ----------------------------------------------------
+        # HARD SPATIAL GATE
+        # ----------------------------------------------------
+
+        if spatial_distance > self.max_spatial_distance:
+            return self._failed_result(
+                temporal_gap=temporal_gap,
+                spatial_distance=spatial_distance,
+                motion_difference=motion_difference,
+                reason="spatial_distance_too_large",
+            )
+
+        # ----------------------------------------------------
+        # HARD MOTION GATE
+        # ----------------------------------------------------
+
+        if motion_difference > self.max_motion_difference:
+            return self._failed_result(
+                temporal_gap=temporal_gap,
+                spatial_distance=spatial_distance,
+                motion_difference=motion_difference,
+                reason="motion_difference_too_large",
+            )
+
+        # ----------------------------------------------------
+        # APPEARANCE
+        # ----------------------------------------------------
+
+        appearance_similarity = (
+            self._appearance_similarity(
+                track,
+                identity,
+            )
         )
 
-        if geometry_weight > 0:
-            geometry_score /= geometry_weight
+        appearance_evaluated = True
 
-        # ====================================================
-        # DYNAMIC EVIDENCE
-        # ====================================================
+        # ----------------------------------------------------
+        # TEAM
+        # ----------------------------------------------------
 
-        components: list[
-            tuple[str, float, float]
-        ] = [
-            (
-                "temporal",
-                temporal_score,
-                self.temporal_weight,
-            ),
-            (
-                "spatial",
-                spatial_score,
-                self.spatial_weight,
-            ),
-            (
-                "motion",
-                motion_score,
-                self.motion_weight,
-            ),
-        ]
-
-        # Appearance is optional.
-        if appearance_similarity >= 0.0:
-            components.append(
-                (
-                    "appearance",
-                    appearance_similarity,
-                    self.appearance_weight,
-                )
-            )
-
-        # Team evidence is optional.
-        if team_match is not None:
-            components.append(
-                (
-                    "team",
-                    1.0 if team_match else 0.0,
-                    self.team_weight,
-                )
-            )
-
-        # Jersey evidence is optional.
-        if jersey_match is not None:
-            components.append(
-                (
-                    "jersey",
-                    1.0 if jersey_match else 0.0,
-                    self.jersey_weight,
-                )
-            )
-
-        total_weight = sum(
-            weight
-            for _, _, weight in components
+        team_match = self._team_match(
+            track,
+            identity,
         )
 
-        score = (
-            sum(
-                value * weight
-                for _, value, weight in components
-            )
-            / total_weight
-            if total_weight > 0
-            else 0.0
+        # ----------------------------------------------------
+        # JERSEY
+        # ----------------------------------------------------
+
+        jersey_match = self._jersey_match(
+            track,
+            identity,
         )
 
-        # ====================================================
-        # EXPLICIT APPEARANCE MISMATCH
-        # ====================================================
+        # ----------------------------------------------------
+        # APPEARANCE GATE
+        # ----------------------------------------------------
 
-        if appearance_similarity >= 0.0:
+        appearance_reason = (
+            self._appearance_gate_reason(
+                appearance_similarity=appearance_similarity,
+                temporal_gap=temporal_gap,
+                spatial_ratio=spatial_ratio,
+                motion_ratio=motion_ratio,
+                spatial_score=spatial_score,
+                motion_score=motion_score,
+            )
+        )
 
-            if (
-                appearance_similarity
-                < self.minimum_appearance_similarity
-            ):
-                return MatchResult(
-                    matched=False,
-                    score=score,
-                    temporal_gap=temporal_gap,
-                    spatial_distance=spatial_distance,
-                    motion_difference=motion_difference,
-                    appearance_similarity=(
-                        appearance_similarity
-                    ),
-                    team_match=team_match,
-                    jersey_match=jersey_match,
-                    reason="appearance_mismatch",
-                )
+        if appearance_reason is not None:
 
-        # ====================================================
-        # TEAM CONTRADICTION
-        # ====================================================
-
-        if team_match is False:
+            score = self._calculate_score(
+                temporal_score=temporal_score,
+                spatial_score=spatial_score,
+                motion_score=motion_score,
+                appearance_similarity=appearance_similarity,
+                team_match=team_match,
+                jersey_match=jersey_match,
+            )
 
             return MatchResult(
                 matched=False,
@@ -597,19 +549,55 @@ class IdentityMatcher:
                 temporal_gap=temporal_gap,
                 spatial_distance=spatial_distance,
                 motion_difference=motion_difference,
-                appearance_similarity=(
-                    appearance_similarity
-                ),
+                appearance_similarity=appearance_similarity,
+                appearance_evaluated=appearance_evaluated,
+                team_match=team_match,
+                jersey_match=jersey_match,
+                reason=appearance_reason,
+            )
+
+        # ----------------------------------------------------
+        # TEAM HARD EVIDENCE
+        # ----------------------------------------------------
+
+        if team_match is False:
+
+            score = self._calculate_score(
+                temporal_score,
+                spatial_score,
+                motion_score,
+                appearance_similarity,
+                team_match,
+                jersey_match,
+            )
+
+            return MatchResult(
+                matched=False,
+                score=score,
+                temporal_gap=temporal_gap,
+                spatial_distance=spatial_distance,
+                motion_difference=motion_difference,
+                appearance_similarity=appearance_similarity,
+                appearance_evaluated=appearance_evaluated,
                 team_match=team_match,
                 jersey_match=jersey_match,
                 reason="team_mismatch",
             )
 
-        # ====================================================
-        # JERSEY CONTRADICTION
-        # ====================================================
+        # ----------------------------------------------------
+        # JERSEY HARD EVIDENCE
+        # ----------------------------------------------------
 
         if jersey_match is False:
+
+            score = self._calculate_score(
+                temporal_score,
+                spatial_score,
+                motion_score,
+                appearance_similarity,
+                team_match,
+                jersey_match,
+            )
 
             return MatchResult(
                 matched=False,
@@ -617,109 +605,25 @@ class IdentityMatcher:
                 temporal_gap=temporal_gap,
                 spatial_distance=spatial_distance,
                 motion_difference=motion_difference,
-                appearance_similarity=(
-                    appearance_similarity
-                ),
+                appearance_similarity=appearance_similarity,
+                appearance_evaluated=appearance_evaluated,
                 team_match=team_match,
                 jersey_match=jersey_match,
                 reason="jersey_mismatch",
             )
 
-        # ====================================================
-        # APPEARANCE EVIDENCE STRENGTH
-        # ====================================================
-
-        if appearance_similarity < 0.0:
-
-            # No appearance evidence.
-            #
-            # Because appearance is unavailable, require
-            # stronger geometry than the normal threshold.
-            if geometry_score < 0.70:
-
-                return MatchResult(
-                    matched=False,
-                    score=score,
-                    temporal_gap=temporal_gap,
-                    spatial_distance=spatial_distance,
-                    motion_difference=motion_difference,
-                    appearance_similarity=(
-                        appearance_similarity
-                    ),
-                    team_match=team_match,
-                    jersey_match=jersey_match,
-                    reason="insufficient_evidence",
-                )
-
-        elif (
-            appearance_similarity
-            >= self.appearance_strong_similarity
-        ):
-
-            # ------------------------------------------------
-            # Strong appearance
-            # ------------------------------------------------
-
-            if score < self.strong_appearance_min_score:
-
-                return MatchResult(
-                    matched=False,
-                    score=score,
-                    temporal_gap=temporal_gap,
-                    spatial_distance=spatial_distance,
-                    motion_difference=motion_difference,
-                    appearance_similarity=(
-                        appearance_similarity
-                    ),
-                    team_match=team_match,
-                    jersey_match=jersey_match,
-                    reason="score_below_threshold",
-                )
-
-        else:
-
-            # ------------------------------------------------
-            # Weak/moderate appearance
-            # ------------------------------------------------
-
-            if (
-                geometry_score
-                < self.weak_appearance_geometry_score
-            ):
-
-                return MatchResult(
-                    matched=False,
-                    score=score,
-                    temporal_gap=temporal_gap,
-                    spatial_distance=spatial_distance,
-                    motion_difference=motion_difference,
-                    appearance_similarity=(
-                        appearance_similarity
-                    ),
-                    team_match=team_match,
-                    jersey_match=jersey_match,
-                    reason="weak_appearance_geometry",
-                )
-
-            if score < self.weak_appearance_min_score:
-
-                return MatchResult(
-                    matched=False,
-                    score=score,
-                    temporal_gap=temporal_gap,
-                    spatial_distance=spatial_distance,
-                    motion_difference=motion_difference,
-                    appearance_similarity=(
-                        appearance_similarity
-                    ),
-                    team_match=team_match,
-                    jersey_match=jersey_match,
-                    reason="score_below_threshold",
-                )
-
-        # ====================================================
+        # ----------------------------------------------------
         # FINAL SCORE
-        # ====================================================
+        # ----------------------------------------------------
+
+        score = self._calculate_score(
+            temporal_score=temporal_score,
+            spatial_score=spatial_score,
+            motion_score=motion_score,
+            appearance_similarity=appearance_similarity,
+            team_match=team_match,
+            jersey_match=jersey_match,
+        )
 
         if score < self.minimum_match_score:
 
@@ -729,17 +633,12 @@ class IdentityMatcher:
                 temporal_gap=temporal_gap,
                 spatial_distance=spatial_distance,
                 motion_difference=motion_difference,
-                appearance_similarity=(
-                    appearance_similarity
-                ),
+                appearance_similarity=appearance_similarity,
+                appearance_evaluated=appearance_evaluated,
                 team_match=team_match,
                 jersey_match=jersey_match,
                 reason="score_below_threshold",
             )
-
-        # ====================================================
-        # MATCHED
-        # ====================================================
 
         return MatchResult(
             matched=True,
@@ -747,16 +646,233 @@ class IdentityMatcher:
             temporal_gap=temporal_gap,
             spatial_distance=spatial_distance,
             motion_difference=motion_difference,
-            appearance_similarity=(
-                appearance_similarity
-            ),
+            appearance_similarity=appearance_similarity,
+            appearance_evaluated=appearance_evaluated,
             team_match=team_match,
             jersey_match=jersey_match,
-            reason="compatible",
+            reason=self._success_reason(
+                appearance_similarity,
+                temporal_gap,
+                spatial_ratio,
+                motion_ratio,
+            ),
         )
 
     # ========================================================
-    # FAILURE RESULT
+    # SCORE
+    # ========================================================
+
+    def _calculate_score(
+        self,
+        temporal_score: float,
+        spatial_score: float,
+        motion_score: float,
+        appearance_similarity: float,
+        team_match: Optional[bool],
+        jersey_match: Optional[bool],
+    ) -> float:
+
+        components = [
+            (
+                temporal_score,
+                self.temporal_weight,
+            ),
+            (
+                spatial_score,
+                self.spatial_weight,
+            ),
+            (
+                motion_score,
+                self.motion_weight,
+            ),
+        ]
+
+        if appearance_similarity >= 0.0:
+            components.append(
+                (
+                    appearance_similarity,
+                    self.appearance_weight,
+                )
+            )
+
+        if team_match is not None:
+            components.append(
+                (
+                    1.0 if team_match else 0.0,
+                    self.team_weight,
+                )
+            )
+
+        if jersey_match is not None:
+            components.append(
+                (
+                    1.0 if jersey_match else 0.0,
+                    self.jersey_weight,
+                )
+            )
+
+        total_weight = sum(
+            weight
+            for _, weight in components
+        )
+
+        if total_weight <= 0:
+            return 0.0
+
+        return sum(
+            value * weight
+            for value, weight in components
+        ) / total_weight
+
+    # ========================================================
+    # APPEARANCE GATE
+    # ========================================================
+
+    def _appearance_gate_reason(
+        self,
+        appearance_similarity: float,
+        temporal_gap: int,
+        spatial_ratio: float,
+        motion_ratio: float,
+        spatial_score: float,
+        motion_score: float,
+    ) -> Optional[str]:
+
+        if appearance_similarity < 0.0:
+
+            if (
+                spatial_ratio
+                <= self.strong_spatial_ratio
+                and motion_ratio
+                <= self.strong_motion_ratio
+            ):
+                return None
+
+            return (
+                "appearance_unavailable_geometry_not_strong"
+            )
+
+        if (
+            appearance_similarity
+            < self.minimum_appearance_similarity
+        ):
+            return "appearance_mismatch"
+
+        gap_ratio = (
+            temporal_gap / self.max_temporal_gap
+            if self.max_temporal_gap > 0
+            else 0.0
+        )
+
+        if gap_ratio >= self.long_gap_ratio:
+
+            if (
+                appearance_similarity
+                < self.long_gap_min_appearance
+            ):
+                return "long_gap_weak_appearance"
+
+            if spatial_ratio > 0.70:
+                return "long_gap_spatial_uncertainty"
+
+            if motion_ratio > 0.70:
+                return "long_gap_motion_uncertainty"
+
+        # ----------------------------------------------------
+        # Strong appearance
+        # ----------------------------------------------------
+
+        if (
+            appearance_similarity
+            >= self.appearance_strong_similarity
+        ):
+
+            if (
+                spatial_ratio
+                <= self.strong_appearance_max_spatial_ratio
+                and motion_ratio
+                <= self.strong_appearance_max_motion_ratio
+            ):
+                return None
+
+            return (
+                "strong_appearance_geometry_too_weak"
+            )
+
+        # ----------------------------------------------------
+        # Normal appearance
+        # ----------------------------------------------------
+
+        if (
+            appearance_similarity
+            >= self.appearance_normal_similarity
+        ):
+
+            if (
+                spatial_ratio <= 0.70
+                and motion_ratio <= 0.70
+            ):
+                return None
+
+            return (
+                "normal_appearance_geometry_too_weak"
+            )
+
+        # ----------------------------------------------------
+        # Weak appearance
+        # ----------------------------------------------------
+
+        if (
+            appearance_similarity
+            >= self.minimum_appearance_similarity
+        ):
+
+            if (
+                spatial_ratio
+                <= self.weak_appearance_max_spatial_ratio
+                and motion_ratio
+                <= self.weak_appearance_max_motion_ratio
+                and spatial_score >= 0.80
+                and motion_score >= 0.75
+            ):
+                return None
+
+            return "weak_appearance_geometry"
+
+        return "appearance_mismatch"
+
+    # ========================================================
+    # SUCCESS REASON
+    # ========================================================
+
+    def _success_reason(
+        self,
+        appearance_similarity: float,
+        temporal_gap: int,
+        spatial_ratio: float,
+        motion_ratio: float,
+    ) -> str:
+
+        if (
+            appearance_similarity
+            >= self.appearance_strong_similarity
+        ):
+
+            if temporal_gap == 0:
+                return "strong_appearance_continuity"
+
+            return "strong_appearance_temporal_continuity"
+
+        if (
+            appearance_similarity
+            >= self.appearance_normal_similarity
+        ):
+            return "normal_appearance_geometry"
+
+        return "weak_appearance_strong_geometry"
+
+    # ========================================================
+    # FAILURE
     # ========================================================
 
     @staticmethod
@@ -774,6 +890,7 @@ class IdentityMatcher:
             spatial_distance=spatial_distance,
             motion_difference=motion_difference,
             appearance_similarity=-1.0,
+            appearance_evaluated=False,
             team_match=None,
             jersey_match=None,
             reason=reason,
@@ -815,8 +932,7 @@ class IdentityMatcher:
 
         return max(
             0.0,
-            1.0
-            - (
+            1.0 - (
                 temporal_gap / max_gap
             ),
         )
@@ -831,13 +947,8 @@ class IdentityMatcher:
         identity: Identity,
     ) -> float:
 
-        last_identity = (
-            identity.last_observation
-        )
-
-        first_track = (
-            track.first_observation
-        )
+        last_identity = identity.last_observation
+        first_track = track.first_observation
 
         if (
             last_identity is None
@@ -845,8 +956,14 @@ class IdentityMatcher:
         ):
             return float("inf")
 
-        x1, y1 = last_identity.position
-        x2, y2 = first_track.position
+        try:
+            x1, y1 = last_identity.position
+            x2, y2 = first_track.position
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return float("inf")
 
         return sqrt(
             (x2 - x1) ** 2
@@ -895,7 +1012,6 @@ class IdentityMatcher:
             )
         )
 
-        # Motion unavailable is not a rejection.
         if identity_velocity is None:
             return 0.0
 
@@ -926,13 +1042,11 @@ class IdentityMatcher:
             ):
 
                 expected_x = (
-                    ivx
-                    * (temporal_gap + 1)
+                    ivx * (temporal_gap + 1)
                 )
 
                 expected_y = (
-                    ivy
-                    * (temporal_gap + 1)
+                    ivy * (temporal_gap + 1)
                 )
 
                 actual_x = (
@@ -957,8 +1071,8 @@ class IdentityMatcher:
                 )
 
                 return (
-                    velocity_difference * 0.6
-                    + displacement_difference * 0.4
+                    velocity_difference * 0.60
+                    + displacement_difference * 0.40
                 )
 
         return velocity_difference
@@ -966,9 +1080,7 @@ class IdentityMatcher:
     @staticmethod
     def _estimate_end_velocity(
         identity: Identity,
-    ) -> Optional[
-        tuple[float, float]
-    ]:
+    ) -> Optional[tuple[float, float]]:
 
         observations = identity.observations
 
@@ -997,9 +1109,7 @@ class IdentityMatcher:
     @staticmethod
     def _estimate_start_velocity(
         track: Track,
-    ) -> Optional[
-        tuple[float, float]
-    ]:
+    ) -> Optional[tuple[float, float]]:
 
         observations = track.observations
 
@@ -1034,14 +1144,6 @@ class IdentityMatcher:
         track: Track,
         identity: Identity,
     ) -> float:
-        """
-        Multi-embedding OSNet comparison.
-
-        Returns:
-
-            [0, 1] -> valid appearance
-            -1     -> unavailable
-        """
 
         track_embeddings = (
             self._collect_embeddings(
@@ -1061,14 +1163,13 @@ class IdentityMatcher:
         ):
             return -1.0
 
-        # Only use recent identity embeddings.
         identity_embeddings = (
             identity_embeddings[
                 -self.appearance_recent_embeddings:
             ]
         )
 
-        similarities: list[float] = []
+        similarities = []
 
         for track_embedding in track_embeddings:
 
@@ -1084,22 +1185,22 @@ class IdentityMatcher:
                 if similarity is None:
                     continue
 
+                # Keep the existing V5 normalized
+                # [0, 1] representation.
+                normalized = (
+                    similarity + 1.0
+                ) / 2.0
+
                 similarities.append(
-                    similarity
+                    normalized
                 )
 
         if not similarities:
             return -1.0
 
-        similarities.sort(
-            reverse=True
-        )
+        similarities.sort(reverse=True)
 
         strongest = similarities[0]
-
-        # ====================================================
-        # STRONG SINGLE OBSERVATION
-        # ====================================================
 
         if (
             strongest
@@ -1107,22 +1208,16 @@ class IdentityMatcher:
         ):
             return strongest
 
-        # ====================================================
-        # TOP-K CONSENSUS
-        # ====================================================
-
         top_k = min(
             self.appearance_average_top_k,
             len(similarities),
         )
 
-        strongest_similarities = (
-            similarities[:top_k]
-        )
-
         return (
-            sum(strongest_similarities)
-            / len(strongest_similarities)
+            sum(
+                similarities[:top_k]
+            )
+            / top_k
         )
 
     # ========================================================
@@ -1134,7 +1229,7 @@ class IdentityMatcher:
         observations,
     ) -> list[list[float]]:
 
-        embeddings: list[list[float]] = []
+        embeddings = []
 
         for observation in observations:
 
@@ -1152,7 +1247,6 @@ class IdentityMatcher:
                     float(value)
                     for value in embedding
                 ]
-
             except (
                 TypeError,
                 ValueError,
@@ -1162,7 +1256,6 @@ class IdentityMatcher:
             if not vector:
                 continue
 
-            # Reject NaN / infinity.
             if not all(
                 value == value
                 and abs(value) != float("inf")
@@ -1180,15 +1273,9 @@ class IdentityMatcher:
             if norm <= 0:
                 continue
 
-            embeddings.append(
-                vector
-            )
+            embeddings.append(vector)
 
         return embeddings
-
-    # ========================================================
-    # COSINE
-    # ========================================================
 
     @staticmethod
     def _cosine_similarity(
@@ -1228,8 +1315,7 @@ class IdentityMatcher:
             return None
 
         similarity = (
-            dot
-            / (norm_a * norm_b)
+            dot / (norm_a * norm_b)
         )
 
         return max(
@@ -1258,16 +1344,13 @@ class IdentityMatcher:
 
         identity_team = identity.team
 
-        # No evidence is neutral.
         if (
             track_team is None
             or identity_team is None
         ):
             return None
 
-        return (
-            track_team == identity_team
-        )
+        return track_team == identity_team
 
     @staticmethod
     def _most_recent_team(
@@ -1305,20 +1388,15 @@ class IdentityMatcher:
             )
         )
 
-        identity_number = (
-            identity.jersey_number
-        )
+        identity_number = identity.jersey_number
 
-        # No evidence is neutral.
         if (
             track_number is None
             or identity_number is None
         ):
             return None
 
-        return (
-            track_number == identity_number
-        )
+        return track_number == identity_number
 
     @staticmethod
     def _most_recent_jersey(
@@ -1339,4 +1417,3 @@ class IdentityMatcher:
                 return jersey_number
 
         return None
-
