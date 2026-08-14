@@ -1,0 +1,49 @@
+Django==5.2.6
+
+mysqlclient==2.2.7
+
+django-environ==0.12.0
+
+celery==5.5.3
+
+redis==6.4.0
+
+gunicorn==23.0.0
+
+Pillow==11.3.0
+
+ultralytics>=8.2,<9
+opencv-python-headless>=4.10,<5
+
+# Prevent any dependency (ultralytics, supervision, etc.) from silently
+# pulling in regular opencv-python, which needs GUI libs (libxcb) that
+# don't exist in this container and will break cv2 imports.
+
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Stage 2 (tracking)
+supervision>=0.24,<1
+
+# Stage 2.5 (shot boundary detection)
+scenedetect>=0.6.4,<1
+
+# Stage 3 (team color clustering)
+scikit-learn>=1.4,<2
+
+# Stage 3 (Re-ID embeddings, second pass — skip installing this until
+# you actually reach that stage; it's a slower git install)
+torchreid @ git+https://github.com/KaiyangZhou/deep-person-reid.git
+
+# Stage 3 (jersey number OCR, second pass, optional)
+easyocr>=1.7,<2
+
+# Stage 4 (Kalman filtering for ball interpolation)
+filterpy>=1.4,<2
+
+# Stage 5 (Hungarian algorithm for tracklet/identity matching)
+scipy>=1.12,<2
+
+jupyter
+roboflow
