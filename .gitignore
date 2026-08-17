@@ -14,6 +14,10 @@ db.sqlite3
 media/
 staticfiles/
 runs/
+*.mp4
+*.avi
+*.mov
+*.mkv
 
 # Docker
 *.log
