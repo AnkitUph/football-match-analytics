@@ -19,6 +19,9 @@ MODELS_DIR = AI_ENGINE_ROOT / "models"
 # Your trained detection weights (best.pt from the Kaggle notebook).
 DETECTION_MODEL_PATH = MODELS_DIR / "best.pt"
 
+model_path: Path = MODELS_DIR / "best_openvino_model"
+device: str = "intel:gpu"
+
 # Class index -> label, matches your Kaggle training run.
 CLASS_NAMES = {
     0: "ball",
@@ -34,14 +37,12 @@ CLASS_NAMES = {
 
 @dataclass
 class DetectionConfig:
-    model_path: Path = DETECTION_MODEL_PATH
+    model_path: Path = MODELS_DIR / "best_openvino_model"
     imgsz: int = 640
     conf_thresh: float = 0.35
     iou_thresh: float = 0.5
-    device: str = "0"          # "0" for first CUDA GPU, "cpu" as fallback
-    target_fps: int = 12       # downsample target, per Stage 1 plan (10-15fps)
-
-
+    device: str = "intel:gpu"
+    target_fps: int = 12
 # ---------------------------------------------------------------------------
 # Stage 2: Tracking (BoT-SORT)
 # ---------------------------------------------------------------------------

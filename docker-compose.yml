@@ -8,6 +8,9 @@ services:
     volumes:
       - .:/app
 
+    devices:
+      - /dev/dri:/dev/dri
+
     ports:
       - "8000:8000"
       - "8888:8888"
@@ -26,6 +29,9 @@ services:
 
     volumes:
       - .:/app
+
+    devices:
+      - /dev/dri:/dev/dri
 
     env_file:
       - .env

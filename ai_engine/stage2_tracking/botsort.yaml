@@ -1,21 +1,16 @@
-# BoT-SORT config — passed to ultralytics' `tracker=` argument.
-# Values mirror ai_engine.config.TrackingConfig; keep them in sync if you
-# change one, change both (or better: generate this file from config.py).
-
 tracker_type: botsort
 
-track_high_thresh: 0.5
+track_high_thresh: 0.25
 track_low_thresh: 0.1
-new_track_thresh: 0.6
+new_track_thresh: 0.25
 track_buffer: 90
-match_thresh: 0.5
+match_thresh: 0.8
 fuse_score: True
 
-# Global Motion Compensation — critical for broadcast camera pan/zoom.
 gmc_method: sparseOptFlow
 
-# ReID (BoT-SORT's built-in appearance model) — leave off for now.
-# Stage 3 handles Re-ID with a dedicated model (torchreid/OSNet) instead,
-# which gives more control over the cross-cut matching logic than
-# BoT-SORT's own light-weight ReID would.
+proximity_thresh: 0.5
+appearance_thresh: 0.3
+
 with_reid: False
+model: auto

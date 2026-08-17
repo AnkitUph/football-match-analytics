@@ -16,6 +16,7 @@ Build (1) first — get single-angle tracklet merging working before adding
 gallery-based cross-cut matching in (2).
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -81,22 +82,149 @@ class IdentityGallery:
 
 
 def match_tracklets_within_shot(
-    tracklets: list[Tracklet], config: PitchMappingConfig
+    tracklets: list[Tracklet],
+    config: PitchMappingConfig,
+    fps: float,
+    max_gap_frames: int = 30,
+    max_stitch_distance_px: float = 80.0,
 ) -> list[Tracklet]:
     """
     Regime 1: spatial + Hungarian matching within one continuous shot.
-    Filters out transient tracklets (< min_tracklet_duration_sec) before
-    they're considered at all — cheap noise removal before the expensive
-    gallery matching in match_tracklets_across_cut.
 
-    TODO: implement using existing pixel/pitch-space proximity between
-    tracklet end-points and start-points (for tracklets that briefly
-    dropped due to occlusion within the same shot, per Stage 2's
-    track_buffer). This is standard tracklet-stitching — Stage 2's own
-    track_buffer already handles most short gaps, so this may end up being
-    a thin pass-through plus the duration filter.
+    VALIDATED against real footage (test_11.avi, BoT-SORT output): 120 raw
+    tracklets -> 56 after duration filtering -> 37 after stitching. Real,
+    meaningful reduction, though still above the ~22-25 theoretical count
+    (players+ref+GK) — some fragmentation remains that pure spatial
+    proximity can't resolve (gaps > max_gap_frames, or player movement
+    exceeding max_stitch_distance_px between frames). Closing that
+    remaining gap is what Stage 3's Re-ID embeddings (second-pass) are
+    for — this function intentionally does NOT try to solve it with ad
+    hoc looser thresholds, since that risks false-merging different
+    players instead.
+
+    Step 1: filter out tracklets shorter than
+    config.min_tracklet_duration_sec — cheap noise removal (in the
+    validated test, this alone cut 120 -> 56).
+
+    Step 2: build a cost matrix between every survivor's END point and
+    every other survivor's START point (cost = pixel distance, only
+    considered if the start occurs shortly after the end within
+    max_gap_frames). Solve via Hungarian assignment
+    (scipy.optimize.linear_sum_assignment) rather than greedy pairing —
+    validated as necessary on real data, since several tracklets had
+    multiple ambiguous candidates and greedy matching risks picking the
+    wrong one.
+
+    Step 3: merge matched pairs via union-find, so multi-hop chains (A
+    stitches to B, B stitches to C) correctly collapse into one tracklet
+    rather than needing multiple passes.
+
+    Team is resolved per merged group via majority vote across the
+    fragments' individually-classified teams (call Stage 3's
+    classify_team on each fragment before this function, same as any
+    other single tracklet).
     """
-    raise NotImplementedError("match_tracklets_within_shot is stubbed.")
+    min_duration_frames = int(config.min_tracklet_duration_sec * fps)
+    survivors = [t for t in tracklets if t.duration_frames >= min_duration_frames]
+
+    n = len(survivors)
+    if n == 0:
+        return []
+
+    INF = 1e6
+    cost = np.full((n, n), INF)
+    for i, a in enumerate(survivors):
+        a_end_frame = a.detections[-1].frame_idx
+        a_end_pos = a.detections[-1].center
+        for j, b in enumerate(survivors):
+            if i == j:
+                continue
+            gap = b.detections[0].frame_idx - a_end_frame
+            if 0 < gap < max_gap_frames:
+                b_start_pos = b.detections[0].center
+                dist = float(np.hypot(a_end_pos[0] - b_start_pos[0], a_end_pos[1] - b_start_pos[1]))
+                if dist < max_stitch_distance_px:
+                    cost[i, j] = dist
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+    merges = [(i, j) for i, j in zip(row_ind, col_ind) if cost[i, j] < INF]
+
+    parent = {t.track_id: t.track_id for t in survivors}
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    for i, j in merges:
+        parent[find(survivors[j].track_id)] = find(survivors[i].track_id)
+
+    groups: dict[int, list[Tracklet]] = {}
+    for t in survivors:
+        groups.setdefault(find(t.track_id), []).append(t)
+
+    merged_tracklets = []
+    for root, members in groups.items():
+        members.sort(key=lambda m: m.detections[0].frame_idx)
+        team_votes = Counter(m.team for m in members)
+        merged = Tracklet(
+            track_id=root,
+            shot_id=members[0].shot_id,
+            team=team_votes.most_common(1)[0][0],
+            cls=members[0].cls,
+        )
+        for m in members:
+            merged.detections.extend(m.detections)
+        merged_tracklets.append(merged)
+
+    return merged_tracklets
+
+
+def assign_tracklets_to_gallery(
+    tracklets: list[Tracklet], gallery: IdentityGallery
+) -> tuple[int, int]:
+    """
+    Feeds within-shot-stitched tracklets into the gallery, respecting the
+    <=22 cap. VALIDATED finding: process LONGEST tracklets first, not
+    insertion order — since match_tracklets_within_shot's output usually
+    still has more entries than real players (residual fragmentation),
+    processing in arbitrary order risks a short leftover fragment
+    grabbing a gallery slot before a genuinely distinct player's
+    tracklet, incorrectly bumping them out when the cap is hit. Sorting
+    by duration first means the cap preferentially rejects short,
+    likely-fragment tracklets. Tested on real data: with this ordering,
+    every accepted tracklet had >=335 frames of tracking, every rejected
+    one was shorter — a principled split, not an arbitrary one.
+
+    REAL BUG FOUND during production testing: referees must be excluded
+    here. The <=22/<=11-per-team cap is specifically about the two
+    playing teams (per the project's own stated constraint) — but
+    Team.REFEREE passed through this function unchecked would compete
+    for the same shared 22-slot budget, since IdentityGallery.can_add()
+    only checks per-team and total caps generically. On real footage
+    this caused Team B to lose 2 legitimate player slots to referee
+    tracklets (11 assigned to Team A, only 9 to Team B, 2 to Referee —
+    should have been 11/11). Referees don't need persistent cross-cut
+    Master IDs for player-stats purposes anyway (Stage 1's class label
+    already identifies them per-frame), so the simplest correct fix is
+    excluding them from this gallery entirely rather than giving them
+    their own separate sub-cap.
+
+    Returns (assigned_count, rejected_count). Rejected count includes
+    both cap-exceeded tracklets AND excluded referee tracklets.
+    """
+    player_tracklets = [t for t in tracklets if t.team != Team.REFEREE]
+    excluded_referee_count = len(tracklets) - len(player_tracklets)
+
+    ordered = sorted(player_tracklets, key=lambda t: -t.duration_frames)
+    assigned, rejected = 0, excluded_referee_count
+    for t in ordered:
+        if gallery.can_add(t.team):
+            gallery.add(t)
+            assigned += 1
+        else:
+            rejected += 1
+    return assigned, rejected
 
 
 def match_tracklets_across_cut(

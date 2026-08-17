@@ -1,26 +1,25 @@
+# Version control
 .git
 .gitignore
 
+# Python
 __pycache__
 *.pyc
-*.pyo
-*.pyd
-
 .venv
-venv
-env
+*.egg-info
 
-.env
-
-node_modules
-
-media
-staticfiles
-
+# Test/dev artifacts — mounted at runtime anyway, no need in the image
+ai_engine/test_clips/
+media/
+staticfiles/
 db.sqlite3
 
-.pytest_cache
-.mypy_cache
+# Training datasets and Re-ID exploration artifacts — large, not needed
+# for the app to run, only used during model training/dataset work
+training_data/
+identity_pairwise_inspe*/
+pairwise_51.tar.gz
+pairwise_manifest.json
 
-.vscode
-.idea
+# Notebooks — not needed in the runtime image
+ai_engine/**/*.ipynb
