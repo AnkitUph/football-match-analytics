@@ -11,7 +11,9 @@ venv/
 
 # Django
 db.sqlite3
-media/
+media/*
+!media/test_clips/
+!media/test_clips/**
 staticfiles/
 runs/
 *.mp4
