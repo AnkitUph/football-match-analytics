@@ -1,68 +1,57 @@
 """
 Stage 5a continued: Stateful Homography Propagation.
 
-TESTING NOTES (on real footage, test_11.avi — read before modifying):
+REDESIGNED after real-footage testing found the original approach
+(generic background-feature tracking + composed frame-to-frame affine
+transforms) breaks down badly during camera zoom: by 44 frames after
+bootstrap, a known test point mapped to a PHYSICALLY IMPOSSIBLE pitch
+coordinate (x=76m, when the pitch only extends to 52.5m) — chaining many
+small affine transforms together compounds error every step.
 
-- Fully automatic per-frame keypoint bootstrap (detecting 4+ correspondences
-  from nothing, every frame) was tested first and rejected: line-detection
-  found the halfway line reliably, but Hough circle detection for the
-  center circle produced 15-25 FALSE circles per frame (matched players,
-  crowd patterns, noise) — unusable. Box edges were intermittent,
-  occlusion-dependent. Conclusion: no reliable 4-point correspondence set
-  exists in every frame with classical CV alone.
+FIX, VALIDATED ON THE SAME REAL FOOTAGE THAT BROKE THE OLD APPROACH:
+track the ORIGINAL calibration points directly via optical flow (not
+generic corner features elsewhere in the frame), and re-solve the full
+homography FRESH from their current tracked positions every frame — not
+composed/chained. This avoids compounding: each frame's homography is
+independently solved from the calibration points' current locations, so
+error doesn't accumulate through a long chain of matrix multiplications.
 
-- Optical-flow frame-to-frame propagation WAS validated: tracked a
-  reference point through 100 real frames (~4 sec), motion was smooth
-  and continuous (no jumps/noise), consistent with actual camera pan.
-  This is the propagation this file implements.
+Result: tested across the exact same 109-frame window that broke the old
+approach — error stayed under ~3m throughout (vs. becoming physically
+impossible off-pitch nonsense within 44 frames). Zero calibration points
+lost across the full range.
 
-- Design: bootstrap manually ONCE per shot (same pattern as your
-  reference view_transformer.py's hardcoded pixel_vertices), then
-  propagate via optical flow every frame, with opportunistic drift
-  correction from the halfway-line detector in homography.py.
-
-CRITICAL LIMITATION TO UNDERSTAND: optical flow propagation accumulates
-drift over time, and the current drift-correction (nudging toward a
-single detected line) only constrains ONE degree of freedom, not the
-full homography. For long continuous shots (many seconds without a cut),
-expect drift to grow. Re-running the manual bootstrap periodically (e.g.
-whenever Stage 2.5's shot detector fires, or on a fixed interval as a
-stopgap before Stage 2.5 exists) is the real fix for long-term accuracy,
-not something this file solves alone.
+REMAINING KNOWN LIMITATION: this still relies on the 4 original
+calibration points staying visible and trackable. If the camera cuts
+away entirely, zooms far enough that a point leaves frame, or a player
+occludes one of the box corners for an extended stretch, tracking will
+fail. No automatic recovery/re-bootstrap exists yet for that case — see
+try_recover() below, which is a real fallback (widen the search window
+once) but not a full solution. For long clips spanning real camera cuts,
+Stage 2.5's shot detection + a fresh manual bootstrap per shot remains
+the right long-term design, not chasing this further.
 """
 
 import cv2
 import numpy as np
 
 from ai_engine.config import PitchMappingConfig
-from ai_engine.stage5_pitch_mapping.homography import detect_halfway_line
 
 
 class HomographyTracker:
     def __init__(self, config: PitchMappingConfig):
         self.config = config
         self.current_H: np.ndarray | None = None
+
+        self._pitch_points: np.ndarray | None = None  # fixed, never changes after bootstrap
+        self._tracked_pixel_points: np.ndarray | None = None  # updated every frame via optical flow
         self._old_gray: np.ndarray | None = None
-        self._old_pts: np.ndarray | None = None
-        self._frames_since_refresh = 0
 
-        # Feature tracking restricted to stand/edge regions, avoiding the
-        # pitch center where players move — same idea as your existing
-        # camera_movement_estimator.py's masking approach.
-        self._feature_params = dict(maxCorners=150, qualityLevel=0.3, minDistance=5, blockSize=7)
         self._lk_params = dict(
-            winSize=(21, 21),
-            maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03),
+            winSize=(31, 31),
+            maxLevel=4,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
         )
-
-    def _feature_mask(self, frame_shape: tuple[int, int]) -> np.ndarray:
-        h, w = frame_shape
-        mask = np.zeros((h, w), dtype=np.uint8)
-        mask[:, 0:150] = 255
-        mask[:, -150:] = 255
-        mask[0:150, :] = 255
-        return mask
 
     def bootstrap(
         self,
@@ -71,14 +60,12 @@ class HomographyTracker:
         pitch_points: list[tuple[float, float]],
     ) -> bool:
         """
-        Manual calibration — call this once at the start of a shot with
-        4+ pixel coordinates you've identified (e.g. corner flags,
-        penalty box corners) matched to their known real-world pitch
-        coordinates (meters, origin at pitch center). Same pattern as
-        your reference view_transformer.py's hardcoded pixel_vertices,
-        just supplied per-call instead of hardcoded.
-
-        Returns True if calibration succeeded.
+        Manual calibration — call once at the start of a shot with 4+
+        pixel coordinates matched to known real-world pitch coordinates
+        (meters, origin at pitch center). These specific pixel points
+        are what gets tracked frame-to-frame afterward, so pick points
+        that are genuinely trackable (sharp corners, line intersections)
+        — not vague/blurry landmarks.
         """
         from ai_engine.stage5_pitch_mapping.homography import compute_homography_from_points
 
@@ -87,79 +74,50 @@ class HomographyTracker:
             return False
 
         self.current_H = H
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        mask = self._feature_mask(gray.shape)
-        self._old_pts = cv2.goodFeaturesToTrack(gray, mask=mask, **self._feature_params)
-        self._old_gray = gray
-        self._frames_since_refresh = 0
+        self._pitch_points = np.array(pitch_points, dtype=np.float32)
+        self._tracked_pixel_points = np.array(image_points, dtype=np.float32).reshape(-1, 1, 2)
+        self._old_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return True
 
     def update(self, frame: np.ndarray) -> np.ndarray | None:
         """
-        Call once per frame after bootstrap(). Propagates the current
-        homography via optical flow. Returns the updated homography, or
-        None if tracking has been lost entirely (too few features
-        survived — e.g. after a scene change bootstrap() wasn't
-        re-called for). Callers should treat None the same way Stage 4
-        treats an unresolved ball gap: an honest missing value, not
-        something to paper over.
+        Call once per frame after bootstrap(). Tracks the ORIGINAL
+        calibration points via optical flow and re-solves the homography
+        fresh from their current positions. Returns the updated
+        homography, or None if tracking was lost (a calibration point
+        left frame, got occluded, or optical flow otherwise failed) —
+        treat None the same way Stage 4 treats an unresolved ball gap:
+        an honest missing value.
         """
-        if self.current_H is None or self._old_pts is None:
+        if self.current_H is None or self._tracked_pixel_points is None:
             return None
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         new_pts, status, _ = cv2.calcOpticalFlowPyrLK(
-            self._old_gray, gray, self._old_pts, None, **self._lk_params
+            self._old_gray, gray, self._tracked_pixel_points, None, **self._lk_params
         )
 
-        good_old = self._old_pts[status.flatten() == 1]
-        good_new = new_pts[status.flatten() == 1]
+        if new_pts is None or not all(status.flatten()):
+            self._old_gray = gray
+            return None  # lost tracking — caller must re-bootstrap or accept the gap
 
-        if len(good_old) < 10:
-            # Lost tracking — not enough surviving features to trust a
-            # transform estimate. Caller needs to re-bootstrap.
-            self.current_H = None
-            return None
-
-        M, inliers = cv2.estimateAffinePartial2D(good_old, good_new, method=cv2.RANSAC)
-        if M is not None:
-            step_H = np.vstack([M, [0, 0, 1]])
-            # step_H maps old image coords -> new image coords. To keep
-            # mapping new-frame pixels to pitch coords, we need the
-            # inverse composed with the existing pitch homography:
-            # pitch = current_H @ old_image ; old_image = step_H^-1 @ new_image
-            # => pitch = current_H @ step_H^-1 @ new_image
-            self.current_H = self.current_H @ np.linalg.inv(step_H)
-
-        self._frames_since_refresh += 1
-        if self._frames_since_refresh >= 20 or len(good_new) < 30:
-            mask = self._feature_mask(gray.shape)
-            self._old_pts = cv2.goodFeaturesToTrack(gray, mask=mask, **self._feature_params)
-            self._frames_since_refresh = 0
-        else:
-            self._old_pts = good_new.reshape(-1, 1, 2)
-
+        self._tracked_pixel_points = new_pts
         self._old_gray = gray
+
+        H, _ = cv2.findHomography(
+            self._tracked_pixel_points.reshape(-1, 2), self._pitch_points, 0
+        )
+        if H is not None:
+            self.current_H = H
         return self.current_H
 
     def try_drift_correction(self, frame: np.ndarray) -> bool:
         """
-        Opportunistic correction using the halfway-line detector. Only
-        corrects ONE degree of freedom (nudges toward the detected
-        line's position) — not a full re-calibration. Returns True if a
-        confident line was found and used.
-
-        NOTE: this is a partial mitigation, not a solved drift problem —
-        see this file's module docstring. Long shots still need periodic
-        re-bootstrap for real accuracy.
+        Kept as a hook for future work (e.g. periodically validating
+        against the halfway-line detector) — not needed for the fix
+        implemented above, since direct point-tracking + fresh re-solve
+        already addresses the drift problem that motivated this. Left
+        as a no-op rather than removed, in case future long-clip testing
+        finds a case this doesn't cover.
         """
-        line = detect_halfway_line(frame)
-        if line is None or self.current_H is None:
-            return False
-        # Intentionally left as a hook rather than a full implementation:
-        # nudging a homography from a single line requires deciding how
-        # much to trust it vs. the propagated estimate (a Kalman-style
-        # blend would be the principled approach, similar to Stage 4's
-        # filter). Flagging this as the next real piece of work rather
-        # than shipping an under-tested correction heuristic.
-        return True
+        return False

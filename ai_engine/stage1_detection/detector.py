@@ -29,13 +29,20 @@ class Detector:
         return self._model
 
     def detect_frame(self, frame: np.ndarray, frame_idx: int) -> list[Detection]:
-        """Run detection on a single frame. Returns Detections in pixel space."""
+        """Run detection on a single frame. Returns Detections in pixel space.
+
+        Uses a lower confidence threshold for the ball class specifically
+        (config.ball_conf_thresh) — see that field's docstring for the
+        real-footage validation behind this. Same post-filtering approach
+        as Tracker.track_video(), kept consistent between the two paths.
+        """
         model = self._load_model()
 
+        effective_conf = min(self.config.conf_thresh, self.config.ball_conf_thresh)
         results = model.predict(
             frame,
             imgsz=self.config.imgsz,
-            conf=self.config.conf_thresh,
+            conf=effective_conf,
             iou=self.config.iou_thresh,
             device=self.config.device,
             verbose=False,
@@ -44,12 +51,18 @@ class Detector:
         detections = []
         for box in results.boxes:
             cls_id = int(box.cls.item())
+            cls_name = CLASS_NAMES[cls_id]
+            conf = float(box.conf.item())
+
+            if cls_name != "ball" and conf < self.config.conf_thresh:
+                continue
+
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             detections.append(
                 Detection(
                     frame_idx=frame_idx,
-                    cls=ObjectClass(CLASS_NAMES[cls_id]),
-                    conf=float(box.conf.item()),
+                    cls=ObjectClass(cls_name),
+                    conf=conf,
                     x1=x1,
                     y1=y1,
                     x2=x2,

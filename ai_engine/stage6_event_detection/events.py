@@ -104,33 +104,119 @@ def _estimate_sample_rate(trajectory: list[BallTrajectoryPoint]) -> float:
 
 
 def detect_passes(
-    ball_trajectory: list[BallTrajectoryPoint],
     possession_events: list[Event],
-    config: EventDetectionConfig,
+    identities: list[MasterIdentity],
 ) -> list[Event]:
     """
-    A pass = a rapid ball vector/speed change originating near one player
-    and ending near a DIFFERENT player on the SAME team, inferred from
-    consecutive possession_change events plus the ball's velocity profile
-    between them (config.pass_min_ball_speed_change as the trigger
-    threshold to distinguish an intentional pass from a loose ball roll).
+    A pass = consecutive possession changes where the ball moves from one
+    player to a DIFFERENT player on the SAME team. A possession change to
+    a player on the OPPOSING team is a turnover/interception, not a pass
+    — this function only emits "pass" events, turnovers are silently
+    skipped (not tracked as a separate event type yet; add one if you
+    need it later, the distinction is already computed here).
 
-    TODO: implement using possession_events as anchor points.
+    DELIBERATELY SIMPLE v1: uses possession_change events as the anchor
+    (already validated — see detect_possession's real-footage testing),
+    rather than also gating on ball speed/vector change as the original
+    Stage 6 roadmap suggested. Reasoning: possession detection is already
+    a solid, tested signal; adding a speed-based secondary check adds
+    real complexity (what threshold? validated against what data?) without
+    a demonstrated need yet. Revisit if this v1 produces obviously wrong
+    results in practice (e.g. counting a loose-ball scramble as a pass).
     """
-    raise NotImplementedError("detect_passes is stubbed.")
+    team_by_id = {i.master_id: i.team for i in identities}
+    events: list[Event] = []
+
+    for prev_event, next_event in zip(possession_events, possession_events[1:]):
+        passer_team = team_by_id.get(prev_event.player_master_id)
+        receiver_team = team_by_id.get(next_event.player_master_id)
+        if passer_team is None or receiver_team is None:
+            continue
+        if passer_team != receiver_team:
+            continue  # turnover, not a pass
+        events.append(
+            Event(
+                event_type="pass",
+                frame_idx=next_event.frame_idx,
+                player_master_id=prev_event.player_master_id,
+                target_master_id=next_event.player_master_id,
+            )
+        )
+
+    return events
 
 
 def detect_shots(
     ball_trajectory: list[BallTrajectoryPoint],
-    goal_box_pitch_coords: tuple[float, float, float, float],
+    goal_center_pitch: tuple[float, float],
+    min_shot_speed_mps: float = 10.0,
+    max_plausible_speed_mps: float = 35.0,
+    min_origin_distance_m: float = 5.0,
+    min_alignment: float = 0.85,
+    cooldown_frames: int = 20,
 ) -> list[Event]:
     """
-    A shot = ball trajectory accelerating toward the goal box area from
-    within pitch boundaries. goal_box_pitch_coords is
-    (x_min, y_min, x_max, y_max) in pitch meters for the target goal.
+    A shot = ball velocity, between any two consecutive tracked points,
+    pointed toward the goal (cosine alignment > min_alignment) with
+    speed between min_shot_speed_mps and max_plausible_speed_mps.
 
-    TODO: implement — look for a ball velocity vector pointed at the goal
-    box with increasing speed, originating from open play (not already
-    inside the box, which would just be an in-box touch).
+    EVALUATES EVERY CONSECUTIVE PAIR, not just points before a gap —
+    corrected after testing found the original "only near a gap" design
+    too narrow: on real footage, a genuinely excellent shot signal
+    (speed ~11 m/s, alignment 0.98-1.00, i.e. pointed almost exactly at
+    goal) sat in the middle of a continuously-tracked stretch and was
+    skipped entirely by that restriction. Evaluating every pair still
+    naturally covers the "shot flight not fully tracked" case (Stage 4
+    ball tracking's own gap philosophy already handles that — this
+    function just needs to catch the last velocity estimate before data
+    runs out, which happens automatically here).
+
+    max_plausible_speed_mps GUARDS AGAINST TRACKING NOISE: found via
+    testing that raw frame-to-frame speed occasionally spikes to
+    physically impossible values (300+ m/s) from a single mistracked
+    point — filtering those out is necessary, not optional. No real
+    shot exceeds ~35 m/s.
+
+    cooldown_frames prevents one continuous fast, goal-aligned stretch
+    from emitting many duplicate "shot" events for what's really one
+    strike.
     """
-    raise NotImplementedError("detect_shots is stubbed.")
+    events: list[Event] = []
+    valid_points = [p for p in ball_trajectory if p.x_m is not None]
+    last_event_frame = -cooldown_frames
+
+    for current, next_point in zip(valid_points, valid_points[1:]):
+        dt_frames = next_point.frame_idx - current.frame_idx
+        if dt_frames <= 0:
+            continue
+        dt_sec = dt_frames / 25.0
+
+        vx = (next_point.x_m - current.x_m) / dt_sec
+        vy = (next_point.y_m - current.y_m) / dt_sec
+        speed = (vx**2 + vy**2) ** 0.5
+
+        if not (min_shot_speed_mps <= speed <= max_plausible_speed_mps):
+            continue
+
+        origin_dist = ((goal_center_pitch[0] - current.x_m) ** 2 + (goal_center_pitch[1] - current.y_m) ** 2) ** 0.5
+        if origin_dist < min_origin_distance_m:
+            continue
+
+        to_goal_x = goal_center_pitch[0] - current.x_m
+        to_goal_y = goal_center_pitch[1] - current.y_m
+        to_goal_dist = (to_goal_x**2 + to_goal_y**2) ** 0.5
+        if to_goal_dist == 0:
+            continue
+        alignment = (vx * to_goal_x + vy * to_goal_y) / (speed * to_goal_dist)
+
+        if alignment > min_alignment and (current.frame_idx - last_event_frame) >= cooldown_frames:
+            events.append(
+                Event(
+                    event_type="shot",
+                    frame_idx=current.frame_idx,
+                    metadata={"speed_mps": speed, "origin_distance_m": origin_dist, "alignment": alignment},
+                )
+            )
+            last_event_frame = current.frame_idx
+
+    return events

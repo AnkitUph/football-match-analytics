@@ -63,10 +63,17 @@ class Tracker:
 
         tracklets: dict[int, Tracklet] = {}
 
+        # Ultralytics doesn't support per-class confidence thresholds in
+        # one call — run the model at the LOWER of the two thresholds
+        # (catches marginal ball detections), then post-filter non-ball
+        # detections back up to the stricter general threshold below.
+        # See config.py's ball_conf_thresh docstring for why this exists.
+        effective_conf = min(self.detection_config.conf_thresh, self.detection_config.ball_conf_thresh)
+
         results_generator = model.track(
             source=video_path,
             imgsz=self.detection_config.imgsz,
-            conf=self.detection_config.conf_thresh,
+            conf=effective_conf,
             iou=self.detection_config.iou_thresh,
             device=self.detection_config.device,
             tracker=str(self.tracking_config.tracker_yaml),
@@ -86,11 +93,19 @@ class Tracker:
                 track_id = int(box.id.item())
                 cls_id = int(box.cls.item())
                 conf = float(box.conf.item())
+                cls_name = CLASS_NAMES[cls_id]
+
+                # Post-filter: ball already passed effective_conf (the
+                # lower bar) if we're here; non-ball classes need to
+                # additionally clear the stricter general threshold.
+                if cls_name != "ball" and conf < self.detection_config.conf_thresh:
+                    continue
+
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
 
                 detection = Detection(
                     frame_idx=frame_idx,
-                    cls=ObjectClass(CLASS_NAMES[cls_id]),
+                    cls=ObjectClass(cls_name),
                     conf=conf,
                     x1=x1,
                     y1=y1,

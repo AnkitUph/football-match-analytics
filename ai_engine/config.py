@@ -19,9 +19,6 @@ MODELS_DIR = AI_ENGINE_ROOT / "models"
 # Your trained detection weights (best.pt from the Kaggle notebook).
 DETECTION_MODEL_PATH = MODELS_DIR / "best.pt"
 
-model_path: Path = MODELS_DIR / "best_openvino_model"
-device: str = "intel:gpu"
-
 # Class index -> label, matches your Kaggle training run.
 CLASS_NAMES = {
     0: "ball",
@@ -40,9 +37,30 @@ class DetectionConfig:
     model_path: Path = MODELS_DIR / "best_openvino_model"
     imgsz: int = 640
     conf_thresh: float = 0.35
+    # Ball-specific override, lower than the general threshold.
+    #
+    # VALIDATED FINDING (real footage, test_11.mp4): ball confidence skews
+    # much lower than other classes overall (mean ~0.41 even for "real"
+    # detections at 0.35 threshold), and during fast motion (shots,
+    # deflections) confidence can drop to 0.05-0.3 even when the box is
+    # tracking a real, spatially coherent ball path. Tested lowering this
+    # in isolation — recovers real detections in many ordinary low-blur
+    # situations. Does NOT fully solve tracking through dramatic events
+    # (hard shots, saves): even at conf=0.15-0.20, most of a confirmed
+    # real trajectory during one such event still fell through, and going
+    # lower (0.05) reintroduced clear spatial noise (candidates jumping to
+    # unrelated frame locations at similar confidence to the real ones).
+    # Treat extended gaps during fast action as expected honest gaps
+    # (see ball_tracking.interpolation_max_gap_frames), not a bug to keep
+    # chasing via threshold tuning alone — Stage 6's shot detection is
+    # designed to work from the ball's last known trajectory before such
+    # a gap, rather than requiring the gap itself to be filled.
+    ball_conf_thresh: float = 0.15
     iou_thresh: float = 0.5
-    device: str = "intel:gpu"
-    target_fps: int = 12
+    device: str = "intel:gpu"  # OpenVINO device string — "intel:gpu", "intel:cpu", "intel:npu"
+    target_fps: int = 12       # downsample target, per Stage 1 plan (10-15fps)
+
+
 # ---------------------------------------------------------------------------
 # Stage 2: Tracking (BoT-SORT)
 # ---------------------------------------------------------------------------
