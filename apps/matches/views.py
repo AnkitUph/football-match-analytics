@@ -6,6 +6,7 @@ from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from apps.analytics.models import TeamStatistics
 
 from apps.matches.models import Match, MatchLineup, MatchVideo
 from apps.matches.tasks import process_match
@@ -385,79 +386,134 @@ def _dummy_player_rows(rng, lineup_qs, team):
     return rows
 
 
+
 @login_required
 def match_results(request, public_id):
     match = get_object_or_404(Match, public_id=public_id)
 
-    # Don't show stats for a match that isn't actually done - send the
-    # user to the processing page instead (which itself redirects to
-    # results the moment the task finishes).
     if match.status != Match.MatchStatus.COMPLETED:
         return redirect("matches:processing", public_id=match.public_id)
 
-    # Deterministic per-match "randomness" - same match always shows the
-    # same dummy numbers instead of reshuffling on every page load.
     rng = random.Random(str(match.public_id))
 
     home_lineup = match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number")
     away_lineup = match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number")
 
+    # Player-level stats always come from the dummy generator for now —
+    # real per-player stats need jersey-number OCR (not built yet) to
+    # link a tracked identity to an actual named Player record. See the
+    # project's known-gaps list.
     home_players = _dummy_player_rows(rng, home_lineup, match.home_team)
     away_players = _dummy_player_rows(rng, away_lineup, match.away_team)
 
-    home_possession = rng.randint(38, 62)
-    away_possession = 100 - home_possession
+    # --- Team-level stats: real if this match has them, dummy otherwise ---
+    # TeamStatistics only gets populated once a calibration exists for
+    # this match's footage (Stage 5 dependency) — a fresh upload won't
+    # have real rows yet, and will fall through to the dummy block
+    # below, same as every match did before Stage 7 existed.
+    real_team_stats = {
+        ts.team_id: ts
+        for ts in TeamStatistics.objects.filter(match=match)
+    }
+    using_real_stats = bool(real_team_stats)
 
-    def team_stat_block():
-        return {
-            "shots": rng.randint(8, 18),
-            "shots_on_target": rng.randint(3, 9),
-            "passes": rng.randint(300, 600),
-            "pass_accuracy": rng.randint(75, 90),
-            "corners": rng.randint(2, 9),
-            "fouls": rng.randint(6, 14),
-            "yellow_cards": rng.randint(0, 4),
-            "red_cards": rng.choice([0, 0, 0, 0, 1]),
-            "xg": round(rng.uniform(0.8, 2.9), 2),
-            "distance_km": round(rng.uniform(105, 118), 1),
-        }
+    if using_real_stats:
+        home_ts = real_team_stats.get(match.home_team_id)
+        away_ts = real_team_stats.get(match.away_team_id)
 
-    team_stats = {"home": team_stat_block(), "away": team_stat_block()}
+        total_possession = (home_ts.possession if home_ts else 0) + (away_ts.possession if away_ts else 0)
+        if total_possession > 0:
+            home_possession = round((home_ts.possession / total_possession) * 100) if home_ts else 50
+        else:
+            home_possession = 50
+        away_possession = 100 - home_possession
 
-    shot_outcomes = ["Goal", "Saved", "Blocked", "Off Target", "Woodwork"]
-    shot_pool = [(p, "home") for p in home_players] + [(p, "away") for p in away_players]
-    shots = []
-    for _ in range(rng.randint(10, 18)):
-        player, side = rng.choice(shot_pool)
-        shots.append({
-            "minute": rng.randint(1, 90),
-            "player": player["name"],
-            "side": side,
-            "xg": round(rng.uniform(0.02, 0.75), 2),
-            "outcome": rng.choice(shot_outcomes),
-        })
-    shots.sort(key=lambda s: s["minute"])
+        def real_team_stat_block(ts):
+            if ts is None:
+                return {"shots": 0, "shots_on_target": 0, "passes": 0, "pass_accuracy": 0,
+                        "corners": 0, "fouls": 0, "yellow_cards": 0, "red_cards": 0,
+                        "xg": 0, "distance_km": 0}
+            return {
+                "shots": ts.shots,
+                "shots_on_target": ts.shots_on_target,
+                "passes": ts.passes_completed,
+                "pass_accuracy": round(ts.pass_accuracy, 1),
+                "corners": ts.corners,
+                "fouls": ts.fouls,
+                "yellow_cards": ts.yellow_cards,
+                "red_cards": ts.red_cards,
+                "xg": round(ts.xg, 2),
+                "distance_km": round(ts.total_distance / 1000, 2),
+            }
 
-    timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
-    event_types = ["goal", "yellow_card", "red_card", "substitution"]
-    for _ in range(rng.randint(6, 10)):
-        etype = rng.choice(event_types)
-        side = rng.choice(["home", "away"])
-        team = match.home_team if side == "home" else match.away_team
-        player = rng.choice(home_players if side == "home" else away_players)
-        label = {
-            "goal": "Goal",
-            "yellow_card": "Yellow card",
-            "red_card": "Red card",
-            "substitution": "Substitution",
-        }[etype]
-        timeline.append({
-            "minute": rng.randint(1, 90),
-            "type": etype,
-            "description": f"{label} — {player['name']} ({team.short_name})",
-        })
-    timeline.append({"minute": 90, "type": "fulltime", "description": "Full Time"})
-    timeline.sort(key=lambda e: e["minute"])
+        team_stats = {"home": real_team_stat_block(home_ts), "away": real_team_stat_block(away_ts)}
+
+        # No per-shot or timeline event data exists yet (that needs the
+        # events_csv/shots_csv model work discussed separately) — these
+        # stay empty rather than dummy-filled when we ARE showing real
+        # team stats, so the page doesn't mix real aggregate numbers
+        # with fabricated shot-by-shot detail that contradicts them.
+        shots = []
+        timeline = [
+            {"minute": 0, "type": "kickoff", "description": "Kickoff"},
+            {"minute": 90, "type": "fulltime", "description": "Full Time"},
+        ]
+
+    else:
+        # --- Original Phase 5 dummy generation, unchanged ---
+        home_possession = rng.randint(38, 62)
+        away_possession = 100 - home_possession
+
+        def team_stat_block():
+            return {
+                "shots": rng.randint(8, 18),
+                "shots_on_target": rng.randint(3, 9),
+                "passes": rng.randint(300, 600),
+                "pass_accuracy": rng.randint(75, 90),
+                "corners": rng.randint(2, 9),
+                "fouls": rng.randint(6, 14),
+                "yellow_cards": rng.randint(0, 4),
+                "red_cards": rng.choice([0, 0, 0, 0, 1]),
+                "xg": round(rng.uniform(0.8, 2.9), 2),
+                "distance_km": round(rng.uniform(105, 118), 1),
+            }
+
+        team_stats = {"home": team_stat_block(), "away": team_stat_block()}
+
+        shot_outcomes = ["Goal", "Saved", "Blocked", "Off Target", "Woodwork"]
+        shot_pool = [(p, "home") for p in home_players] + [(p, "away") for p in away_players]
+        shots = []
+        for _ in range(rng.randint(10, 18)):
+            player, side = rng.choice(shot_pool)
+            shots.append({
+                "minute": rng.randint(1, 90),
+                "player": player["name"],
+                "side": side,
+                "xg": round(rng.uniform(0.02, 0.75), 2),
+                "outcome": rng.choice(shot_outcomes),
+            })
+        shots.sort(key=lambda s: s["minute"])
+
+        timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
+        event_types = ["goal", "yellow_card", "red_card", "substitution"]
+        for _ in range(rng.randint(6, 10)):
+            etype = rng.choice(event_types)
+            side = rng.choice(["home", "away"])
+            team = match.home_team if side == "home" else match.away_team
+            player = rng.choice(home_players if side == "home" else away_players)
+            label = {
+                "goal": "Goal",
+                "yellow_card": "Yellow card",
+                "red_card": "Red card",
+                "substitution": "Substitution",
+            }[etype]
+            timeline.append({
+                "minute": rng.randint(1, 90),
+                "type": etype,
+                "description": f"{label} — {player['name']} ({team.short_name})",
+            })
+        timeline.append({"minute": 90, "type": "fulltime", "description": "Full Time"})
+        timeline.sort(key=lambda e: e["minute"])
 
     context = {
         "match": match,
@@ -468,5 +524,6 @@ def match_results(request, public_id):
         "team_stats": team_stats,
         "shots": shots,
         "timeline": timeline,
+        "using_real_stats": using_real_stats,
     }
     return render(request, "matches/results.html", context)

@@ -71,7 +71,9 @@ def main(args):
         for det in t.detections:
             all_detections_by_frame[det.frame_idx].append(det)
     ball_by_frame = extract_ball_detections(dict(all_detections_by_frame))
-    ball_trajectory_px = interpolate_gaps(ball_by_frame, DEFAULT_CONFIG.ball_tracking)
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    ball_trajectory_px = interpolate_gaps(ball_by_frame, DEFAULT_CONFIG.ball_tracking, frame_w, frame_h)
 
     print("Stage 5: homography bootstrap + propagation...")
     cap.set(cv2.CAP_PROP_POS_FRAMES, BOOTSTRAP_FRAME)
