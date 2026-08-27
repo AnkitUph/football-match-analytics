@@ -472,6 +472,14 @@
                         <input type="file" id="video" name="video" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska" required>
                         <p style="margin-top:8px;">MP4, MOV, AVI, or MKV</p>
                     </div>
+                    <button type="button" id="detect-colors-btn" onclick="detectKitColors()"
+                            style="margin-top:10px; width:auto; padding:9px 16px; background:#f4f6f8; color:#203a43; border:1px solid #ddd; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer;">
+                        🎨 Detect Kit Colors From Video
+                    </button>
+                    <p style="font-size:11px; color:#999; margin-top:6px;">
+                        Uploads the video once to sample real jersey colors — no need to guess exact hex values below.
+                    </p>
+                    <div id="color-swatch-panel" style="display:none; margin-top:14px; padding:16px; background:#f8f9fa; border-radius:8px;"></div>
                 </div>
             </div>
 
@@ -574,6 +582,100 @@
         }
 
         setMode('existing');
+
+        // ------------------------------------------------------------
+        // Kit color detection: real swatches sampled from the actual
+        // video, so the user clicks to assign instead of typing hex.
+        // ------------------------------------------------------------
+        function getCookie(name) {
+            const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+            return match ? match[2] : null;
+        }
+
+        async function detectKitColors() {
+            const videoInput = document.getElementById('video');
+            const btn = document.getElementById('detect-colors-btn');
+            const panel = document.getElementById('color-swatch-panel');
+
+            if (!videoInput.files.length) {
+                alert('Select a video file first.');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = '⏳ Sampling colors from video…';
+            panel.style.display = 'block';
+            panel.innerHTML = '<p style="font-size:13px;color:#888;">This uploads the video once to analyze a few seconds of footage — may take a moment.</p>';
+
+            const formData = new FormData();
+            formData.append('video', videoInput.files[0]);
+
+            try {
+                const response = await fetch("{% url 'matches:detect_kit_colors' %}", {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': getCookie('csrftoken') },
+                    body: formData,
+                });
+                const data = await response.json();
+
+                if (data.error) {
+                    panel.innerHTML = '<p style="font-size:13px;color:#c0392b;">' + data.error + '</p>';
+                    return;
+                }
+
+                renderSwatches(data);
+            } catch (err) {
+                panel.innerHTML = '<p style="font-size:13px;color:#c0392b;">Detection failed: ' + err + '</p>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🎨 Detect Kit Colors From Video';
+            }
+        }
+
+        function renderSwatches(data) {
+            const panel = document.getElementById('color-swatch-panel');
+            const allSwatches = [
+                ...(data.outfield || []).map(hex => ({ hex, group: 'Outfield' })),
+                ...(data.goalkeeper || []).map(hex => ({ hex, group: 'Goalkeeper' })),
+            ];
+
+            if (allSwatches.length === 0) {
+                panel.innerHTML = '<p style="font-size:13px;color:#888;">No clear kit colors found in this clip — enter hex values manually below instead.</p>';
+                return;
+            }
+
+            const targets = [
+                ['home_kit_color', 'Home Kit'],
+                ['away_kit_color', 'Away Kit'],
+                ['home_gk_kit_color', 'Home GK'],
+                ['away_gk_kit_color', 'Away GK'],
+            ];
+
+            panel.innerHTML = '<p style="font-size:12px;color:#666;margin-bottom:10px;font-weight:600;">Real colors sampled from your video — click a swatch, then click where it belongs:</p>' +
+                '<div style="display:flex;gap:16px;flex-wrap:wrap;">' +
+                allSwatches.map((s, i) => `
+                    <div style="text-align:center;">
+                        <div style="width:48px;height:48px;border-radius:50%;background:${s.hex};border:2px solid rgba(0,0,0,0.1);margin:0 auto 6px;"></div>
+                        <div style="font-size:10px;color:#999;margin-bottom:6px;">${s.group}</div>
+                        <select onchange="assignSwatch('${s.hex}', this.value); this.value='';" style="font-size:11px;padding:4px;">
+                            <option value="">Assign to…</option>
+                            ${targets.map(([fieldName, label]) => `<option value="${fieldName}">${label}</option>`).join('')}
+                        </select>
+                    </div>
+                `).join('') +
+                '</div>';
+        }
+
+        function assignSwatch(hex, fieldName) {
+            if (!fieldName) return;
+            // Both the "existing" and "custom" mode panels have inputs
+            // sharing this same name — update all of them so whichever
+            // mode is active gets the right value.
+            document.querySelectorAll('input[name="' + fieldName + '"]').forEach(input => {
+                input.value = hex;
+            });
+        }
     </script>
+
 </body>
 </html>

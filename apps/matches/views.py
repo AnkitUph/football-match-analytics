@@ -1,4 +1,7 @@
 import random
+import tempfile
+import os
+
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -527,3 +530,44 @@ def match_results(request, public_id):
         "using_real_stats": using_real_stats,
     }
     return render(request, "matches/results.html", context)
+
+
+
+from django.http import JsonResponse
+from django.views.decorators.http import require_POST
+
+
+@require_POST
+@login_required
+def detect_kit_colors(request):
+    """
+    Accepts a video file upload (same field as the main form), runs a
+    quick color extraction against a short window near the start, and
+    returns real swatches for the frontend to display.
+
+    Doesn't create any Match/MatchVideo record — this runs BEFORE the
+    user has finished the rest of the form, purely to power the color
+    picker step. The video is saved to a temp file just long enough to
+    run extraction, then deleted.
+    """
+    video_file = request.FILES.get("video")
+    if not video_file:
+        return JsonResponse({"error": "No video file provided."}, status=400)
+
+    # Save to a temp file — extraction needs a real file path (uses
+    # cv2.VideoCapture), can't work directly off the in-memory upload.
+    suffix = os.path.splitext(video_file.name)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        for chunk in video_file.chunks():
+            tmp.write(chunk)
+        tmp_path = tmp.name
+
+    try:
+        from ai_engine.stage3_team_reid.kit_color_extraction import extract_kit_color_candidates
+        result = extract_kit_color_candidates(tmp_path)
+    except Exception as e:
+        return JsonResponse({"error": f"Color detection failed: {e}"}, status=500)
+    finally:
+        os.unlink(tmp_path)
+
+    return JsonResponse(result)
