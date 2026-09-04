@@ -171,6 +171,13 @@
     .pitch-placeholder::after { content: ""; position: absolute; left: 50%; top: 6%; bottom: 6%; width: 2px; background: rgba(255,255,255,0.4); }
     .pitch-note { background: rgba(15,32,39,0.55); color: #fff; font-size: 12px; padding: 8px 16px; border-radius: 20px; z-index: 1; }
 
+    /* Real heatmaps (home/away side by side) */
+    .heatmap-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+    .heatmap-columns figure { margin: 0; }
+    .heatmap-columns figcaption { font-size: 12px; font-weight: 700; color: #666; margin-bottom: 6px; text-align: center; }
+    .heatmap-columns img { width: 100%; border-radius: 10px; display: block; }
+    @media (max-width: 640px) { .heatmap-columns { grid-template-columns: 1fr; } }
+
     /* Lineup */
     .lineup-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     @media (max-width: 700px) { .lineup-columns { grid-template-columns: 1fr; } }
@@ -286,13 +293,23 @@
 <body>
     <header>
         <h1>⚽ Football Analytics</h1>
-        <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
+        <div>
+            {% if match_report %}
+                <a href="{{ match_report.pdf_file.url }}" target="_blank" style="margin-right:16px;">Download PDF Report</a>
+            {% endif %}
+            <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
+        </div>
     </header>
 
     <div class="container">
         {% if not using_real_stats %}
         <div class="dummy-banner">
         📊 Team stats shown are placeholder data. Real numbers populate once this match's footage has been calibrated.
+        {% if is_uploader and not has_calibration %}
+            <a href="{% url 'matches:calibrate' match.public_id %}" style="color:inherit; font-weight:700; text-decoration:underline; margin-left:6px;">Calibrate now &rarr;</a>
+        {% elif is_uploader and has_calibration %}
+            <span style="opacity:0.8; margin-left:6px;">(calibration saved — pitch stats are processing)</span>
+        {% endif %}
         </div>
         {% endif %}
 
@@ -314,6 +331,50 @@
             </div>
             <span class="status-pill">{{ match.get_status_display }}</span>
         </div>
+
+        {% if is_uploader %}
+        <div class="section" id="goals-panel" style="margin-bottom:16px;">
+            {% csrf_token %}
+            <h2>Manage Goals <span style="font-size:11px;font-weight:600;color:#999;">(manually entered — not auto-detected)</span></h2>
+
+            <div id="goals-list" style="display:flex; flex-direction:column; gap:6px; margin-bottom:14px;">
+                {% for goal in match_goals %}
+                <div style="display:flex; align-items:center; justify-content:space-between; background:#f4f6f8; border-radius:6px; padding:8px 12px; font-size:13px;">
+                    <span>
+                        {% if goal.minute is not None %}<strong>{{ goal.minute }}'</strong> — {% endif %}
+                        {{ goal.scorer.player_name|default:"Unknown scorer" }}
+                        ({{ goal.team.short_name }}{% if goal.is_own_goal %}, OG{% endif %})
+                    </span>
+                    <button onclick="deleteGoal({{ goal.id }})" style="background:none; border:none; color:#c0392b; font-weight:700; cursor:pointer; font-size:14px; padding:0 4px;">&times;</button>
+                </div>
+                {% empty %}
+                <p style="font-size:13px; color:#999;">No goals logged yet.</p>
+                {% endfor %}
+            </div>
+
+            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                <select id="goal-team-side" style="padding:7px 10px; border-radius:6px; border:1px solid #ddd; font-size:13px;">
+                    <option value="HOME">{{ match.home_team.short_name }}</option>
+                    <option value="AWAY">{{ match.away_team.short_name }}</option>
+                </select>
+                <select id="goal-scorer" style="padding:7px 10px; border-radius:6px; border:1px solid #ddd; font-size:13px; min-width:160px;">
+                    <option value="">Unknown scorer</option>
+                    <optgroup label="{{ match.home_team.short_name }}" id="goal-scorer-home">
+                        {% for p in home_lineup %}<option value="{{ p.id }}" data-side="HOME">#{{ p.jersey_number }} {{ p.player_name }}</option>{% endfor %}
+                    </optgroup>
+                    <optgroup label="{{ match.away_team.short_name }}" id="goal-scorer-away">
+                        {% for p in away_lineup %}<option value="{{ p.id }}" data-side="AWAY">#{{ p.jersey_number }} {{ p.player_name }}</option>{% endfor %}
+                    </optgroup>
+                </select>
+                <input id="goal-minute" type="number" min="0" max="130" placeholder="Min. (optional)" style="width:110px; padding:7px 10px; border-radius:6px; border:1px solid #ddd; font-size:13px;">
+                <label style="font-size:12px; color:#666; display:flex; align-items:center; gap:4px;">
+                    <input id="goal-is-own-goal" type="checkbox"> Own goal
+                </label>
+                <button onclick="addGoal()" style="background:#4FAE79; color:#fff; border:none; border-radius:6px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer;">Add Goal</button>
+            </div>
+            <p id="goals-error" style="color:#c0392b; font-size:12px; margin-top:6px;"></p>
+        </div>
+        {% endif %}
 
         <div class="tab-bar">
             <button class="tab-btn active" data-tab="overview" onclick="showTab('overview')">Overview</button>
@@ -374,7 +435,14 @@
         <!-- Team Stats -->
         <div class="tab-panel" id="tab-stats">
             <div class="section">
-                <h2>Team Statistics {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}</h2>
+                <h2>
+                    Team Statistics {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}
+                    {% if is_uploader %}
+                        <a href="{% url 'matches:calibrate' match.public_id %}" style="float:right; font-size:12px; font-weight:600; color:#4FAE79; text-decoration:none;">
+                            {% if using_real_stats %}Recalibrate{% else %}Calibrate{% endif %}
+                        </a>
+                    {% endif %}
+                </h2>
                 <table class="stats-table">
                     <tbody>
                         <tr><td class="stat-label">Shots</td><td class="home-val">{{ team_stats.home.shots }}</td><td></td><td class="away-val">{{ team_stats.away.shots }}</td></tr>
@@ -390,17 +458,50 @@
             </div>
 
             <div class="section">
-                <h2>Heatmap <span class="badge-dummy">Placeholder</span></h2>
-                <div class="pitch-placeholder">
-                    <span class="pitch-note">Team heatmap will render here after CV processing</span>
-                </div>
+                {% if home_heatmap or away_heatmap %}
+                    <h2>Heatmap</h2>
+                    <div class="heatmap-columns">
+                        <figure>
+                            <figcaption>{{ match.home_team.short_name }}</figcaption>
+                            {% if home_heatmap %}
+                                <img src="data:image/png;base64,{{ home_heatmap }}" alt="{{ match.home_team.short_name }} heatmap">
+                            {% else %}
+                                <div class="pitch-placeholder">
+                                    <span class="pitch-note">Not enough tracked positions yet</span>
+                                </div>
+                            {% endif %}
+                        </figure>
+                        <figure>
+                            <figcaption>{{ match.away_team.short_name }}</figcaption>
+                            {% if away_heatmap %}
+                                <img src="data:image/png;base64,{{ away_heatmap }}" alt="{{ match.away_team.short_name }} heatmap">
+                            {% else %}
+                                <div class="pitch-placeholder">
+                                    <span class="pitch-note">Not enough tracked positions yet</span>
+                                </div>
+                            {% endif %}
+                        </figure>
+                    </div>
+                {% else %}
+                    <h2>Heatmap <span class="badge-dummy">Placeholder</span></h2>
+                    <div class="pitch-placeholder">
+                        <span class="pitch-note">Team heatmap will render here after CV processing</span>
+                    </div>
+                {% endif %}
             </div>
         </div>
 
         <!-- Lineup -->
         <div class="tab-panel" id="tab-lineup">
             <div class="section">
-                <h2>Lineup <span class="badge-dummy">Tap a player</span></h2>
+                <h2>
+                    Lineup <span class="badge-dummy">Tap a player</span>
+                    {% if is_uploader %}
+                        <a href="{% url 'matches:identify_players' match.public_id %}" style="float:right; font-size:12px; font-weight:600; color:#4FAE79; text-decoration:none;">
+                            Identify tracked players
+                        </a>
+                    {% endif %}
+                </h2>
                 <div class="lineup-columns">
                     <div>
                         <h3>{{ match.home_team.name }}</h3>
@@ -426,7 +527,7 @@
             </div>
             <div class="modal-body">
                 <div id="modal-stat-groups"></div>
-                <div class="modal-pitch" style="margin-top:18px;"><span class="modal-pitch-note">Player heatmap coming in Phase 6</span></div>
+                <div id="modal-heatmap-wrap" class="modal-pitch" style="margin-top:18px;"></div>
             </div>
         </div>
     </div>
@@ -510,6 +611,46 @@
             },
         ];
 
+        const PLAYER_HEATMAP_URL_BASE = "{% url 'matches:player_heatmap' match.public_id 0 %}".replace(/0\/$/, '');
+
+        // Maps a stat's label to its "is this real?" flag and its
+        // "is this confirmed vs. unverified-guess?" flag on the player
+        // row. Most real stats share distance_confirmed (they all come
+        // from the same TrackPlayerIdentification row) — Goals is the
+        // exception: it's manually entered via MatchGoal, always
+        // confirmed the moment it's real, hence its own goals_confirmed
+        // flag rather than reusing distance_confirmed. See
+        // _dummy_player_rows in views.py for what's real vs. dummy.
+        const TRACKED_STAT_FLAGS = {
+            'Distance Covered': { real: 'distance_is_real', confirmed: 'distance_confirmed' },
+            'Passes Completed': { real: 'passes_completed_is_real', confirmed: 'distance_confirmed' },
+            'Shots': { real: 'shots_is_real', confirmed: 'distance_confirmed' },
+            'Expected Goals (xG)': { real: 'xg_is_real', confirmed: 'distance_confirmed' },
+            'Goals': { real: 'goals_is_real', confirmed: 'goals_confirmed' },
+        };
+        // label -> [label of the real stat that, when real, makes THIS
+        // label's dummy value worth flagging as "(estimated)" since it
+        // has no real counterpart of its own]
+        const ESTIMATED_WHEN_REAL = {
+            'Passes Attempted': 'passes_completed_is_real',
+            'Pass Accuracy': 'passes_completed_is_real',
+            'Shots on Target': 'shots_is_real',
+        };
+
+        function statLabelSuffix(label, p) {
+            const flags = TRACKED_STAT_FLAGS[label];
+            if (flags && p[flags.real]) {
+                return p[flags.confirmed]
+                    ? ' <span style="color:#4FAE79;font-weight:700;font-size:10px;">(tracked)</span>'
+                    : ' <span style="color:#E0B34E;font-weight:700;font-size:10px;">(tracked, unverified)</span>';
+            }
+            const estimatedFlag = ESTIMATED_WHEN_REAL[label];
+            if (estimatedFlag && p[estimatedFlag]) {
+                return ' <span style="color:#999;font-weight:700;font-size:10px;" title="No real counterpart is detected for this stat — still an estimated placeholder">(estimated)</span>';
+            }
+            return '';
+        }
+
         function openPlayer(containerId, index) {
             const players = containerId === 'lineup-home' ? homePlayers : awayPlayers;
             const teamName = containerId === 'lineup-home' ? "{{ match.home_team.name|escapejs }}" : "{{ match.away_team.name|escapejs }}";
@@ -525,12 +666,42 @@
                     <div class="stat-group-title">${group.title}</div>
                     ${group.stats.map(([label, getValue, suffix, extraClass]) => `
                         <div class="stat-row">
-                            <span class="stat-row-label">${label}</span>
+                            <span class="stat-row-label">${label}${statLabelSuffix(label, p)}</span>
                             <span class="stat-row-value ${extraClass || ''}">${getValue(p)}${suffix || ''}</span>
                         </div>
                     `).join('')}
                 </div>
             `).join('');
+
+            // Per-player heatmap — only fetched for a player with a real
+            // tracked identity (distance_is_real), lazy-loaded on modal
+            // open rather than preloaded for every player up front (same
+            // "generate on demand, not all at once" lesson learned from
+            // the identify-players crop-loading crash earlier — this is
+            // one request at a time here, not a concurrency spike, but
+            // no reason to fetch 20+ heatmaps nobody will look at either).
+            const heatmapWrap = document.getElementById('modal-heatmap-wrap');
+            heatmapWrap.className = 'modal-pitch';
+            if (p.distance_is_real && p.lineup_entry_id) {
+                heatmapWrap.innerHTML = '<span class="modal-pitch-note">Loading heatmap&hellip;</span>';
+                const img = new Image();
+                img.onload = () => {
+                    heatmapWrap.className = ''; // drop the CSS pitch-outline overlay — the PNG already has its own
+                    heatmapWrap.innerHTML = '';
+                    img.style.width = '100%';
+                    img.style.borderRadius = '10px';
+                    img.style.display = 'block';
+                    heatmapWrap.appendChild(img);
+                };
+                img.onerror = () => {
+                    heatmapWrap.innerHTML = '<span class="modal-pitch-note">Not enough tracked positions for a heatmap yet</span>';
+                };
+                img.src = `${PLAYER_HEATMAP_URL_BASE}${p.lineup_entry_id}/`;
+            } else {
+                heatmapWrap.innerHTML = '<span class="modal-pitch-note">'
+                    + (p.distance_is_real ? 'Not enough tracked positions for a heatmap yet' : 'Not tracked yet — identify this player on /identify/ to see their heatmap')
+                    + '</span>';
+            }
 
             document.getElementById('player-modal').classList.add('open');
         }
@@ -542,6 +713,78 @@
         function showTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
             document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + tab));
+        }
+
+        // --- Manage Goals panel (manual entry only — see MatchGoal's
+        // docstring in models.py for why nothing here is auto-detected) ---
+        const goalsPanel = document.getElementById('goals-panel');
+        if (goalsPanel) {
+            const csrfToken = goalsPanel.querySelector('[name=csrfmiddlewaretoken]').value;
+            const DELETE_GOAL_URL_BASE = "{% url 'matches:delete_goal' match.public_id 0 %}".replace(/0\/delete\/$/, '');
+
+            // Keeps the scorer dropdown limited to the selected side's
+            // players, so it's not possible to accidentally pick an
+            // opposing-team player as the "team scored for" scorer
+            // (own goals are a separate explicit checkbox, not implied
+            // by picking a player from the other list).
+            function refreshScorerOptions() {
+                const side = document.getElementById('goal-team-side').value;
+                const isOwnGoal = document.getElementById('goal-is-own-goal').checked;
+                // Own goal: scorer must be from the OPPOSING side (see
+                // add_goal's validation in views.py) — otherwise same side.
+                const wantedSide = isOwnGoal ? (side === 'HOME' ? 'AWAY' : 'HOME') : side;
+                document.querySelectorAll('#goal-scorer option[data-side]').forEach(opt => {
+                    opt.hidden = opt.dataset.side !== wantedSide;
+                });
+                document.getElementById('goal-scorer').value = '';
+            }
+            document.getElementById('goal-team-side').addEventListener('change', refreshScorerOptions);
+            document.getElementById('goal-is-own-goal').addEventListener('change', refreshScorerOptions);
+            refreshScorerOptions();
+
+            window.addGoal = function() {
+                const errorEl = document.getElementById('goals-error');
+                errorEl.textContent = '';
+                const scorerVal = document.getElementById('goal-scorer').value;
+                const minuteVal = document.getElementById('goal-minute').value;
+                const payload = {
+                    team_side: document.getElementById('goal-team-side').value,
+                    scorer_lineup_id: scorerVal ? parseInt(scorerVal, 10) : null,
+                    minute: minuteVal ? parseInt(minuteVal, 10) : null,
+                    is_own_goal: document.getElementById('goal-is-own-goal').checked,
+                };
+                fetch("{% url 'matches:add_goal' match.public_id %}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                    body: JSON.stringify(payload),
+                })
+                    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                    .then(({ ok, data }) => {
+                        if (ok && data.redirect_url) {
+                            window.location = data.redirect_url;
+                        } else {
+                            errorEl.textContent = data.error || 'Could not add goal.';
+                        }
+                    })
+                    .catch(() => { errorEl.textContent = 'Network error — could not add goal.'; });
+            };
+
+            window.deleteGoal = function(goalId) {
+                if (!confirm('Remove this goal?')) return;
+                fetch(`${DELETE_GOAL_URL_BASE}${goalId}/delete/`, {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': csrfToken },
+                })
+                    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                    .then(({ ok, data }) => {
+                        if (ok && data.redirect_url) {
+                            window.location = data.redirect_url;
+                        } else {
+                            document.getElementById('goals-error').textContent = data.error || 'Could not remove goal.';
+                        }
+                    })
+                    .catch(() => { document.getElementById('goals-error').textContent = 'Network error — could not remove goal.'; });
+            };
         }
     </script>
 </body>

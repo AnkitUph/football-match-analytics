@@ -330,3 +330,203 @@ class MatchLineup(models.Model):
 
     def __str__(self):
         return f"#{self.jersey_number} {self.player_name} ({self.side}) - {self.match}"
+
+
+class MatchCalibration(models.Model):
+    """
+    Manual per-match camera calibration: exactly 4 pixel<->pitch point
+    pairs a human picked on one frame, used to bootstrap Stage 5's
+    homography for this match's specific footage/camera setup.
+
+    Optional. A match with no MatchCalibration still gets full Stage 1-4
+    tracking (player_tracking_csv/ball_tracking_csv with blank
+    pitch_x/pitch_y) — see apps/matches/tasks.py:process_match. Stage 5-6
+    (pitch mapping, possession/pass/shot detection, real TeamStatistics,
+    real heatmaps) only runs once this exists — see
+    apps/matches/tasks.py:compute_pitch_mapping.
+
+    Points are picked from a fixed preset list of real-world landmarks
+    with known coordinates (apps/matches/pitch_landmarks.py) rather than
+    the user typing meters by hand — avoids calibration errors from bad
+    manual coordinate entry.
+    """
+
+    match = models.OneToOneField(
+        Match,
+        on_delete=models.CASCADE,
+        related_name="calibration"
+    )
+
+    calibration_frame = models.PositiveIntegerField(
+        help_text="Frame index (0-based) the 4 points below were picked on"
+    )
+
+    points = models.JSONField(
+        help_text=(
+            "Exactly 4 dicts: "
+            "{'landmark_id', 'pixel_x', 'pixel_y', 'pitch_x', 'pitch_y'}"
+        )
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True
+    )
+
+    class Meta:
+        db_table = "match_calibrations"
+
+    def __str__(self):
+        return f"Calibration - {self.match}"
+
+    def image_points(self):
+        return [(p["pixel_x"], p["pixel_y"]) for p in self.points]
+
+    def pitch_points(self):
+        return [(p["pitch_x"], p["pitch_y"]) for p in self.points]
+
+
+class TrackPlayerIdentification(models.Model):
+    """
+    Mapping from one merged tracklet (a track_id from Stage 5's within-
+    shot stitching — see apps/matches/tasks.py:compute_pitch_mapping —
+    persisted in player_tracking_csv/player_stats_csv) to a real
+    MatchLineup entry. Either set by a human on the /identify/ page, or
+    auto-guessed as a fallback (is_auto_assigned=True) so every tracked
+    player shows SOME name/number rather than staying anonymous — see
+    apps/matches/tasks.py:_auto_assign_unidentified_tracks. A guess may
+    well be wrong; that's expected and fine (this project doesn't need
+    production-grade accuracy here) as long as it's visibly flagged as
+    unconfirmed until a human checks it via /identify/.
+
+    Exists because jersey OCR (Stage 3c) was validated as non-viable on
+    typical broadcast-resolution wide-shot footage — see
+    ai_engine/stage3_team_reid/jersey_ocr.py's module docstring for the
+    finding.
+
+    unique_together on (match, lineup_entry) means one real player can't
+    be double-assigned to two different tracked identities — a track_id
+    CAN be left unassigned (anonymous), but a lineup player can only ever
+    point at one track.
+    """
+
+    match = models.ForeignKey(
+        Match,
+        on_delete=models.CASCADE,
+        related_name="track_identifications"
+    )
+
+    track_id = models.PositiveIntegerField(
+        help_text="Stitched tracklet's track_id, as it appears in player_tracking_csv/player_stats_csv for this match"
+    )
+
+    lineup_entry = models.ForeignKey(
+        MatchLineup,
+        on_delete=models.CASCADE,
+        related_name="track_identifications"
+    )
+
+    is_auto_assigned = models.BooleanField(
+        default=False,
+        help_text="True = system guess, not yet confirmed by a human. False = a person explicitly chose this on /identify/."
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True
+    )
+
+    class Meta:
+        db_table = "track_player_identifications"
+        unique_together = [("match", "track_id"), ("match", "lineup_entry")]
+
+    def __str__(self):
+        marker = " (guess)" if self.is_auto_assigned else ""
+        return f"track {self.track_id} -> {self.lineup_entry}{marker} ({self.match})"
+
+
+class MatchGoal(models.Model):
+    """
+    One manually recorded goal. Deliberately NOT auto-detected — see
+    project handoff notes: automatic goal detection was scoped out on
+    purpose, since ball-tracking confidence is already documented as
+    being least reliable during fast shots/saves, exactly when a
+    goal-detector would need it most. This follows the same
+    "human confirms, nothing auto-trusted" philosophy already used for
+    calibration and player identification, just with no automatic
+    suggestion step at all for this one — a human enters every row via
+    the results page's "Manage Goals" panel.
+
+    `team` is the side CREDITED on the scoreboard for this goal — for an
+    own goal that's the BENEFITING team, not the scorer's own team.
+    `scorer` is the actual MatchLineup player who put the ball in the
+    net (their own net, if is_own_goal=True) — optional, since a human
+    may want to log that a goal happened before confirming exactly who
+    scored it.
+
+    match.home_score / match.away_score are DERIVED from these rows —
+    recomputed and saved by the add/delete views (see
+    apps.matches.views._recompute_match_score) every time this table
+    changes for a match. This table is the single source of truth for
+    the scoreline, not the two integer fields on Match.
+
+    A player's personal "Goals" stat (apps.matches.views._dummy_player_rows)
+    only counts is_own_goal=False rows against that player as scorer —
+    matches standard football statistics convention that an own goal is
+    not credited to the scorer's own tally.
+    """
+
+    match = models.ForeignKey(
+        Match,
+        on_delete=models.CASCADE,
+        related_name="goals"
+    )
+
+    team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        related_name="match_goals",
+        help_text="The team credited on the scoreboard for this goal"
+    )
+
+    scorer = models.ForeignKey(
+        MatchLineup,
+        on_delete=models.SET_NULL,
+        related_name="goals_scored",
+        blank=True,
+        null=True,
+        help_text="Optional — a goal can be logged before the scorer is confirmed"
+    )
+
+    is_own_goal = models.BooleanField(
+        default=False,
+        help_text="If True, scorer (if set) belongs to the side OPPOSING `team`"
+    )
+
+    minute = models.PositiveSmallIntegerField(
+        blank=True,
+        null=True,
+        help_text="Match minute, if known — informational only, not used in any scoring logic"
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True
+    )
+
+    class Meta:
+        db_table = "match_goals"
+        ordering = ["match", "minute", "created_at"]
+        indexes = [
+            models.Index(fields=["match"]),
+        ]
+
+    def __str__(self):
+        og = " (OG)" if self.is_own_goal else ""
+        scorer_label = self.scorer.player_name if self.scorer else "Unknown scorer"
+        return f"Goal{og}: {scorer_label} - {self.team.short_name} ({self.match})"

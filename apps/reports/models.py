@@ -57,6 +57,12 @@ class Report(models.Model):
             models.Index(fields=["match"]),
             models.Index(fields=["report_type"]),
         ]
+        # One report per (match, type) — apps.reports.generator regenerates
+        # the MATCH-type report in place (update_or_create) every time a
+        # match finishes Stage 1-4 processing or gets (re)calibrated,
+        # rather than piling up a new PDF each time. This constraint makes
+        # that guarantee enforced at the DB level, not just by convention.
+        unique_together = [("match", "report_type")]
 
     def __str__(self):
         return f"{self.title} ({self.match})"

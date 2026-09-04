@@ -13,9 +13,26 @@ FAILED APPROACH 2 (no masking, wide torso ROI): background grass at the
 crop edges pulled every color average toward green, contaminating even
 white-kit players' samples.
 
-WORKING APPROACH (this file): skip grass masking entirely. Use a tight
-chest-only ROI (avoids arms/edges where background leaks in) and take
-the MEDIAN pixel color, not the mean.
+FAILED APPROACH 3 (raw BGR Euclidean distance, single-frame sample):
+worked well on saturated kit colors, but on a match with a near-white
+home kit (#e6edf3), a meaningful fraction of home-team raw tracklets got
+misclassified as away. Root cause: near-white/low-saturation colors
+swing much more in raw BGR magnitude under lighting/shadow than a
+saturated color does, and raw Euclidean distance conflates that
+brightness swing with actual hue difference — a shadowed white crop can
+land numerically closer to a mid-brightness green reference than to its
+own (much brighter) white reference. Compounded by single-frame
+sampling per tracklet (see apps/matches/tasks.py's Stage 3 block): one
+unlucky lighting frame could flip an entire raw tracklet's
+classification on its own.
+
+WORKING APPROACH (this file): tight chest-only median-color sampling
+(from FAILED APPROACH 1/2's lessons) STILL applies — that part wasn't
+the problem. Fixed the brightness sensitivity by normalizing colors to
+unit length before comparing (classify_team_by_known_colors), so
+distance reflects color RATIO (hue/chroma) rather than raw magnitude.
+The complementary fix — sampling multiple frames per tracklet instead
+of one — lives in apps/matches/tasks.py, not here.
 
 Known limitation: referees (dark kit) tend to get absorbed into
 whichever team's color cluster is darker — Stage 1's detector already
@@ -58,6 +75,23 @@ def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
     return np.median(pixels, axis=0)
 
 
+def _normalize_color(color: np.ndarray) -> np.ndarray:
+    """
+    Strips overall brightness from a BGR color, leaving its relative
+    channel ratios (a simple chromaticity normalization) — see this
+    module's docstring (FAILED APPROACH 3) for why this matters: a
+    near-white/pale kit's raw BGR magnitude swings more under lighting
+    changes than a saturated color's does, and comparing raw magnitude
+    conflates that swing with genuine hue difference. Comparing unit
+    vectors instead compares color RATIO, which is far more stable
+    across lighting/shadow for the SAME physical kit.
+    """
+    norm = np.linalg.norm(color)
+    if norm < 1e-6:
+        return color
+    return color / norm
+
+
 def fit_team_color_clusters(torso_colors: list[np.ndarray], config: TeamReidConfig) -> KMeans:
     """
     Blind clustering fallback — run across all sampled PLAYER (non-
@@ -91,13 +125,22 @@ def classify_team_by_known_colors(
     torso_color: np.ndarray, home_color_bgr: np.ndarray, away_color_bgr: np.ndarray
 ) -> Team:
     """
-    Classifies by nearest distance to known per-match kit colors.
+    Classifies by nearest distance to known per-match kit colors, in
+    BRIGHTNESS-NORMALIZED space (see _normalize_color and this module's
+    FAILED APPROACH 3 note) rather than raw BGR magnitude — comparing
+    color ratio instead of raw distance is far more robust to the same
+    kit appearing brighter/darker under different lighting or shadow,
+    which matters most for low-saturation kits (white, pale colors).
+
     Team.TEAM_A is DEFINED as "closer to home_color_bgr" — this
     definition is relied on elsewhere (e.g. apps/matches/tasks.py maps
     TEAM_A -> match.home_team directly on this basis).
     """
-    dist_home = np.linalg.norm(torso_color - home_color_bgr)
-    dist_away = np.linalg.norm(torso_color - away_color_bgr)
+    sample_n = _normalize_color(torso_color)
+    home_n = _normalize_color(home_color_bgr)
+    away_n = _normalize_color(away_color_bgr)
+    dist_home = np.linalg.norm(sample_n - home_n)
+    dist_away = np.linalg.norm(sample_n - away_n)
     return Team.TEAM_A if dist_home < dist_away else Team.TEAM_B
 
 
@@ -120,8 +163,10 @@ def classify_teams_with_fallback(
           a strong signal the provided colors don't actually match the
           footage, found via real testing (see module docstring).
 
-    colors: {track_id: BGR median torso color}, PLAYER-CLASS ONLY —
-    exclude referees before calling this (see apps/matches/tasks.py).
+    colors: {track_id: BGR color for that track — ideally a per-track
+    median of several sampled frames, not a single frame; see
+    apps/matches/tasks.py's Stage 3 block}, PLAYER-CLASS ONLY — exclude
+    referees before calling this (see apps/matches/tasks.py).
 
     Returns {track_id: Team} for every key in `colors`.
     """

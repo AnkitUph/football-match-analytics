@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calibrate — {{ match.home_team.short_name }} vs {{ match.away_team.short_name }}</title>
+    <style>
+        :root {
+            --pitch: #3D8B5F;
+            --pitch-light: #4FAE79;
+            --ink: #0F1512;
+            --panel: #161D19;
+            --panel-line: #263029;
+            --chalk: #EDEFEC;
+            --chalk-dim: #9BA69E;
+            --error: #D9695A;
+            --success: #4FAE79;
+            --warn: #E0B34E;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--ink);
+            color: var(--chalk);
+            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+            padding: 32px 20px 64px;
+        }
+
+        .wrap { max-width: 960px; margin: 0 auto; }
+
+        .eyebrow {
+            font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+            color: var(--pitch-light); font-weight: 600; margin: 0 0 6px;
+        }
+
+        h1 {
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 28px; font-weight: 700; margin: 0 0 8px;
+        }
+
+        p.subtitle { color: var(--chalk-dim); font-size: 14px; margin: 0 0 24px; max-width: 640px; }
+
+        .card {
+            background: var(--panel); border: 1px solid var(--panel-line);
+            border-radius: 10px; padding: 24px; margin-bottom: 20px;
+        }
+
+        .frame-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+
+        .frame-controls label { font-size: 13px; color: var(--chalk-dim); }
+
+        .frame-controls input[type="number"] {
+            width: 110px; padding: 8px 10px; background: var(--ink);
+            border: 1px solid var(--panel-line); border-radius: 6px; color: var(--chalk); font-size: 14px;
+        }
+
+        button {
+            padding: 9px 16px; border-radius: 6px; border: none; font-size: 14px;
+            font-weight: 600; cursor: pointer; font-family: inherit;
+        }
+
+        .btn-secondary { background: var(--panel-line); color: var(--chalk); }
+        .btn-secondary:hover { background: #313d34; }
+        .btn-primary { background: var(--pitch); color: #061009; }
+        .btn-primary:hover { background: var(--pitch-light); }
+        .btn-primary:disabled { background: var(--panel-line); color: var(--chalk-dim); cursor: not-allowed; }
+
+        #canvas-wrap { position: relative; line-height: 0; border-radius: 8px; overflow: hidden; }
+        #frame-img { width: 100%; display: block; cursor: crosshair; }
+        #frame-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+
+        .status-line { font-size: 13px; color: var(--chalk-dim); margin-top: 12px; }
+        .status-line.error { color: var(--error); }
+        .status-line.success { color: var(--success); }
+
+        .point-list { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+
+        .point-row {
+            display: flex; align-items: center; gap: 10px; font-size: 13px;
+            background: var(--ink); border: 1px solid var(--panel-line); border-radius: 6px; padding: 8px 12px;
+        }
+
+        .point-row .dot {
+            width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 700; color: #061009;
+        }
+
+        .point-row select {
+            flex: 1; padding: 6px 8px; background: var(--panel); color: var(--chalk);
+            border: 1px solid var(--panel-line); border-radius: 4px; font-size: 13px;
+        }
+
+        .point-row .remove-btn {
+            background: none; border: none; color: var(--error); cursor: pointer;
+            font-size: 16px; padding: 0 4px;
+        }
+
+        .warning-banner {
+            background: rgba(224,179,78,0.12); border: 1px solid var(--warn);
+            color: var(--warn); border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px;
+        }
+
+        .links { margin-top: 20px; }
+        .links a { color: var(--chalk-dim); text-decoration: none; font-size: 14px; }
+        .links a:hover { color: var(--pitch-light); }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        {% csrf_token %}
+        <p class="eyebrow">Match calibration</p>
+        <h1>{{ match.home_team.short_name }} vs {{ match.away_team.short_name }}</h1>
+        <p class="subtitle">
+            Click 4 points on the frame below that correspond to known pitch markings,
+            then tell us which landmark each point is. This lets the pipeline map every
+            tracked player/ball position from pixels to real pitch coordinates — powering
+            real possession/pass/shot stats and heatmaps for this match.
+        </p>
+
+        {% if existing_calibration %}
+            <div class="warning-banner">
+                This match already has a calibration (frame {{ existing_calibration.calibration_frame }}).
+                Saving a new one will replace it{% if has_real_stats %} and recompute existing stats{% endif %}.
+            </div>
+        {% endif %}
+
+        <div class="card">
+            <div class="frame-controls">
+                <label for="frame-idx-input">Frame number</label>
+                <input type="number" id="frame-idx-input" min="0" value="{{ default_frame_idx }}">
+                <button type="button" class="btn-secondary" id="load-frame-btn">Load frame</button>
+                <span class="status-line" id="frame-status"></span>
+            </div>
+
+            <div id="canvas-wrap">
+                <img id="frame-img" alt="Match frame for calibration">
+                <canvas id="frame-canvas"></canvas>
+            </div>
+
+            <ul class="point-list" id="point-list"></ul>
+
+            <div class="status-line" id="save-status"></div>
+
+            <div style="margin-top:16px; display:flex; gap:10px;">
+                <button type="button" class="btn-secondary" id="clear-points-btn">Clear points</button>
+                <button type="button" class="btn-primary" id="save-btn" disabled>Save calibration</button>
+            </div>
+        </div>
+
+        <div class="links">
+            <a href="{% url 'matches:results' match.public_id %}">&larr; Back to results</a>
+        </div>
+    </div>
+
+    <script>
+        const FRAME_URL = "{% url 'matches:calibrate_frame' match.public_id %}";
+        const SAVE_URL = "{% url 'matches:calibrate_save' match.public_id %}";
+        const LANDMARKS = {{ landmarks_json|safe }};
+
+        const DOT_COLORS = ["#4FAE79", "#E0B34E", "#5B9BD5", "#D9695A"];
+
+        const img = document.getElementById("frame-img");
+        const canvas = document.getElementById("frame-canvas");
+        const ctx = canvas.getContext("2d");
+        const frameStatus = document.getElementById("frame-status");
+        const saveStatus = document.getElementById("save-status");
+        const pointList = document.getElementById("point-list");
+        const saveBtn = document.getElementById("save-btn");
+        const frameIdxInput = document.getElementById("frame-idx-input");
+
+        let currentFrameIdx = parseInt(frameIdxInput.value, 10) || 0;
+        // points: [{pixel_x, pixel_y, landmark_id}], in NATURAL image pixel space
+        let points = [];
+
+        function usedLandmarkIds() {
+            return new Set(points.map(p => p.landmark_id).filter(Boolean));
+        }
+
+        function landmarkOptionsHtml(selectedId) {
+            const used = usedLandmarkIds();
+            return LANDMARKS.map(l => {
+                const disabled = (l.id !== selectedId && used.has(l.id)) ? "disabled" : "";
+                const selected = (l.id === selectedId) ? "selected" : "";
+                return `<option value="${l.id}" ${disabled} ${selected}>${l.label}</option>`;
+            }).join("");
+        }
+
+        function resizeCanvasToImage() {
+            canvas.width = img.clientWidth;
+            canvas.height = img.clientHeight;
+            redraw();
+        }
+
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (!img.naturalWidth) return;
+            const scaleX = canvas.width / img.naturalWidth;
+            const scaleY = canvas.height / img.naturalHeight;
+
+            points.forEach((p, i) => {
+                const x = p.pixel_x * scaleX;
+                const y = p.pixel_y * scaleY;
+                ctx.beginPath();
+                ctx.arc(x, y, 8, 0, Math.PI * 2);
+                ctx.fillStyle = DOT_COLORS[i % DOT_COLORS.length];
+                ctx.fill();
+                ctx.strokeStyle = "#0F1512";
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.fillStyle = "#0F1512";
+                ctx.font = "bold 11px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText(String(i + 1), x, y);
+            });
+        }
+
+        function renderPointList() {
+            pointList.innerHTML = "";
+            points.forEach((p, i) => {
+                const li = document.createElement("li");
+                li.className = "point-row";
+                li.innerHTML = `
+                    <span class="dot" style="background:${DOT_COLORS[i % DOT_COLORS.length]}">${i + 1}</span>
+                    <select data-index="${i}">
+                        <option value="">Select landmark&hellip;</option>
+                        ${landmarkOptionsHtml(p.landmark_id)}
+                    </select>
+                    <button type="button" class="remove-btn" data-index="${i}" title="Remove point">&times;</button>
+                `;
+                pointList.appendChild(li);
+            });
+
+            pointList.querySelectorAll("select").forEach(sel => {
+                sel.addEventListener("change", (e) => {
+                    const idx = parseInt(e.target.dataset.index, 10);
+                    points[idx].landmark_id = e.target.value || null;
+                    renderPointList();
+                    updateSaveButtonState();
+                });
+            });
+
+            pointList.querySelectorAll(".remove-btn").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    const idx = parseInt(e.target.dataset.index, 10);
+                    points.splice(idx, 1);
+                    renderPointList();
+                    redraw();
+                    updateSaveButtonState();
+                });
+            });
+        }
+
+        function updateSaveButtonState() {
+            const ready = points.length === 4 && points.every(p => p.landmark_id);
+            saveBtn.disabled = !ready;
+        }
+
+        function loadFrame(frameIdx) {
+            frameStatus.textContent = "Loading frame…";
+            frameStatus.className = "status-line";
+            const url = `${FRAME_URL}?frame_idx=${encodeURIComponent(frameIdx)}&_=${Date.now()}`;
+            img.onload = () => {
+                currentFrameIdx = frameIdx;
+                resizeCanvasToImage();
+                frameStatus.textContent = `Loaded frame ${frameIdx}.`;
+            };
+            img.onerror = () => {
+                frameStatus.textContent = "Could not load that frame.";
+                frameStatus.className = "status-line error";
+            };
+            img.src = url;
+        }
+
+        document.getElementById("load-frame-btn").addEventListener("click", () => {
+            const idx = parseInt(frameIdxInput.value, 10);
+            if (Number.isNaN(idx) || idx < 0) {
+                frameStatus.textContent = "Enter a valid frame number.";
+                frameStatus.className = "status-line error";
+                return;
+            }
+            loadFrame(idx);
+        });
+
+        document.getElementById("clear-points-btn").addEventListener("click", () => {
+            points = [];
+            renderPointList();
+            redraw();
+            updateSaveButtonState();
+            saveStatus.textContent = "";
+        });
+
+        img.addEventListener("click", (e) => {
+            if (points.length >= 4) {
+                saveStatus.textContent = "You already have 4 points — remove one before adding another.";
+                saveStatus.className = "status-line error";
+                return;
+            }
+            const rect = img.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+            const scaleX = img.naturalWidth / img.clientWidth;
+            const scaleY = img.naturalHeight / img.clientHeight;
+
+            points.push({
+                pixel_x: clickX * scaleX,
+                pixel_y: clickY * scaleY,
+                landmark_id: null,
+            });
+            renderPointList();
+            redraw();
+            updateSaveButtonState();
+        });
+
+        window.addEventListener("resize", resizeCanvasToImage);
+
+        async function submitCalibration(confirmOverwrite) {
+            saveBtn.disabled = true;
+            saveStatus.textContent = "Saving…";
+            saveStatus.className = "status-line";
+
+            const body = {
+                calibration_frame: currentFrameIdx,
+                points: points.map(p => ({
+                    pixel_x: p.pixel_x,
+                    pixel_y: p.pixel_y,
+                    landmark_id: p.landmark_id,
+                })),
+                confirm_overwrite: !!confirmOverwrite,
+            };
+
+            try {
+                const resp = await fetch(SAVE_URL, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-CSRFToken": getCsrfToken(),
+                    },
+                    body: JSON.stringify(body),
+                });
+                const data = await resp.json();
+
+                if (!resp.ok) {
+                    saveStatus.textContent = data.error || "Something went wrong saving the calibration.";
+                    saveStatus.className = "status-line error";
+                    updateSaveButtonState();
+                    return;
+                }
+
+                if (data.needs_confirmation) {
+                    const ok = window.confirm(
+                        "This match already has real stats from a previous calibration. " +
+                        "Recalibrating will overwrite them. Continue?"
+                    );
+                    if (ok) {
+                        await submitCalibration(true);
+                    } else {
+                        saveStatus.textContent = "Calibration not saved.";
+                        saveStatus.className = "status-line";
+                        updateSaveButtonState();
+                    }
+                    return;
+                }
+
+                saveStatus.textContent = "Calibration saved — recomputing pitch stats now, this may take a moment.";
+                saveStatus.className = "status-line success";
+                setTimeout(() => {
+                    window.location.href = data.redirect_url;
+                }, 1200);
+            } catch (err) {
+                saveStatus.textContent = "Network error saving calibration.";
+                saveStatus.className = "status-line error";
+                updateSaveButtonState();
+            }
+        }
+
+        saveBtn.addEventListener("click", () => submitCalibration(false));
+
+        function getCsrfToken() {
+            const match = document.cookie.match(/csrftoken=([^;]+)/);
+            return match ? match[1] : "";
+        }
+
+        // Initial load
+        loadFrame(currentFrameIdx);
+    </script>
+</body>
+</html>

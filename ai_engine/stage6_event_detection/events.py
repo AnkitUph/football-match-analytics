@@ -220,3 +220,36 @@ def detect_shots(
             last_event_frame = current.frame_idx
 
     return events
+
+
+def estimate_shot_xg(origin_distance_m: float, alignment: float) -> float:
+    """
+    Simplified heuristic expected-goals value for ONE detected shot event.
+    NOT a trained model — there is no labeled goal/no-goal outcome data
+    to fit against, only detect_shots' own two derived signals. Treat
+    this as a distance/angle-shaped placeholder, clearly not a real xG
+    model, same honesty standard as everything else real-vs-dummy in
+    this project.
+
+    Two components, multiplied together:
+
+    - Distance factor: 1 / (1 + (d/8)^2) — a smooth, monotonically
+      decreasing curve with plausible round numbers (d=6m -> ~0.64,
+      d=12m -> ~0.22, d=18m -> ~0.11, d=30m -> ~0.04), NOT fit to any
+      real dataset.
+    - Alignment factor: detect_shots only ever emits events with
+      alignment > min_alignment (0.85 by default), so raw alignment on
+      a real shot event only ever spans a narrow ~[0.85, 1.0] band.
+      Rescaled here to [0.7, 1.0] so it actually moves the final number
+      instead of being lost in that narrow input range.
+
+    Result is clamped to [0.01, 0.95] — a detected shot should never
+    display as exactly impossible or exactly certain.
+    """
+    distance_factor = 1.0 / (1.0 + (origin_distance_m / 8.0) ** 2)
+
+    alignment_clamped = max(0.85, min(1.0, alignment))
+    alignment_factor = 0.7 + 0.3 * (alignment_clamped - 0.85) / 0.15
+
+    xg = distance_factor * alignment_factor
+    return round(max(0.01, min(0.95, xg)), 3)
