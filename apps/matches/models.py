@@ -334,27 +334,77 @@ class MatchLineup(models.Model):
 
 class MatchCalibration(models.Model):
     """
-    Manual per-match camera calibration: exactly 4 pixel<->pitch point
-    pairs a human picked on one frame, used to bootstrap Stage 5's
-    homography for this match's specific footage/camera setup.
+    Per-match camera calibration: 4 OR MORE pixel<->pitch point pairs
+    used to bootstrap Stage 5's homography for this match's specific
+    footage/camera setup. Points come from one of two sources:
+
+      - AUTOMATIC (the normal path, as of the smart-assist integration):
+        apps/matches/tasks.py:_run_automatic_calibration runs for every
+        match with no human step, using Roboflow's football-field-
+        detection keypoint model (see
+        ai_engine/stage5_pitch_mapping/smart_assist.py) to detect up to
+        12 confident points on the video's middle frame. Only saves a
+        calibration if it found at least 4 confident points — a
+        homography is mathematically undefined below that (see
+        ai_engine/stage5_pitch_mapping/homography.py:
+        compute_homography_from_points's own length check), so there is
+        no partial/degraded calibration below 4 points, only "skip".
+
+      - MANUAL (hidden fallback, not linked from results.html): the
+        /calibrate/ page (apps/matches/views.py: calibrate_match/
+        calibrate_frame/calibrate_save/calibrate_suggest) still exists
+        at its URL for fixing a match where automatic calibration
+        failed or produced visibly wrong stats. It has its own
+        smart-assist "suggest" button (calibrate_suggest) as well as
+        fully manual point placement.
+
+    More points than the mathematical minimum of 4 let
+    cv2.findHomography's RANSAC step discard an outlier point rather
+    than being forced to trust every single one — see
+    compute_homography_from_points.
+
+    A match can have MULTIPLE MatchCalibration rows — one per "anchor"
+    frame. This exists specifically to handle camera pan/zoom: a single
+    anchor's homography is tracked forward via optical flow
+    (ai_engine/stage5_pitch_mapping/homography_tracker.py) but tracking
+    is lost if a calibration point leaves frame, gets occluded, or the
+    camera moves far enough — no automatic recovery exists for that (see
+    that module's docstring). Rather than trying to make one anchor
+    survive an entire pan, a human can drop a FRESH anchor further into
+    the footage; compute_pitch_mapping (apps/matches/tasks.py) sorts all
+    of a match's calibrations by calibration_frame and bootstraps
+    HomographyTracker fresh at EACH one, tracking only within that
+    anchor's own segment (up to the next anchor's frame, or end of video
+    for the last one) — same "always resolve fresh, never chain" principle
+    the per-frame tracker already uses, just applied one level up so a
+    long pan doesn't depend on ONE anchor surviving the whole thing.
+
+    KNOWN LIMITATION (same as before, just restated per-anchor): frames
+    BEFORE the earliest calibration's frame still get no real pitch
+    mapping — anchors only ever track forward, never backward. Pick the
+    earliest anchor's frame as close to the start of the range you care
+    about as practical.
 
     Optional. A match with no MatchCalibration still gets full Stage 1-4
     tracking (player_tracking_csv/ball_tracking_csv with blank
     pitch_x/pitch_y) — see apps/matches/tasks.py:process_match. Stage 5-6
     (pitch mapping, possession/pass/shot detection, real TeamStatistics,
-    real heatmaps) only runs once this exists — see
+    real heatmaps) only runs once at least one of these exists — see
     apps/matches/tasks.py:compute_pitch_mapping.
 
     Points are picked from a fixed preset list of real-world landmarks
-    with known coordinates (apps/matches/pitch_landmarks.py) rather than
-    the user typing meters by hand — avoids calibration errors from bad
-    manual coordinate entry.
+    with known coordinates — the original 13-point set
+    (apps/matches/pitch_landmarks.py) merged with the 32-point Roboflow-
+    aligned set (apps/matches/pitch_landmarks_32.py), see
+    apps/matches/views.py:_all_calibration_landmarks — rather than
+    typing meters by hand, avoiding calibration errors from bad manual
+    coordinate entry.
     """
 
-    match = models.OneToOneField(
+    match = models.ForeignKey(
         Match,
         on_delete=models.CASCADE,
-        related_name="calibration"
+        related_name="calibrations"
     )
 
     calibration_frame = models.PositiveIntegerField(
@@ -363,7 +413,7 @@ class MatchCalibration(models.Model):
 
     points = models.JSONField(
         help_text=(
-            "Exactly 4 dicts: "
+            "4 or more dicts: "
             "{'landmark_id', 'pixel_x', 'pixel_y', 'pitch_x', 'pitch_y'}"
         )
     )
@@ -378,9 +428,14 @@ class MatchCalibration(models.Model):
 
     class Meta:
         db_table = "match_calibrations"
+        ordering = ["match", "calibration_frame"]
+        unique_together = [("match", "calibration_frame")]
+        indexes = [
+            models.Index(fields=["match"]),
+        ]
 
     def __str__(self):
-        return f"Calibration - {self.match}"
+        return f"Calibration @ frame {self.calibration_frame} - {self.match}"
 
     def image_points(self):
         return [(p["pixel_x"], p["pixel_y"]) for p in self.points]

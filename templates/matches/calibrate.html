@@ -67,6 +67,9 @@
         .btn-primary { background: var(--pitch); color: #061009; }
         .btn-primary:hover { background: var(--pitch-light); }
         .btn-primary:disabled { background: var(--panel-line); color: var(--chalk-dim); cursor: not-allowed; }
+        .btn-smart { background: #5B9BD5; color: #061009; }
+        .btn-smart:hover { background: #7CB3E0; }
+        .btn-smart:disabled { background: var(--panel-line); color: var(--chalk-dim); cursor: not-allowed; }
 
         #canvas-wrap { position: relative; line-height: 0; border-radius: 8px; overflow: hidden; }
         #frame-img { width: 100%; display: block; cursor: crosshair; }
@@ -94,6 +97,10 @@
             border: 1px solid var(--panel-line); border-radius: 4px; font-size: 13px;
         }
 
+        .point-row .confidence-tag {
+            font-size: 11px; color: var(--chalk-dim); flex-shrink: 0; white-space: nowrap;
+        }
+
         .point-row .remove-btn {
             background: none; border: none; color: var(--error); cursor: pointer;
             font-size: 16px; padding: 0 4px;
@@ -104,6 +111,11 @@
             color: var(--warn); border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px;
         }
 
+        .info-banner {
+            background: rgba(91,155,213,0.12); border: 1px solid #5B9BD5;
+            color: #9CC5E8; border-radius: 6px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px;
+        }
+
         .links { margin-top: 20px; }
         .links a { color: var(--chalk-dim); text-decoration: none; font-size: 14px; }
         .links a:hover { color: var(--pitch-light); }
@@ -112,19 +124,29 @@
 <body>
     <div class="wrap">
         {% csrf_token %}
-        <p class="eyebrow">Match calibration</p>
+        <p class="eyebrow">Match calibration (hidden developer/debug page)</p>
         <h1>{{ match.home_team.short_name }} vs {{ match.away_team.short_name }}</h1>
         <p class="subtitle">
-            Click 4 points on the frame below that correspond to known pitch markings,
-            then tell us which landmark each point is. This lets the pipeline map every
-            tracked player/ball position from pixels to real pitch coordinates — powering
-            real possession/pass/shot stats and heatmaps for this match.
+            Calibration happens automatically for every match — this page is only for
+            fixing a match where automatic calibration was skipped (too few confident
+            keypoints detected) or produced visibly wrong stats. Click at least 4 points
+            on the frame below that correspond to known pitch markings, then tell us which
+            landmark each point is — or use Smart-assist to pre-fill high-confidence points
+            detected automatically, then review/adjust before saving.
         </p>
 
-        {% if existing_calibration %}
+        {% if not roboflow_configured %}
             <div class="warning-banner">
-                This match already has a calibration (frame {{ existing_calibration.calibration_frame }}).
-                Saving a new one will replace it{% if has_real_stats %} and recompute existing stats{% endif %}.
+                Smart-assist is unavailable — ROBOFLOW_API_KEY is not configured on the server.
+                Manual point placement below still works.
+            </div>
+        {% endif %}
+
+        {% if existing_calibrations %}
+            <div class="info-banner">
+                This match already has {{ existing_calibrations|length }} calibration anchor{{ existing_calibrations|pluralize }}
+                (frame{{ existing_calibrations|pluralize }}: {% for c in existing_calibrations %}{{ c.calibration_frame }}{% if not forloop.last %}, {% endif %}{% endfor %}).
+                Saving a new one at the frame number below will add or replace that specific anchor{% if has_real_stats %} and recompute existing stats{% endif %}.
             </div>
         {% endif %}
 
@@ -133,6 +155,7 @@
                 <label for="frame-idx-input">Frame number</label>
                 <input type="number" id="frame-idx-input" min="0" value="{{ default_frame_idx }}">
                 <button type="button" class="btn-secondary" id="load-frame-btn">Load frame</button>
+                <button type="button" class="btn-smart" id="smart-assist-btn" {% if not roboflow_configured %}disabled{% endif %}>Smart-assist</button>
                 <span class="status-line" id="frame-status"></span>
             </div>
 
@@ -159,9 +182,12 @@
     <script>
         const FRAME_URL = "{% url 'matches:calibrate_frame' match.public_id %}";
         const SAVE_URL = "{% url 'matches:calibrate_save' match.public_id %}";
+        const SUGGEST_URL = "{% url 'matches:calibrate_suggest' match.public_id %}";
         const LANDMARKS = {{ landmarks_json|safe }};
 
-        const DOT_COLORS = ["#4FAE79", "#E0B34E", "#5B9BD5", "#D9695A"];
+        // Cycled, not a hard cap — any number of points is supported
+        // now (4 minimum, no maximum), unlike the old exactly-4 design.
+        const DOT_COLORS = ["#4FAE79", "#E0B34E", "#5B9BD5", "#D9695A", "#B57EDC", "#E08E45", "#5ECCC9", "#D9A5C4"];
 
         const img = document.getElementById("frame-img");
         const canvas = document.getElementById("frame-canvas");
@@ -170,10 +196,17 @@
         const saveStatus = document.getElementById("save-status");
         const pointList = document.getElementById("point-list");
         const saveBtn = document.getElementById("save-btn");
+        const smartAssistBtn = document.getElementById("smart-assist-btn");
         const frameIdxInput = document.getElementById("frame-idx-input");
 
+        const MIN_POINTS = 4;
+
         let currentFrameIdx = parseInt(frameIdxInput.value, 10) || 0;
-        // points: [{pixel_x, pixel_y, landmark_id}], in NATURAL image pixel space
+        // points: [{pixel_x, pixel_y, landmark_id, confidence}], in
+        // NATURAL image pixel space. confidence is only set for
+        // smart-assist-suggested points (undefined for manually-clicked
+        // ones) — used just to show a tag in the point list, not sent
+        // to the server.
         let points = [];
 
         function usedLandmarkIds() {
@@ -224,12 +257,16 @@
             points.forEach((p, i) => {
                 const li = document.createElement("li");
                 li.className = "point-row";
+                const confidenceTag = (typeof p.confidence === "number")
+                    ? `<span class="confidence-tag">${Math.round(p.confidence * 100)}% conf.</span>`
+                    : "";
                 li.innerHTML = `
                     <span class="dot" style="background:${DOT_COLORS[i % DOT_COLORS.length]}">${i + 1}</span>
                     <select data-index="${i}">
                         <option value="">Select landmark&hellip;</option>
                         ${landmarkOptionsHtml(p.landmark_id)}
                     </select>
+                    ${confidenceTag}
                     <button type="button" class="remove-btn" data-index="${i}" title="Remove point">&times;</button>
                 `;
                 pointList.appendChild(li);
@@ -256,7 +293,7 @@
         }
 
         function updateSaveButtonState() {
-            const ready = points.length === 4 && points.every(p => p.landmark_id);
+            const ready = points.length >= MIN_POINTS && points.every(p => p.landmark_id);
             saveBtn.disabled = !ready;
         }
 
@@ -295,11 +332,6 @@
         });
 
         img.addEventListener("click", (e) => {
-            if (points.length >= 4) {
-                saveStatus.textContent = "You already have 4 points — remove one before adding another.";
-                saveStatus.className = "status-line error";
-                return;
-            }
             const rect = img.getBoundingClientRect();
             const clickX = e.clientX - rect.left;
             const clickY = e.clientY - rect.top;
@@ -317,6 +349,58 @@
         });
 
         window.addEventListener("resize", resizeCanvasToImage);
+
+        async function runSmartAssist() {
+            smartAssistBtn.disabled = true;
+            saveStatus.textContent = "Detecting pitch keypoints…";
+            saveStatus.className = "status-line";
+
+            try {
+                const url = `${SUGGEST_URL}?frame_idx=${encodeURIComponent(currentFrameIdx)}&_=${Date.now()}`;
+                const resp = await fetch(url);
+                const data = await resp.json();
+
+                if (!resp.ok) {
+                    saveStatus.textContent = data.error || "Smart-assist failed on this frame.";
+                    saveStatus.className = "status-line error";
+                    return;
+                }
+
+                // Add suggestions, skipping any landmark_id already present
+                // on the canvas (whether manually placed or from an
+                // earlier smart-assist call) — never silently duplicates
+                // or overwrites an existing point for the same landmark.
+                const already = usedLandmarkIds();
+                let added = 0;
+                for (const s of data.suggestions) {
+                    if (already.has(s.landmark_id)) continue;
+                    points.push({
+                        pixel_x: s.pixel_x,
+                        pixel_y: s.pixel_y,
+                        landmark_id: s.landmark_id,
+                        confidence: s.confidence,
+                    });
+                    already.add(s.landmark_id);
+                    added++;
+                }
+
+                renderPointList();
+                redraw();
+                updateSaveButtonState();
+
+                saveStatus.textContent = added > 0
+                    ? `Smart-assist added ${added} suggested point${added === 1 ? "" : "s"} — review before saving.`
+                    : "Smart-assist found no new points (all detected landmarks are already placed).";
+                saveStatus.className = "status-line success";
+            } catch (err) {
+                saveStatus.textContent = "Network error running smart-assist.";
+                saveStatus.className = "status-line error";
+            } finally {
+                smartAssistBtn.disabled = false;
+            }
+        }
+
+        smartAssistBtn.addEventListener("click", runSmartAssist);
 
         async function submitCalibration(confirmOverwrite) {
             saveBtn.disabled = true;

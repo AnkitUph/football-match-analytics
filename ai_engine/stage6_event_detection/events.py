@@ -148,7 +148,7 @@ def detect_passes(
 
 def detect_shots(
     ball_trajectory: list[BallTrajectoryPoint],
-    goal_center_pitch: tuple[float, float],
+    goal_centers_pitch: tuple[tuple[float, float], ...] = ((52.5, 0.0), (-52.5, 0.0)),
     min_shot_speed_mps: float = 10.0,
     max_plausible_speed_mps: float = 35.0,
     min_origin_distance_m: float = 5.0,
@@ -157,8 +157,26 @@ def detect_shots(
 ) -> list[Event]:
     """
     A shot = ball velocity, between any two consecutive tracked points,
-    pointed toward the goal (cosine alignment > min_alignment) with
+    pointed toward EITHER goal (cosine alignment > min_alignment) with
     speed between min_shot_speed_mps and max_plausible_speed_mps.
+
+    FOUND VIA REAL-DATA REVIEW: this used to take a single
+    goal_center_pitch tuple, hardcoded at the call site to (52.5, 0.0) —
+    the RIGHT goal only, in this project's pitch_landmarks.py convention
+    (origin at center circle, corner flags at x=+/-52.5). That made
+    every shot at the LEFT goal structurally invisible, regardless of
+    how clean the shot was — not a detection-confidence issue, a
+    hardcoded blind spot. Now takes a tuple of goal centers (both by
+    default) and, per candidate ball movement, tests alignment against
+    EACH one, keeping whichever is best-aligned. A real shot is only
+    ever aimed at one goal, so at most one candidate should ever clear
+    min_alignment in practice — checking both is about not missing the
+    correct one, not about double-counting.
+
+    metadata now also carries target_goal (which of goal_centers_pitch
+    matched) — informational, not currently used downstream, but useful
+    if a later consumer wants to sanity-check the shot against which
+    side a team is attacking.
 
     EVALUATES EVERY CONSECUTIVE PAIR, not just points before a gap —
     corrected after testing found the original "only near a gap" design
@@ -198,23 +216,34 @@ def detect_shots(
         if not (min_shot_speed_mps <= speed <= max_plausible_speed_mps):
             continue
 
-        origin_dist = ((goal_center_pitch[0] - current.x_m) ** 2 + (goal_center_pitch[1] - current.y_m) ** 2) ** 0.5
-        if origin_dist < min_origin_distance_m:
-            continue
+        best = None  # (goal_center, origin_dist, alignment) — highest alignment across both goals
+        for goal_center_pitch in goal_centers_pitch:
+            origin_dist = ((goal_center_pitch[0] - current.x_m) ** 2 + (goal_center_pitch[1] - current.y_m) ** 2) ** 0.5
+            if origin_dist < min_origin_distance_m:
+                continue
 
-        to_goal_x = goal_center_pitch[0] - current.x_m
-        to_goal_y = goal_center_pitch[1] - current.y_m
-        to_goal_dist = (to_goal_x**2 + to_goal_y**2) ** 0.5
-        if to_goal_dist == 0:
-            continue
-        alignment = (vx * to_goal_x + vy * to_goal_y) / (speed * to_goal_dist)
+            to_goal_x = goal_center_pitch[0] - current.x_m
+            to_goal_y = goal_center_pitch[1] - current.y_m
+            to_goal_dist = (to_goal_x**2 + to_goal_y**2) ** 0.5
+            if to_goal_dist == 0:
+                continue
+            alignment = (vx * to_goal_x + vy * to_goal_y) / (speed * to_goal_dist)
 
-        if alignment > min_alignment and (current.frame_idx - last_event_frame) >= cooldown_frames:
+            if alignment > min_alignment and (best is None or alignment > best[2]):
+                best = (goal_center_pitch, origin_dist, alignment)
+
+        if best is not None and (current.frame_idx - last_event_frame) >= cooldown_frames:
+            goal_center_pitch, origin_dist, alignment = best
             events.append(
                 Event(
                     event_type="shot",
                     frame_idx=current.frame_idx,
-                    metadata={"speed_mps": speed, "origin_distance_m": origin_dist, "alignment": alignment},
+                    metadata={
+                        "speed_mps": speed,
+                        "origin_distance_m": origin_dist,
+                        "alignment": alignment,
+                        "target_goal": goal_center_pitch,
+                    },
                 )
             )
             last_event_frame = current.frame_idx

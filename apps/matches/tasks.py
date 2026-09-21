@@ -23,6 +23,7 @@ Match.status — a match can be COMPLETED with or without real pitch stats.
 
 import csv
 import io
+import logging
 import math
 import random
 from collections import defaultdict
@@ -32,6 +33,8 @@ from django.core.files.base import ContentFile
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True)
@@ -235,11 +238,20 @@ def process_match(self, match_id):
 
         files.save()
 
-        # If a calibration already exists for this match (e.g. someone
-        # calibrated it before Stage 1-4 finished, or this is a
-        # reprocessing run), kick off pitch mapping right away instead of
-        # requiring a second manual trigger.
+        # Automatic calibration: runs for every match, no human step —
+        # see _run_automatic_calibration's docstring for exactly what it
+        # does and when it gives up (fewer than 4 confident keypoints).
+        # Skipped if a calibration ALREADY exists (e.g. from a previous
+        # run, or a manual fix via the hidden /calibrate/ page) — a
+        # human's override should never be silently clobbered by a
+        # later reprocessing run.
         from apps.matches.models import MatchCalibration
+        if not MatchCalibration.objects.filter(match=match).exists():
+            try:
+                _run_automatic_calibration(match, video_path)
+            except Exception:
+                logger.exception("Automatic calibration failed for match=%s, continuing without it", match.id)
+
         if MatchCalibration.objects.filter(match=match).exists():
             compute_pitch_mapping.delay(match.id)
 
@@ -267,6 +279,198 @@ def process_match(self, match_id):
         raise
 
 
+def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_window=3):
+    """
+    Runs immediately after Stage 1-4 finishes, for every match, no human
+    involved. Divides the clip into num_anchors equal windows and, within
+    EACH window, samples several frames — keeping whichever sampled
+    frame has the highest SUM OF CONFIDENCES across its detected points
+    (see "WHY SCORE BY SUMMED CONFIDENCE" below — this replaced an
+    x-span-based scoring approach that was tried and found to actively
+    backfire). Saves a MatchCalibration anchor for each window that has
+    at least one usable sample (>=4 confident points) — a homography is
+    mathematically undefined below that (see
+    ai_engine/stage5_pitch_mapping/homography.py:compute_homography_from_points's
+    own `len(image_points) < 4` check), so a window either gets a real
+    anchor or is skipped outright, never a partial/degraded one.
+
+    WHY MULTIPLE ANCHORS: tested single-anchor automatic calibration
+    against match 10 (test_1.mp4/Mainz) — the one match with a
+    known-good MANUAL 3-anchor calibration (frames 100, 440, 600) that
+    had already produced real passes/shots/xG. A single middle-frame
+    anchor produced near-zero team distances (16-36m across a whole
+    clip) and zero passes/shots — a real, confirmed regression. Root
+    cause: compute_pitch_mapping's HomographyTracker only tracks FORWARD
+    from an anchor's own frame to the next anchor's frame (or the end of
+    the clip) — see compute_pitch_mapping's segment logic. One anchor
+    covering an entire clip fails once the camera pans/zooms enough for
+    its tracked points to drift or leave frame.
+
+    TRIED AND REJECTED: scoring candidate frames by real-world x-span
+    (how far apart the detected points are along the pitch length),
+    reasoning that a spatially spread-out set of points would produce a
+    homography that extrapolates well across its whole segment instead
+    of just near wherever it was calibrated. This was motivated by a
+    real finding — mapping the same ball detection through match 10 and
+    a single-anchor automatic calibration at the same frame showed a
+    >10m disagreement (52.55m vs 42.88m) that plausibly hid a real shot
+    — but a visual reprojection-overlay check (same technique used
+    earlier this session to catch the class_id/"class" string bug)
+    proved x-span scoring backfired: it directly rewards including
+    spurious far-field detections, since a WRONGLY-labeled
+    "right_box_top"/"right_corner_top"/"right_penalty_spot" cluster
+    inflates x-span exactly as effectively as a real one would. The
+    overlay showed this cluster confidently drawn on empty grass with no
+    actual box or corner anywhere near it, while that same anchor's
+    halfway-line/center-circle points — the one cluster independently
+    validated via reprojection tests on two separate clips earlier this
+    session — were correctly aligned. Maximizing spread specifically
+    hunts for the least-validated, most failure-prone landmark types
+    (box/goal-line corners, which sit far from center by construction)
+    over the well-validated center cluster.
+
+    WHY SCORE BY SUMMED CONFIDENCE INSTEAD: a more neutral proxy for
+    "this is a clean, unambiguous frame" — it rewards having many
+    confident detections without specifically going looking for distant
+    landmark types the way x-span does. Doesn't fully solve the
+    underlying problem (a frame could still combine several confident
+    center points with one confident-but-wrong far point, and summed
+    confidence wouldn't know the difference) — see KNOWN LIMITATION
+    below.
+
+    num_anchors=4 and samples_per_window=3 are general-purpose defaults
+    (not tuned to test_1.mp4 specifically) — 12 Roboflow calls per match
+    total. More of either means smaller/better-conditioned segments at
+    the cost of more API calls per match.
+
+    KNOWN LIMITATION: still no human look at any candidate frame before
+    it's used, and no per-landmark trust weighting — every landmark ID
+    is treated as equally reliable even though only the halfway-line/
+    center-circle cluster has been independently validated via visual
+    reprojection so far (see pitch_landmarks_32.py and this function's
+    own rejected x-span attempt above for the concrete evidence that the
+    box/goal-line landmarks are NOT equally trustworthy on every clip).
+    A future improvement worth considering: down-weight or exclude
+    landmark IDs outside the validated center cluster unless a
+    per-match visual check confirms them. If a specific match's
+    auto-calibration still comes out visibly wrong, the hidden
+    /calibrate/ page (not linked from results.html, but still live at
+    its URL) can add/override anchors manually — see MatchCalibration's
+    docstring, and note process_match will not clobber existing
+    calibrations on a later reprocessing run (see the check at this
+    function's call site, above).
+
+    Never raises — any failure here (network, bad frame, no API key)
+    should not fail Stage 1-4 over a Roboflow problem, same resilience
+    pattern as PDF report generation above. The caller still wraps this
+    in try/except as a second layer of safety.
+    """
+    from django.conf import settings
+    from apps.matches.models import MatchCalibration
+    from ai_engine.stage5_pitch_mapping.smart_assist import detect_pitch_keypoints
+
+    if not settings.ROBOFLOW_API_KEY:
+        logger.info("match=%s: ROBOFLOW_API_KEY not configured, skipping auto-calibration", match.id)
+        return
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        return
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0:
+        cap.release()
+        return
+
+    saved_count = 0
+    for i in range(num_anchors):
+        window_start = int(total_frames * i / num_anchors)
+        window_end = max(int(total_frames * (i + 1) / num_anchors), window_start + 1)
+
+        candidate_offsets = sorted(set(
+            min(window_start + int((window_end - window_start) * (j + 0.5) / samples_per_window), total_frames - 1)
+            for j in range(samples_per_window)
+        ))
+
+        best_suggestions = None
+        best_frame_idx = None
+        best_score = -1
+
+        for frame_idx in candidate_offsets:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+
+            suggestions = detect_pitch_keypoints(
+                frame, settings.ROBOFLOW_API_KEY, confidence_threshold=0.5, max_points=12
+            )
+            if len(suggestions) < 4:
+                continue
+
+            # Score = sum of confidences across all detected points, NOT
+            # real-world x-span. An earlier version of this function
+            # scored by x-span specifically to avoid picking frames whose
+            # confident points all cluster in one place -- but a real
+            # side-by-side visual check (homography reprojection overlay
+            # against match 10's known-good manual calibration on this
+            # same clip) showed x-span maximization backfired: it
+            # actively prefers spurious far-field detections, since a
+            # WRONG "right box corner" detection sitting near a goal line
+            # inflates x-span just as effectively as a real one would.
+            # Confirmed concretely -- the overlay showed a confidently
+            # labeled "right_box_top"/"right_corner_top"/"right_penalty_spot"
+            # cluster drawn on empty grass with no real box or corner
+            # anywhere near it, while this same anchor's halfway-line/
+            # center-circle points (a well-validated cluster, confirmed
+            # via reprojection tests on two independent clips earlier
+            # this session) were correctly aligned. Summed confidence is
+            # a more neutral proxy for "this is a clean, unambiguous
+            # frame" -- it doesn't specifically go looking for distant
+            # landmark types the way x-span does.
+            score = sum(s["confidence"] for s in suggestions)
+            if score > best_score:
+                best_score = score
+                best_suggestions = suggestions
+                best_frame_idx = frame_idx
+
+        if best_suggestions is None:
+            logger.info(
+                "match=%s: no candidate frame in window [%d, %d) yielded >=4 confident keypoints, skipping this anchor",
+                match.id, window_start, window_end,
+            )
+            continue
+
+        points = [
+            {
+                "landmark_id": s["landmark_id"],
+                "pixel_x": s["pixel_x"],
+                "pixel_y": s["pixel_y"],
+                "pitch_x": s["pitch_x"],
+                "pitch_y": s["pitch_y"],
+            }
+            for s in best_suggestions
+        ]
+
+        MatchCalibration.objects.update_or_create(
+            match=match,
+            calibration_frame=best_frame_idx,
+            defaults={"points": points},
+        )
+        saved_count += 1
+        logger.info(
+            "match=%s: auto-calibrated anchor at frame %d (window [%d,%d), confidence_sum=%.2f) with %d points",
+            match.id, best_frame_idx, window_start, window_end, best_score, len(points),
+        )
+
+    cap.release()
+
+    if saved_count == 0:
+        logger.info("match=%s: no window yielded a usable calibration anchor, no auto-calibration saved", match.id)
+    else:
+        logger.info("match=%s: auto-calibration saved %d/%d window anchors", match.id, saved_count, num_anchors)
+
+
 @shared_task(bind=True)
 def compute_pitch_mapping(self, match_id):
     """
@@ -286,7 +490,7 @@ def compute_pitch_mapping(self, match_id):
     Stage 1-4 only; a match can be COMPLETED with or without real pitch
     stats.
     """
-    from apps.matches.models import Match, MatchCalibration
+    from apps.matches.models import Match
     from apps.analytics.models import TeamStatistics
 
     from ai_engine.config import DEFAULT_CONFIG
@@ -309,10 +513,9 @@ def compute_pitch_mapping(self, match_id):
     except Match.DoesNotExist:
         return
 
-    try:
-        calibration = match.calibration
-    except MatchCalibration.DoesNotExist:
-        return  # nothing to do without a calibration
+    calibrations = list(match.calibrations.order_by("calibration_frame"))
+    if not calibrations:
+        return  # nothing to do without at least one calibration anchor
 
     files = getattr(match, "files", None)
     if not files or not files.player_tracking_csv:
@@ -323,35 +526,78 @@ def compute_pitch_mapping(self, match_id):
 
     video_path = match.video.original_video.path
 
-    # --- Track the new calibration's homography across the whole video ---
-    image_pts = [(p["pixel_x"], p["pixel_y"]) for p in calibration.points]
-    pitch_pts = [(p["pitch_x"], p["pitch_y"]) for p in calibration.points]
-
+    # --- Track each calibration anchor's homography across ITS OWN
+    # segment of the video (not the whole video from one anchor) ---
+    # See MatchCalibration's docstring for why: a single anchor's
+    # optical-flow tracking can be lost partway through a long pan (a
+    # calibration point leaves frame, gets occluded, no auto-recovery),
+    # silently leaving every later frame with no real pitch mapping.
+    # Multiple anchors fix this WITHOUT chaining across them either —
+    # each anchor bootstraps fresh from its own 4 points and tracks
+    # forward only until the NEXT anchor's frame (exclusive), where a
+    # completely fresh bootstrap takes over. One anchor's tracking
+    # failure only costs that anchor's own segment, not everything after
+    # it in the match.
     homography_by_frame = {}
     cap = cv2.VideoCapture(video_path)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, calibration.calibration_frame)
-    ok, bootstrap_frame = cap.read()
-
-    homography_tracker = HomographyTracker(DEFAULT_CONFIG.pitch_mapping)
-    if not (ok and homography_tracker.bootstrap(bootstrap_frame, image_pts, pitch_pts)):
-        cap.release()
-        # Bad calibration frame/points (e.g. video re-encoded, frame no
-        # longer decodes the same way, or the 4 points weren't a valid
-        # quadrilateral). Leave whatever pitch data already existed as-is
-        # rather than wiping it out over a failed recalibration attempt.
-        return
-
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    homography_by_frame[calibration.calibration_frame] = homography_tracker.current_H.copy()
-    cap.set(cv2.CAP_PROP_POS_FRAMES, calibration.calibration_frame + 1)
-    for frame_idx in range(calibration.calibration_frame + 1, total_frames):
-        ok, frame = cap.read()
-        if not ok:
-            break
-        H = homography_tracker.update(frame)
-        if H is not None:
-            homography_by_frame[frame_idx] = H.copy()
+
+    for i, calibration in enumerate(calibrations):
+        segment_end_frame = (
+            calibrations[i + 1].calibration_frame if i + 1 < len(calibrations) else total_frames
+        )
+        if calibration.calibration_frame >= segment_end_frame:
+            # Shouldn't happen given unique_together + ordering, but
+            # skip defensively rather than looping backward.
+            continue
+
+        image_pts = [(p["pixel_x"], p["pixel_y"]) for p in calibration.points]
+        pitch_pts = [(p["pitch_x"], p["pitch_y"]) for p in calibration.points]
+
+        cap.set(cv2.CAP_PROP_POS_FRAMES, calibration.calibration_frame)
+        ok, bootstrap_frame = cap.read()
+
+        homography_tracker = HomographyTracker(DEFAULT_CONFIG.pitch_mapping)
+        if not (ok and homography_tracker.bootstrap(bootstrap_frame, image_pts, pitch_pts)):
+            # This ONE anchor failed to bootstrap (bad frame/points) —
+            # skip just its segment, not the whole match. Other anchors'
+            # segments still get real pitch mapping.
+            continue
+
+        homography_by_frame[calibration.calibration_frame] = homography_tracker.current_H.copy()
+        cap.set(cv2.CAP_PROP_POS_FRAMES, calibration.calibration_frame + 1)
+        for frame_idx in range(calibration.calibration_frame + 1, segment_end_frame):
+            ok, frame = cap.read()
+            if not ok:
+                break
+            H = homography_tracker.update(frame)
+            if H is not None:
+                homography_by_frame[frame_idx] = H.copy()
+
     cap.release()
+
+    # TEMPORARY diagnostic — separate from last_tracked_frame (which is
+    # ball-trajectory-derived and can be capped by Stage 1-4 ball
+    # detection gaps having nothing to do with homography coverage).
+    # This reports homography_by_frame's ACTUAL coverage directly, so we
+    # can tell whether a given anchor's tracking succeeded independent
+    # of whether the ball itself was detected that far.
+    covered_frames = sorted(homography_by_frame.keys())
+    logger.info(
+        "compute_pitch_mapping match=%s: homography covers %d frames, range=%s-%s",
+        match.id, len(covered_frames),
+        covered_frames[0] if covered_frames else None,
+        covered_frames[-1] if covered_frames else None,
+    )
+    for calibration in calibrations:
+        anchor_frame = calibration.calibration_frame
+        frames_from_this_anchor_onward = [f for f in covered_frames if f >= anchor_frame]
+        logger.info(
+            "  anchor@%s: bootstrapped=%s, max_covered_frame_at_or_after_anchor=%s",
+            anchor_frame,
+            anchor_frame in homography_by_frame,
+            max(frames_from_this_anchor_onward) if frames_from_this_anchor_onward else None,
+        )
 
     if not homography_by_frame:
         return
@@ -495,18 +741,57 @@ def compute_pitch_mapping(self, match_id):
 
     possession_events = detect_possession(ball_pitch_trajectory, identities, DEFAULT_CONFIG.event_detection)
     pass_events = detect_passes(possession_events, identities)
-    shot_events = detect_shots(ball_pitch_trajectory, (52.5, 0.0))
+    # Checks BOTH goals now — see events.py's detect_shots docstring.
+    # Previously hardcoded to (52.5, 0.0), the right goal only, which
+    # made every left-goal shot structurally invisible regardless of
+    # detection quality. Found via real-data review, not testing —
+    # this project's footage happened not to have a left-goal shot in
+    # any clip validated so far, so the bug never surfaced in output.
+    shot_events = detect_shots(ball_pitch_trajectory, ((52.5, 0.0), (-52.5, 0.0)))
 
     team_by_master_id = {i.master_id: i.team for i in identities}
+
+    # FOUND VIA REAL DATA: a short tracked segment (~190 frames from a
+    # single calibration anchor) produced a degenerate 100%/0% possession
+    # split. Root cause was here — the LAST possession event in the list
+    # had its end_frame fall back to its OWN start_frame (a zero-length
+    # interval, floored to 1 frame by the max() below), while every
+    # EARLIER event correctly got its real duration up to the NEXT
+    # event's frame. On a short clip with few possession-change events,
+    # that one truncated interval can dominate the total, producing
+    # exactly this kind of skewed/degenerate split. Fix: the last event's
+    # interval should extend to the actual last analyzed frame (the last
+    # frame with a valid ball pitch position), not collapse to nothing.
+    valid_ball_frames = [p.frame_idx for p in ball_pitch_trajectory if p.x_m is not None]
+    last_tracked_frame = max(valid_ball_frames) if valid_ball_frames else 0
 
     possession_frame_counts = {Team.TEAM_A: 0, Team.TEAM_B: 0}
     for i, event in enumerate(possession_events):
         start_frame = event.frame_idx
-        end_frame = possession_events[i + 1].frame_idx if i + 1 < len(possession_events) else start_frame
+        end_frame = (
+            possession_events[i + 1].frame_idx if i + 1 < len(possession_events) else last_tracked_frame
+        )
         holder_team = team_by_master_id.get(event.player_master_id)
         if holder_team in possession_frame_counts:
             possession_frame_counts[holder_team] += max(end_frame - start_frame, 1)
     total_possession_frames = sum(possession_frame_counts.values()) or 1
+
+    # Diagnostic, not behavior — helps distinguish "genuinely few
+    # possession changes in a short/scrappy segment" (expected, see
+    # detect_possession's own docstring on contested-ball flicker) from
+    # an actual detection problem, without needing a debugger.
+    logger.info(
+        "compute_pitch_mapping match=%s: %d possession events, %d pass events, last_tracked_frame=%s",
+        match.id, len(possession_events), len(pass_events), last_tracked_frame,
+    )
+    # TEMPORARY, verbose — remove once the 100/0 possession investigation
+    # is closed out. Dumps every event so we can see the raw picture
+    # instead of just aggregate counts.
+    for i, event in enumerate(possession_events):
+        logger.info(
+            "  possession_event[%d]: frame=%s player_master_id=%s team=%s",
+            i, event.frame_idx, event.player_master_id, team_by_master_id.get(event.player_master_id),
+        )
 
     passes_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
     for e in pass_events:
@@ -571,6 +856,34 @@ def compute_pitch_mapping(self, match_id):
         shots_by_track_id[closest_identity.master_id] += 1
         xg_by_track_id[closest_identity.master_id] += shot_xg
 
+    # Max plausible human sprint speed, generously above a real peak
+    # (~12.4 m/s for an elite sprinter at full tilt) — used to reject
+    # single-frame tracking glitches, not to model real player speed.
+    # FOUND VIA REAL DATA: a tracked identity on real footage summed to
+    # 1259m over 119 frames (~4.8s at 25fps) = ~264 m/s, obviously
+    # impossible. Root cause: team_distance_m/identity_distance_m summed
+    # raw frame-to-frame displacement with NO sanity bound — a single
+    # bad per-frame homography solve (see homography_tracker.py: each
+    # frame's homography is resolved completely fresh, with no
+    # consistency check against its neighbors — that's what avoids
+    # chained drift, but it also means nothing catches a one-off bad
+    # solve) can silently inflate distance covered. detect_shots already
+    # guards the ball the same way (max_plausible_speed_mps) — this is
+    # the same pattern applied to player movement. SKIPS the impossible
+    # segment entirely (doesn't cap it to a plausible-but-still-invented
+    # value) — same "honest gap over fabricated number" pattern as
+    # Stage 4's ball-interpolation bounds guard.
+    MAX_PLAYER_SPEED_MPS = 12.0
+
+    def _plausible_segment_distance_m(p1, p2, dt_frames):
+        if dt_frames <= 0:
+            return 0.0
+        dt_sec = dt_frames / 25.0
+        dist = ((p2.x_m - p1.x_m) ** 2 + (p2.y_m - p1.y_m) ** 2) ** 0.5
+        if dist / dt_sec > MAX_PLAYER_SPEED_MPS:
+            return 0.0  # tracking glitch, not real movement — don't count it
+        return dist
+
     def team_distance_m(team_enum):
         total = 0.0
         for identity in identities:
@@ -578,8 +891,7 @@ def compute_pitch_mapping(self, match_id):
                 continue
             frames = sorted(identity.trajectory.keys())
             for f1, f2 in zip(frames, frames[1:]):
-                p1, p2 = identity.trajectory[f1], identity.trajectory[f2]
-                total += ((p2.x_m - p1.x_m) ** 2 + (p2.y_m - p1.y_m) ** 2) ** 0.5
+                total += _plausible_segment_distance_m(identity.trajectory[f1], identity.trajectory[f2], f2 - f1)
         return total
 
     # TEAM_A is "closer to home_kit_color" per classify_team_by_known_colors
@@ -609,8 +921,7 @@ def compute_pitch_mapping(self, match_id):
         frames = sorted(identity.trajectory.keys())
         total = 0.0
         for f1, f2 in zip(frames, frames[1:]):
-            p1, p2 = identity.trajectory[f1], identity.trajectory[f2]
-            total += ((p2.x_m - p1.x_m) ** 2 + (p2.y_m - p1.y_m) ** 2) ** 0.5
+            total += _plausible_segment_distance_m(identity.trajectory[f1], identity.trajectory[f2], f2 - f1)
         return total
 
     player_stats_csv = io.StringIO()

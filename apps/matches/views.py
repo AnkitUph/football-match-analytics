@@ -9,6 +9,7 @@ import os
 
 import cv2
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
@@ -20,6 +21,7 @@ from apps.reports.models import Report
 
 from apps.matches.models import Match, MatchCalibration, MatchGoal, MatchLineup, MatchVideo, TrackPlayerIdentification
 from apps.matches.pitch_landmarks import PITCH_LANDMARKS
+from apps.matches.pitch_landmarks_32 import ROBOFLOW_KEYPOINTS_32
 from apps.matches.tasks import process_match, compute_pitch_mapping
 from apps.players.models import Player
 from apps.teams.models import Team
@@ -119,6 +121,27 @@ def _resolve_registered_team(request, side_prefix, select_value):
         return None, None, f"Selected {side_prefix} team could not be found."
 
     return team, None, None
+
+
+def _all_calibration_landmarks():
+    """
+    Merges the original 13-point PITCH_LANDMARKS preset with the 32-point
+    Roboflow-aligned set, deduplicating by id. The 12 ids that appear in
+    both are identical in coordinates (cross-checked when
+    pitch_landmarks_32.py was built) — center_spot is the only
+    PITCH_LANDMARKS entry with no Roboflow equivalent, since it's not one
+    of the model's 32 detectable keypoints.
+
+    Used for BOTH the calibration page's landmark dropdown and
+    calibrate_save's validation, so a smart-assist-suggested point (which
+    may use one of the 19 ids that aren't in the original 13) is always
+    a valid, known landmark — never rejected as unrecognized just because
+    it came from the larger set.
+    """
+    merged = {l["id"]: l for l in PITCH_LANDMARKS}
+    for l in ROBOFLOW_KEYPOINTS_32:
+        merged.setdefault(l["id"], l)
+    return list(merged.values())
 
 
 @login_required
@@ -683,10 +706,16 @@ def _load_pitch_positions_for_track(files_obj, track_id):
 @login_required
 def calibrate_match(request, public_id):
     """
-    Manual per-match calibration page. Only the uploader can calibrate
-    their own match (unlike match_results, which anyone logged in can
-    view) — a bad-faith or mistaken calibration silently corrupts real
-    stats for everyone else looking at this match.
+    Hidden manual/smart-assist calibration page — NOT linked from
+    results.html. Calibration now happens automatically for every match
+    (see apps/matches/tasks.py:_run_automatic_calibration), with no
+    human step. This page exists purely as a developer/debug fallback
+    for when automatic calibration skipped a match (fewer than 4
+    confident keypoints) or produced visibly wrong stats — reachable
+    only by knowing this URL. Only the uploader can calibrate their own
+    match (unlike match_results, which anyone logged in can view) — a
+    bad-faith or mistaken calibration silently corrupts real stats for
+    everyone else looking at this match.
     """
     match = get_object_or_404(Match, public_id=public_id, uploaded_by=request.user)
 
@@ -702,16 +731,18 @@ def calibrate_match(request, public_id):
         except Exception:
             pass  # fall back to frame 0 — the frame-loading UI lets the user pick a different one anyway
 
-    existing_calibration = getattr(match, "calibration", None)
+    existing_calibrations = list(match.calibrations.order_by("calibration_frame"))
     has_real_stats = TeamStatistics.objects.filter(match=match).exists()
 
+    all_landmarks = _all_calibration_landmarks()
     context = {
         "match": match,
         "default_frame_idx": default_frame_idx,
-        "existing_calibration": existing_calibration,
+        "existing_calibrations": existing_calibrations,
         "has_real_stats": has_real_stats,
-        "landmarks": PITCH_LANDMARKS,
-        "landmarks_json": json.dumps(PITCH_LANDMARKS),
+        "landmarks": all_landmarks,
+        "landmarks_json": json.dumps(all_landmarks),
+        "roboflow_configured": bool(settings.ROBOFLOW_API_KEY),
     }
     return render(request, "matches/calibrate.html", context)
 
@@ -759,14 +790,90 @@ def calibrate_frame(request, public_id):
 
 
 @login_required
+def calibrate_suggest(request, public_id):
+    """
+    Smart-assist for the HIDDEN manual /calibrate/ page only — the real,
+    no-human-involved automatic calibration path is
+    apps/matches/tasks.py:_run_automatic_calibration, which runs for
+    every match on its own. This endpoint exists so that when automatic
+    calibration skipped a match (or got a bad frame) and someone opens
+    this hidden debug page to fix it by hand, they can still get
+    suggested points on a DIFFERENT frame than the one auto-calibration
+    tried, rather than placing all points manually from scratch.
+
+    Nothing is saved here — purely advisory. calibrate_save still does
+    its own full validation regardless of what this endpoint suggested.
+
+    Shares its actual detection logic with _run_automatic_calibration
+    via ai_engine/stage5_pitch_mapping/smart_assist.py:
+    detect_pitch_keypoints — kept in one place so the class_id+1 mapping
+    fix (see pitch_landmarks_32.py's docstring) can't drift out of sync
+    between the automatic and manual paths.
+    """
+    from ai_engine.stage5_pitch_mapping.smart_assist import detect_pitch_keypoints
+
+    match = get_object_or_404(Match, public_id=public_id, uploaded_by=request.user)
+
+    if not settings.ROBOFLOW_API_KEY:
+        return JsonResponse({"error": "Roboflow API key is not configured on the server."}, status=503)
+
+    video = getattr(match, "video", None)
+    if not video or not video.original_video:
+        return HttpResponseBadRequest("No video uploaded for this match.")
+
+    try:
+        frame_idx = int(request.GET.get("frame_idx", 0))
+    except (TypeError, ValueError):
+        return HttpResponseBadRequest("frame_idx must be an integer.")
+
+    try:
+        confidence_threshold = float(request.GET.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence_threshold = 0.5
+
+    cap = cv2.VideoCapture(video.original_video.path)
+    if not cap.isOpened():
+        cap.release()
+        return HttpResponseBadRequest("Could not open the match video.")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frame_idx = max(0, min(frame_idx, max(total_frames - 1, 0)))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ok, frame = cap.read()
+    cap.release()
+
+    if not ok:
+        return HttpResponseBadRequest("Could not read that frame from the video.")
+
+    suggestions = detect_pitch_keypoints(
+        frame, settings.ROBOFLOW_API_KEY, confidence_threshold=confidence_threshold, max_points=12
+    )
+
+    if not suggestions:
+        return JsonResponse({"error": "No confident pitch keypoints detected in this frame."}, status=422)
+
+    return JsonResponse({"suggestions": suggestions, "frame_idx": frame_idx})
+
+
+@login_required
 def calibrate_save(request, public_id):
     """
-    Validates and saves a MatchCalibration, then kicks off
-    compute_pitch_mapping. If this match already has real TeamStatistics
-    (i.e. it was calibrated before) and the request isn't explicitly
-    confirming an overwrite, responds with needs_confirmation instead of
-    saving — the calibration page's JS shows a confirm() dialog and
-    resubmits with confirm_overwrite=true.
+    Validates and saves ONE MatchCalibration anchor, then kicks off
+    compute_pitch_mapping (which re-reads ALL of this match's anchors,
+    not just this one — see that function's docstring). A match can have
+    multiple anchors (see MatchCalibration's docstring — this is how
+    camera pan/zoom is handled); saving at a calibration_frame that
+    already has an anchor EDITS that anchor in place rather than
+    creating a duplicate, saving at a new frame ADDS a new anchor.
+
+    If this match already has real TeamStatistics (i.e. it was
+    calibrated before) and the request isn't explicitly confirming an
+    overwrite, responds with needs_confirmation instead of saving — the
+    calibration page's JS shows a confirm() dialog and resubmits with
+    confirm_overwrite=true. Applies to adding a new anchor too, not just
+    editing an existing one, since ANY change here triggers a full
+    recompute of every anchor's homography together, not an incremental
+    per-anchor update.
     """
     if request.method != "POST":
         return HttpResponseBadRequest("POST required.")
@@ -785,10 +892,10 @@ def calibrate_save(request, public_id):
     if not isinstance(frame_idx, int) or frame_idx < 0:
         return JsonResponse({"error": "calibration_frame must be a non-negative integer."}, status=400)
 
-    if not isinstance(raw_points, list) or len(raw_points) != 4:
-        return JsonResponse({"error": "Exactly 4 points are required."}, status=400)
+    if not isinstance(raw_points, list) or len(raw_points) < 4:
+        return JsonResponse({"error": "At least 4 points are required."}, status=400)
 
-    landmarks_by_id = {landmark["id"]: landmark for landmark in PITCH_LANDMARKS}
+    landmarks_by_id = {landmark["id"]: landmark for landmark in _all_calibration_landmarks()}
     points, seen_landmarks = [], set()
     for p in raw_points:
         landmark_id = p.get("landmark_id") if isinstance(p, dict) else None
@@ -819,11 +926,40 @@ def calibrate_save(request, public_id):
     with transaction.atomic():
         MatchCalibration.objects.update_or_create(
             match=match,
-            defaults={"calibration_frame": frame_idx, "points": points},
+            calibration_frame=frame_idx,
+            defaults={"points": points},
         )
         transaction.on_commit(lambda: compute_pitch_mapping.delay(match.id))
 
     return JsonResponse({"ok": True, "redirect_url": reverse("matches:results", args=[match.public_id])})
+
+
+@login_required
+def delete_calibration(request, public_id, calibration_id):
+    """
+    Removes one calibration anchor. If OTHER anchors remain, their
+    segments are unaffected in terms of WHICH frames they cover — see
+    MatchCalibration's docstring — removing an anchor just means its own
+    segment (and any frames that were only reachable because it existed)
+    goes back to having no real pitch mapping once compute_pitch_mapping
+    re-runs, same "honest gap" pattern as everywhere else in this
+    project rather than trying to paper over it. Deleting the LAST
+    remaining anchor leaves the match with no calibration at all —
+    compute_pitch_mapping's next run then does nothing (see its early
+    return for that case) rather than clearing out already-written real
+    stats.
+    """
+    if request.method != "POST":
+        return HttpResponseBadRequest("POST required.")
+
+    match = get_object_or_404(Match, public_id=public_id, uploaded_by=request.user)
+    calibration = get_object_or_404(MatchCalibration, id=calibration_id, match=match)
+    calibration.delete()
+
+    if match.calibrations.exists():
+        transaction.on_commit(lambda: compute_pitch_mapping.delay(match.id))
+
+    return JsonResponse({"ok": True, "redirect_url": reverse("matches:calibrate", args=[match.public_id])})
 
 
 def _load_track_summaries(files_obj, match=None, cap_per_team=10):
@@ -1518,7 +1654,7 @@ def build_match_report_context(match):
         "using_real_stats": using_real_stats,
         "home_heatmap": home_heatmap,
         "away_heatmap": away_heatmap,
-        "has_calibration": hasattr(match, "calibration"),
+        "has_calibration": match.calibrations.exists(),
         "match_goals": match_goals,
         "home_lineup": home_lineup,
         "away_lineup": away_lineup,
