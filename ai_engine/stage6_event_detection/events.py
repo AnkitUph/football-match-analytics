@@ -135,6 +135,8 @@ def detect_passes(
             continue
         if passer_team != receiver_team:
             continue  # turnover, not a pass
+        if prev_event.player_master_id == next_event.player_master_id:
+            continue
 
         p1 = identity_by_id.get(prev_event.player_master_id)
         p2 = identity_by_id.get(next_event.player_master_id)
@@ -143,6 +145,14 @@ def detect_passes(
         dist = 0.0
         if pos1 and pos2:
             dist = round(((pos2.x_m - pos1.x_m) ** 2 + (pos2.y_m - pos1.y_m) ** 2) ** 0.5, 1)
+
+        dt_frames = next_event.frame_idx - prev_event.frame_idx
+        dt_sec = max(0.04, dt_frames / 25.0)
+        speed = round(dist / dt_sec, 1)
+
+        # Kinematic filters: pass must cover at least 2.0m, take >= 2 frames, and speed <= 45.0 m/s
+        if dist < 2.0 or dt_frames < 2 or speed > 45.0:
+            continue
 
         events.append(
             Event(
@@ -153,6 +163,7 @@ def detect_passes(
                 metadata={
                     "start_frame": prev_event.frame_idx,
                     "distance_m": dist,
+                    "speed_mps": speed,
                     "start_x": round(pos1.x_m, 2) if pos1 else 0.0,
                     "start_y": round(pos1.y_m, 2) if pos1 else 0.0,
                     "end_x": round(pos2.x_m, 2) if pos2 else 0.0,
@@ -203,6 +214,12 @@ def compute_continuous_possession(
     frames_since_control = 0
     max_carry_frames = int(1.5 * fps)
 
+    # Debounce discrete possession change events with a rolling window
+    # Prevents 1-frame micro-oscillations during contested tackles
+    window_size = 5
+    recent_closest: deque = deque(maxlen=window_size)
+    event_holder_id = None
+
     for point in valid_points:
         closest_id, closest_dist = None, float("inf")
         for identity in identities:
@@ -217,24 +234,36 @@ def compute_continuous_possession(
             p_team = team_by_id.get(closest_id)
             if p_team in frame_counts:
                 frames_since_control = 0
-                if closest_id != current_holder_id:
-                    current_holder_id = closest_id
-                    current_team = p_team
-                    possession_events.append(
-                        Event(
-                            event_type="possession_change",
-                            frame_idx=point.frame_idx,
-                            player_master_id=closest_id,
-                            metadata={"team": p_team.value if hasattr(p_team, "value") else str(p_team), "dist_m": round(closest_dist, 2)},
-                        )
-                    )
+                current_team = p_team
+            recent_closest.append(closest_id)
         else:
             frames_since_control += 1
             if frames_since_control > max_carry_frames:
                 current_team = None
+            recent_closest.append(None)
 
         if current_team in frame_counts:
             frame_counts[current_team] += 1
+
+        if len(recent_closest) == window_size:
+            candidates = [c for c in recent_closest if c is not None]
+            if candidates:
+                winner, count = Counter(candidates).most_common(1)[0]
+                if count >= 3 and winner != event_holder_id:
+                    event_holder_id = winner
+                    w_team = team_by_id.get(winner)
+                    if w_team in frame_counts:
+                        possession_events.append(
+                            Event(
+                                event_type="possession_change",
+                                frame_idx=point.frame_idx,
+                                player_master_id=winner,
+                                metadata={
+                                    "team": w_team.value if hasattr(w_team, "value") else str(w_team),
+                                    "dist_m": round(closest_dist, 2),
+                                },
+                            )
+                        )
 
     total_frames = sum(frame_counts.values())
     if total_frames > 0:
@@ -291,8 +320,13 @@ def detect_passes_with_metadata(
         ey = round(pos2.y_m, 2) if pos2 else 0.0
 
         dist = round(((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5, 1)
-        dt_sec = max(0.1, (next_ev.frame_idx - prev_ev.frame_idx) / fps)
+        dt_frames = next_ev.frame_idx - prev_ev.frame_idx
+        dt_sec = max(0.04, dt_frames / fps)
         speed = round(dist / dt_sec, 1)
+
+        # Kinematic filters: discard instantaneous 1-frame or unphysical teleports
+        if dist < 2.0 or dt_frames < 2 or speed > 45.0:
+            continue
 
         is_completed = (t1 == t2)
         video_minute = max(1, round((prev_ev.frame_idx / fps) / 60.0))
@@ -363,60 +397,65 @@ def detect_corner_kicks(
 
 def detect_shots(
     ball_trajectory: list[BallTrajectoryPoint],
-    goal_centers_pitch: tuple[tuple[float, float], ...] = ((52.5, 0.0), (-52.5, 0.0)),
-    min_shot_speed_mps: float = 10.0,
-    max_plausible_speed_mps: float = 35.0,
-    min_origin_distance_m: float = 5.0,
-    min_alignment: float = 0.85,
-    cooldown_frames: int = 20,
+    goal_centers_pitch: tuple[tuple[float, float], ...] | tuple[float, float] = ((52.5, 0.0), (-52.5, 0.0)),
+    min_shot_speed_mps: float = 12.0,
+    max_plausible_speed_mps: float = 38.0,
+    min_origin_distance_m: float = 3.0,
+    max_origin_distance_m: float = 35.0,
+    min_alignment: float = 0.88,
+    cooldown_frames: int = 40,
+    identities: list[MasterIdentity] | None = None,
+    pass_intervals: list[tuple[int, int]] | None = None,
 ) -> list[Event]:
     """
-    A shot = ball velocity, between any two consecutive tracked points,
-    pointed toward EITHER goal (cosine alignment > min_alignment) with
-    speed between min_shot_speed_mps and max_plausible_speed_mps.
-
-    FOUND VIA REAL-DATA REVIEW: this used to take a single
-    goal_center_pitch tuple, hardcoded at the call site to (52.5, 0.0) —
-    the RIGHT goal only, in this project's pitch_landmarks.py convention
-    (origin at center circle, corner flags at x=+/-52.5). That made
-    every shot at the LEFT goal structurally invisible, regardless of
-    how clean the shot was — not a detection-confidence issue, a
-    hardcoded blind spot. Now takes a tuple of goal centers (both by
-    default) and, per candidate ball movement, tests alignment against
-    EACH one, keeping whichever is best-aligned. A real shot is only
-    ever aimed at one goal, so at most one candidate should ever clear
-    min_alignment in practice — checking both is about not missing the
-    correct one, not about double-counting.
-
-    metadata now also carries target_goal (which of goal_centers_pitch
-    matched) — informational, not currently used downstream, but useful
-    if a later consumer wants to sanity-check the shot against which
-    side a team is attacking.
-
-    EVALUATES EVERY CONSECUTIVE PAIR, not just points before a gap —
-    corrected after testing found the original "only near a gap" design
-    too narrow: on real footage, a genuinely excellent shot signal
-    (speed ~11 m/s, alignment 0.98-1.00, i.e. pointed almost exactly at
-    goal) sat in the middle of a continuously-tracked stretch and was
-    skipped entirely by that restriction. Evaluating every pair still
-    naturally covers the "shot flight not fully tracked" case (Stage 4
-    ball tracking's own gap philosophy already handles that — this
-    function just needs to catch the last velocity estimate before data
-    runs out, which happens automatically here).
-
-    max_plausible_speed_mps GUARDS AGAINST TRACKING NOISE: found via
-    testing that raw frame-to-frame speed occasionally spikes to
-    physically impossible values (300+ m/s) from a single mistracked
-    point — filtering those out is necessary, not optional. No real
-    shot exceeds ~35 m/s.
-
-    cooldown_frames prevents one continuous fast, goal-aligned stretch
-    from emitting many duplicate "shot" events for what's really one
-    strike.
+    Detects genuine shots on goal:
+    - Origin distance <= max_origin_distance_m (default 35.0m, attacking third).
+      Excludes kicks from midfield or defense (>35m away).
+    - Speed between min_shot_speed_mps (12.0 m/s = 43 km/h) and max_plausible_speed_mps.
+    - Directional alignment >= min_alignment towards the target goal.
+    - Ball trajectory must actually continue approaching the target goal over subsequent
+      frames (min 3.5m approach), excluding 1-frame deflections during tackles/tussles.
+    - Excludes actions occurring during completed teammate pass intervals.
+    - If identities are provided, validates that the shooter is attacking the target goal
+      (not clearing towards their own defending goal).
     """
+    from ai_engine.utils.types import Team
+
+    # Support both a single goal tuple (52.5, 0.0) or a tuple of goal tuples
+    if goal_centers_pitch and isinstance(goal_centers_pitch[0], (int, float)):
+        goal_centers: tuple[tuple[float, float], ...] = (goal_centers_pitch,)  # type: ignore
+    else:
+        goal_centers = goal_centers_pitch  # type: ignore
+
     events: list[Event] = []
     valid_points = [p for p in ball_trajectory if p.x_m is not None]
+    if not valid_points:
+        return events
+
+    ball_map = {p.frame_idx: p for p in valid_points}
     last_event_frame = -cooldown_frames
+
+    # Infer team defending goals from relative team positions (if available)
+    team_defending_goal: dict[Team, tuple[float, float]] = {}
+    if identities:
+        team_medians: dict[Team, float] = {}
+        for team in (Team.TEAM_A, Team.TEAM_B):
+            xs = [
+                pt.x_m
+                for ident in identities
+                if ident.team == team
+                for pt in ident.trajectory.values()
+                if abs(pt.x_m) <= 55.0
+            ]
+            if xs:
+                team_medians[team] = sorted(xs)[len(xs) // 2]
+        if Team.TEAM_A in team_medians and Team.TEAM_B in team_medians:
+            if team_medians[Team.TEAM_A] < team_medians[Team.TEAM_B]:
+                team_defending_goal[Team.TEAM_A] = (-52.5, 0.0)
+                team_defending_goal[Team.TEAM_B] = (52.5, 0.0)
+            else:
+                team_defending_goal[Team.TEAM_A] = (52.5, 0.0)
+                team_defending_goal[Team.TEAM_B] = (-52.5, 0.0)
 
     for current, next_point in zip(valid_points, valid_points[1:]):
         dt_frames = next_point.frame_idx - current.frame_idx
@@ -428,13 +467,20 @@ def detect_shots(
         vy = (next_point.y_m - current.y_m) / dt_sec
         speed = (vx**2 + vy**2) ** 0.5
 
-        if not (min_shot_speed_mps <= speed <= max_plausible_speed_mps):
+        # Exclude frames that are part of an already-identified completed pass
+        if pass_intervals and any(start <= current.frame_idx <= end for start, end in pass_intervals):
             continue
 
-        best = None  # (goal_center, origin_dist, alignment) — highest alignment across both goals
-        for goal_center_pitch in goal_centers_pitch:
+        best = None  # (goal_center, origin_dist, alignment)
+        for goal_center_pitch in goal_centers:
             origin_dist = ((goal_center_pitch[0] - current.x_m) ** 2 + (goal_center_pitch[1] - current.y_m) ** 2) ** 0.5
-            if origin_dist < min_origin_distance_m:
+            # Must be within realistic shooting distance (e.g. <= 35m from goal)
+            if not (min_origin_distance_m <= origin_dist <= max_origin_distance_m):
+                continue
+
+            # Within penalty box (<= 16.5m), allow placed finishes down to 9.5 m/s (34 km/h); outside box requires min_shot_speed_mps
+            eff_min_speed = 9.5 if origin_dist <= 16.5 else min_shot_speed_mps
+            if not (eff_min_speed <= speed <= max_plausible_speed_mps):
                 continue
 
             to_goal_x = goal_center_pitch[0] - current.x_m
@@ -444,11 +490,41 @@ def detect_shots(
                 continue
             alignment = (vx * to_goal_x + vy * to_goal_y) / (speed * to_goal_dist)
 
-            if alignment > min_alignment and (best is None or alignment > best[2]):
+            if alignment >= min_alignment and (best is None or alignment > best[2]):
                 best = (goal_center_pitch, origin_dist, alignment)
 
         if best is not None and (current.frame_idx - last_event_frame) >= cooldown_frames:
             goal_center_pitch, origin_dist, alignment = best
+
+            # Verify sustained trajectory towards the goal (excludes momentary 1-frame tackle deflections)
+            future_pts = [
+                ball_map[f]
+                for f in range(current.frame_idx + 1, min(current.frame_idx + 18, current.frame_idx + 30))
+                if f in ball_map
+            ]
+            if future_pts:
+                min_future_dist = min(
+                    ((goal_center_pitch[0] - p.x_m) ** 2 + (goal_center_pitch[1] - p.y_m) ** 2) ** 0.5
+                    for p in future_pts
+                )
+                if (origin_dist - min_future_dist) < 3.5:
+                    continue  # Did not travel towards goal
+            else:
+                continue
+
+            # Verify shooter's team is attacking this goal, not defending it
+            if identities:
+                closest_team = None
+                closest_d = float("inf")
+                for ident in identities:
+                    pos = ident.trajectory.get(current.frame_idx)
+                    if pos:
+                        d = ((pos.x_m - current.x_m) ** 2 + (pos.y_m - current.y_m) ** 2) ** 0.5
+                        if d < closest_d:
+                            closest_d = d
+                            closest_team = ident.team
+                if closest_team and team_defending_goal.get(closest_team) == goal_center_pitch:
+                    continue  # Clearance / backpass towards own defending goal
 
             # Extrapolate ball path to goal line (x = goal_center_pitch[0])
             is_on_target = False
@@ -466,9 +542,9 @@ def detect_shots(
                     event_type="shot",
                     frame_idx=current.frame_idx,
                     metadata={
-                        "speed_mps": speed,
-                        "origin_distance_m": origin_dist,
-                        "alignment": alignment,
+                        "speed_mps": round(speed, 1),
+                        "origin_distance_m": round(origin_dist, 1),
+                        "alignment": round(alignment, 2),
                         "target_goal": goal_center_pitch,
                         "is_on_target": is_on_target,
                     },

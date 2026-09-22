@@ -105,35 +105,17 @@ def process_match(self, match_id):
         min_duration_frames = int(DEFAULT_CONFIG.pitch_mapping.min_tracklet_duration_sec * 25)
         survivors = [t for t in tracklets.values() if t.duration_frames >= min_duration_frames]
 
-        # --- Stage 3: team classification ---
-        # Uses classify_teams_with_fallback: tries this match's ACTUAL
-        # kit colors (captured at upload) first, but automatically falls
-        # back to blind clustering if that produces an implausibly
-        # one-sided split — found via real testing that stored kit
-        # colors can be wrong/unrelated to the actual footage (e.g. test
-        # data pairing made-up teams with real video), which silently
-        # classified 100% of players into one team. See
-        # team_classifier.classify_teams_with_fallback's docstring.
+        # --- Stage 3: Team Re-ID, Stitching & Classification (DINOv2 + Color Fallback) ---
         cap2 = cv2.VideoCapture(video_path)
         colors, valid = {}, []
+        track_embeddings = {}
         referees = []
-        # Sample up to a few frames per tracklet, not just the first —
-        # a single unlucky frame (shadow, motion blur, partial
-        # occlusion) shouldn't be able to flip an entire tracklet's team
-        # on its own. VALIDATED NEED (real footage, match with a near-
-        # white home kit): single-frame sampling let a large fraction of
-        # home-team raw tracklets get misclassified as away — see
-        # team_classifier.py's module docstring (FAILED APPROACH 3) for
-        # the complementary fix (brightness-normalized distance) that
-        # addresses the same root cause from the other side.
+
+        from ai_engine.stage3_team_reid.reid import ReidEmbedder
+        embedder = ReidEmbedder(DEFAULT_CONFIG.team_reid)
+
         MAX_COLOR_SAMPLES_PER_TRACK = 5
         for t in survivors:
-            if t.cls and t.cls.value == "referee":
-                from ai_engine.utils.types import Team
-                t.team = Team.REFEREE
-                referees.append(t)
-                continue
-
             n = len(t.detections)
             sample_count = min(MAX_COLOR_SAMPLES_PER_TRACK, n)
             sample_indices = sorted(set(
@@ -141,6 +123,7 @@ def process_match(self, match_id):
             ))
 
             sampled_colors = []
+            sampled_crops = []
             for idx in sample_indices:
                 det = t.detections[idx]
                 cap2.set(cv2.CAP_PROP_POS_FRAMES, det.frame_idx)
@@ -149,22 +132,107 @@ def process_match(self, match_id):
                     continue
                 x1, y1, x2, y2 = map(int, det.bbox)
                 crop = frame[max(0, y1):y2, max(0, x1):x2]
+                if crop.size > 0 and crop.shape[0] >= 15 and crop.shape[1] >= 8:
+                    sampled_crops.append(crop)
                 color = sample_torso_color(crop)
                 if color is not None:
                     sampled_colors.append(color)
 
             if sampled_colors:
                 colors[t.track_id] = np.median(np.array(sampled_colors), axis=0)
+
+            if sampled_crops:
+                feats = embedder.embed_batch(sampled_crops)
+                valid_feats = [f for f in feats if f is not None]
+                if valid_feats:
+                    mean_feat = np.mean(np.array(valid_feats), axis=0)
+                    norm = np.linalg.norm(mean_feat)
+                    track_embeddings[t.track_id] = (mean_feat / norm) if norm > 1e-6 else mean_feat
+
+            if t.track_id in colors or t.track_id in track_embeddings:
                 valid.append(t)
+
+        cap2.release()
+
+        # Tracklet Stitching across brief occlusions using DINOv2 Re-ID similarity
+        if getattr(DEFAULT_CONFIG.tracking, "enable_stitching", True) and track_embeddings:
+            from ai_engine.stage2_tracking.stitcher import stitch_tracklets
+            track_dict = {t.track_id: t for t in valid}
+            stitched_dict, id_mapping = stitch_tracklets(
+                track_dict,
+                track_embeddings,
+                max_gap_frames=getattr(DEFAULT_CONFIG.tracking, "stitch_max_gap_frames", 125),
+                similarity_thresh=getattr(DEFAULT_CONFIG.tracking, "stitch_similarity_thresh", 0.82),
+            )
+            valid = list(stitched_dict.values())
+
+            # Pool embeddings and colors across all constituent merged fragments
+            emb_groups = defaultdict(list)
+            col_groups = defaultdict(list)
+            for old_id, root_id in id_mapping.items():
+                if old_id in track_embeddings:
+                    emb_groups[root_id].append(track_embeddings[old_id])
+                if old_id in colors:
+                    col_groups[root_id].append(colors[old_id])
+
+            new_embeddings = {}
+            for root_id, embs in emb_groups.items():
+                mean_e = np.mean(embs, axis=0)
+                norm = np.linalg.norm(mean_e)
+                new_embeddings[root_id] = (mean_e / norm) if norm > 1e-6 else mean_e
+
+            new_colors = {}
+            for root_id, cols in col_groups.items():
+                new_colors[root_id] = np.median(cols, axis=0)
+
+            track_embeddings = new_embeddings
+            colors = new_colors
 
         home_bgr = _hex_to_bgr(match.home_kit_color) if match.home_kit_color else None
         away_bgr = _hex_to_bgr(match.away_kit_color) if match.away_kit_color else None
 
-        from ai_engine.stage3_team_reid.team_classifier import classify_teams_with_fallback
-        team_by_track_id = classify_teams_with_fallback(colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid)
+        from ai_engine.stage3_team_reid.team_classifier import classify_teams_with_dinov2, classify_teams_with_fallback
+        if getattr(DEFAULT_CONFIG.team_reid, "use_hf_dinov2", True) and len(track_embeddings) >= 4:
+            team_by_track_id = classify_teams_with_dinov2(
+                track_embeddings, colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid
+            )
+        else:
+            team_by_track_id = classify_teams_with_fallback(colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid)
+
+        from ai_engine.utils.types import Team
+
+        # Referee Disambiguation:
+        # Referee Disambiguation:
+        # Identify true on-pitch referee track(s) using referee detection counts,
+        # distinct kit color (outlier from both team kits), and single-referee exclusivity.
+        ref_candidates = []
         for t in valid:
-            t.team = team_by_track_id[t.track_id]
-        valid = valid + referees
+            ref_detections = sum(1 for d in t.detections if d.cls and d.cls.value == "referee")
+            tot_detections = len(t.detections)
+            if ref_detections >= 10 or (t.cls and t.cls.value == "referee") or (ref_detections >= 5 and ref_detections / max(tot_detections, 1) >= 0.15):
+                col = colors.get(t.track_id)
+                matches_home = home_bgr is not None and col is not None and np.linalg.norm(col - home_bgr) < 50.0
+                matches_away = away_bgr is not None and col is not None and np.linalg.norm(col - away_bgr) < 50.0
+                if not (matches_home or matches_away):
+                    score = tot_detections * (ref_detections / max(tot_detections, 1))
+                    ref_candidates.append((t, score))
+
+        ref_candidates.sort(key=lambda x: -x[1])
+        verified_ref_ids = set()
+        occupied_ref_frames = set()
+
+        for rt, score in ref_candidates:
+            r_frames = {d.frame_idx for d in rt.detections}
+            # Strictly at most one on-pitch referee: check temporal exclusivity
+            if len(r_frames & occupied_ref_frames) <= 2:
+                verified_ref_ids.add(rt.track_id)
+                occupied_ref_frames.update(r_frames)
+
+        for t in valid:
+            if t.track_id in verified_ref_ids:
+                t.team = Team.REFEREE
+            else:
+                t.team = team_by_track_id.get(t.track_id, Team.UNKNOWN)
 
         # --- Stage 3c: jersey number OCR (secondary signal, gated by config) ---
         # Runs on player/goalkeeper tracklets only (team_a/team_b) —
@@ -195,7 +263,7 @@ def process_match(self, match_id):
         for t in tracklets.values():
             for d in t.detections:
                 all_det[d.frame_idx].append(d)
-        ball_by_frame = extract_ball_detections(dict(all_det))
+        ball_by_frame = getattr(tracker, "ball_by_frame", None) or extract_ball_detections(dict(all_det))
         frame_w = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT))
         ball_trajectory = interpolate_gaps(ball_by_frame, DEFAULT_CONFIG.ball_tracking, frame_w, frame_h)
@@ -253,7 +321,12 @@ def process_match(self, match_id):
                 logger.exception("Automatic calibration failed for match=%s, continuing without it", match.id)
 
         if MatchCalibration.objects.filter(match=match).exists():
-            compute_pitch_mapping.delay(match.id)
+            try:
+                # Run synchronously so real TeamStatistics, PlayerStatistics,
+                # passes, shots, and heatmaps are fully computed BEFORE status=COMPLETED
+                compute_pitch_mapping(match.id)
+            except Exception:
+                logger.exception("compute_pitch_mapping failed for match=%s, continuing", match.id)
 
         match.status = Match.MatchStatus.COMPLETED
         match.processing_progress = 100
@@ -266,14 +339,7 @@ def process_match(self, match_id):
         except Exception:
             logger.exception("Failed to render annotated video for match=%s", match.id)
 
-        # PDF report, generated automatically (not behind a button) — see
-        # apps/reports/generator.py. Uses whatever data exists right now
-        # (real if compute_pitch_mapping already ran/is about to via the
-        # calibration check above, Phase-5 dummy otherwise) — it gets
-        # regenerated in place once real stats land, same
-        # update_or_create-by-match pattern as everywhere else real data
-        # replaces dummy data in this project. Report generation failing
-        # should never fail the underlying match processing.
+        # PDF report, generated with REAL stats
         try:
             from apps.reports.generator import generate_match_report
             generate_match_report(match)
@@ -398,6 +464,8 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
             min(window_start + int((window_end - window_start) * (j + 0.5) / samples_per_window), total_frames - 1)
             for j in range(samples_per_window)
         ))
+        if i == 0 and 0 not in candidate_offsets:
+            candidate_offsets = [0] + candidate_offsets
 
         best_suggestions = None
         best_frame_idx = None
@@ -412,6 +480,10 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
             suggestions = detect_pitch_keypoints(
                 frame, settings.ROBOFLOW_API_KEY, confidence_threshold=0.5, max_points=12
             )
+            if len(suggestions) < 4:
+                suggestions = detect_pitch_keypoints(
+                    frame, settings.ROBOFLOW_API_KEY, confidence_threshold=0.35, max_points=12
+                )
             if len(suggestions) < 4:
                 continue
 
@@ -594,6 +666,14 @@ def compute_pitch_mapping(self, match_id):
 
     cap.release()
 
+    # Backfill homography for any early frames preceding the first tracked anchor
+    if homography_by_frame:
+        earliest_frame = min(homography_by_frame.keys())
+        if earliest_frame > 0:
+            first_H = homography_by_frame[earliest_frame]
+            for f in range(0, earliest_frame):
+                homography_by_frame[f] = first_H.copy()
+
     # TEMPORARY diagnostic — separate from last_tracked_frame (which is
     # ball-trajectory-derived and can be capped by Stage 1-4 ball
     # detection gaps having nothing to do with homography coverage).
@@ -751,17 +831,11 @@ def compute_pitch_mapping(self, match_id):
                 jersey_number=t.jersey_number, trajectory=traj,
             ))
 
-    # Fallback identification: guess a name for any tracked player who
-    # still has none, so every identity shows up as SOMEONE in the
-    # results/report rather than staying anonymous. Created with
-    # is_auto_assigned=False (treated as confirmed immediately, per
-    # project decision) — see that function's docstring below. A human
-    # can still correct any of these via /identify/; this never
-    # overwrites an existing assignment from an earlier run.
+    cls_by_track = {t.track_id: t.cls for t in stitched}
     try:
-        _auto_assign_unidentified_tracks(match, identities)
+        _auto_assign_unidentified_tracks(match, identities, cls_by_track=cls_by_track)
     except Exception:
-        pass
+        logger.exception("Failed to auto-assign tracks for match=%s", match.id)
 
     # Continuous frame-level possession + discrete possession change events
     cont_possession = compute_continuous_possession(ball_pitch_trajectory, identities, fps=25.0)
@@ -773,7 +847,15 @@ def compute_pitch_mapping(self, match_id):
     pass_events = detect_passes(possession_events, identities)
     recorded_passes = detect_passes_with_metadata(possession_events, identities, ball_pitch_trajectory, fps=25.0)
     corner_events = detect_corner_kicks(ball_pitch_trajectory, identities, fps=25.0)
-    shot_events = detect_shots(ball_pitch_trajectory, ((52.5, 0.0), (-52.5, 0.0)))
+    pass_intervals = [
+        (p["start_frame"], p["frame_idx"]) for p in recorded_passes if p.get("is_completed")
+    ]
+    shot_events = detect_shots(
+        ball_pitch_trajectory,
+        ((52.5, 0.0), (-52.5, 0.0)),
+        identities=identities,
+        pass_intervals=pass_intervals,
+    )
 
     team_by_master_id = {i.master_id: i.team for i in identities}
 
@@ -1177,42 +1259,23 @@ def render_match_video(match_id):
 
 
 
-def _auto_assign_unidentified_tracks(match, identities):
+def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
     """
-    Fallback identification: for any tracked player-side identity that
-    still has no TrackPlayerIdentification, randomly pair it with an
-    unclaimed same-side MatchLineup entry — so every tracked player shows
-    up as SOME named lineup player rather than staying anonymous. The
-    guess may well be wrong; that's fine for this project (not
-    production-grade).
-
-    NOTE (intentional per-project choice): these rows are created with
-    is_auto_assigned=False — i.e. treated as CONFIRMED from the moment
-    they're created, not flagged as an unreviewed guess. This means
-    every tracked player shows real per-player data (distance, passes)
-    with the green "(tracked)" label immediately after processing,
-    rather than the yellow "(tracked, unverified)" one, and does NOT
-    get the "always shown past the cap" / guess-vs-confirmed visual
-    split on /identify/ that is_auto_assigned=True used to trigger there
-    too — a human (Ankit) reviews and corrects any wrong jersey/identity
-    assignments manually via /identify/ without relying on that
-    distinction. This is a single-line behavioral choice, not a change
-    to the matching/ranking logic below, which is unchanged.
-
-    "Random" here is match+side-seeded, not truly random each call — so
-    re-running compute_pitch_mapping (e.g. after a recalibration) doesn't
-    reshuffle guesses that already exist. This function only ever fills
-    gaps: any track_id or lineup_entry already claimed by ANY existing
-    row is left untouched. A human's correction on /identify/ can
-    therefore never be silently undone by a later recalibration.
-
-    If there are more tracked identities than lineup entries on a side
-    (expected — residual tracklet fragmentation typically outnumbers the
-    real ~11 players), the extras simply stay unassigned; there's no
-    lineup slot left to guess for them.
+    Intelligent player-lineup assignment:
+    1. Direct Jersey Match: If OCR identified a jersey number, match directly.
+    2. Goalkeeper Match: If position == 'GK' or jersey == 1, match to GK-classified
+       track or the deepest identity defending the goal.
+    3. Position-Aware Pitch Matching: Map defenders, midfielders, and forwards to
+       tracks according to pitch depth (from defending goal to attacking goal).
+    4. Quality selection: Strictly assigns the longest, highest-quality pitch tracks
+       to active starting players so no starter is assigned an empty/zero fragment.
     """
     from apps.matches.models import MatchLineup, TrackPlayerIdentification
-    from ai_engine.utils.types import Team
+    from ai_engine.utils.types import Team, ObjectClass
+    from collections import Counter
+    import numpy as np
+
+    cls_by_track = cls_by_track or {}
 
     already_assigned_track_ids = set(
         TrackPlayerIdentification.objects.filter(match=match).values_list("track_id", flat=True)
@@ -1220,13 +1283,6 @@ def _auto_assign_unidentified_tracks(match, identities):
     already_claimed_lineup_ids = set(
         TrackPlayerIdentification.objects.filter(match=match).values_list("lineup_entry_id", flat=True)
     )
-    # Per-side count of EXISTING assignments (guessed or confirmed) —
-    # the cap below is a TOTAL per side, not "how many new guesses this
-    # call adds". Missing this the first time around let a side with
-    # some already-confirmed rows exceed 10 total once fresh guesses
-    # were added on top, since the guess count alone was capped at 10
-    # without checking what was already there.
-    from collections import Counter
     existing_count_by_side = Counter(
         TrackPlayerIdentification.objects.filter(match=match)
         .values_list("lineup_entry__side", flat=True)
@@ -1235,47 +1291,117 @@ def _auto_assign_unidentified_tracks(match, identities):
     side_by_team = {Team.TEAM_A: MatchLineup.Side.HOME, Team.TEAM_B: MatchLineup.Side.AWAY}
     CAP_PER_SIDE = 11
 
-    # Most-seen first, not arbitrary track_id order — len(trajectory) is
-    # this identity's pitch-mapped frame count, a direct proxy for how
-    # much of the match it was actually visible/tracked for. A short
-    # noise fragment shouldn't be able to out-rank a well-tracked real
-    # player just because its track_id happens to sort lower.
-    duration_by_master_id = {identity.master_id: len(identity.trajectory) for identity in identities}
-
     to_create = []
+
     for team_enum, side in side_by_team.items():
-        team_track_ids = sorted(
-            {
-                identity.master_id for identity in identities
-                if identity.team == team_enum and identity.master_id not in already_assigned_track_ids
-            },
-            key=lambda tid: -duration_by_master_id.get(tid, 0),
-        )
-        if not team_track_ids:
+        team_identities = [
+            ident for ident in identities
+            if ident.team == team_enum and ident.master_id not in already_assigned_track_ids
+        ]
+        if not team_identities:
             continue
 
-        available_lineup_ids = list(
+        ident_meta = {}
+        for ident in team_identities:
+            pts = list(ident.trajectory.values())
+            x_vals = [p.x_m for p in pts]
+            y_vals = [p.y_m for p in pts]
+            med_x = float(np.median(x_vals)) if x_vals else 0.0
+            med_y = float(np.median(y_vals)) if y_vals else 0.0
+            cls_val = cls_by_track.get(ident.master_id)
+            is_gk = (cls_val == ObjectClass.GOALKEEPER) or (abs(med_x) > 38.0)
+            ident_meta[ident.master_id] = {
+                "identity": ident,
+                "duration": len(ident.trajectory),
+                "med_x": med_x,
+                "med_y": med_y,
+                "is_gk": is_gk,
+                "jersey": ident.jersey_number,
+            }
+
+        available_lineups = list(
             match.lineups.filter(side=side)
             .exclude(id__in=already_claimed_lineup_ids)
-            .values_list("id", flat=True)
+            .order_by("-is_starting", "jersey_number")
         )
-        if not available_lineup_ids:
+        if not available_lineups:
             continue
 
-        rng = random.Random(f"{match.public_id}-{side}")
-        rng.shuffle(available_lineup_ids)
+        assigned_pairs = []
+        unmatched_idents = set(ident_meta.keys())
+        unmatched_lineups = {l.id: l for l in available_lineups}
 
-        # Hard cap: TOTAL identities per side (existing + new) never
-        # exceeds CAP_PER_SIDE — keeps the identify-players page to a
-        # clean, professor-presentable set instead of every residual
-        # fragment (residual fragmentation typically outnumbers the
-        # real ~11 players — see this function's earlier notes).
-        slots_remaining = max(CAP_PER_SIDE - existing_count_by_side.get(side, 0), 0)
-        for track_id, lineup_id in zip(team_track_ids[:slots_remaining], available_lineup_ids):
+        # 1. Direct Jersey Match: if OCR caught a jersey number, match directly
+        for tid in list(unmatched_idents):
+            j_num = ident_meta[tid]["jersey"]
+            if j_num is not None:
+                match_l = next((l for l in unmatched_lineups.values() if l.jersey_number == j_num), None)
+                if match_l:
+                    assigned_pairs.append((tid, match_l.id))
+                    unmatched_idents.remove(tid)
+                    unmatched_lineups.pop(match_l.id)
+
+        # 2. Goalkeeper Match: match GK lineup entry with GK-classified or deepest goal identity
+        gk_lineup = next(
+            (l for l in unmatched_lineups.values() if (l.position or "").upper() in ("GK", "GOALKEEPER") or l.jersey_number == 1),
+            None
+        )
+        if gk_lineup and unmatched_idents:
+            gk_candidates = [tid for tid in unmatched_idents if ident_meta[tid]["is_gk"]]
+            if not gk_candidates:
+                gk_candidates = sorted(unmatched_idents, key=lambda tid: -abs(ident_meta[tid]["med_x"]))
+            best_gk_tid = max(gk_candidates, key=lambda tid: ident_meta[tid]["duration"])
+            assigned_pairs.append((best_gk_tid, gk_lineup.id))
+            unmatched_idents.remove(best_gk_tid)
+            unmatched_lineups.pop(gk_lineup.id)
+
+        # 3. Position-Aware Formation Match for Outfield Starters:
+        # Determine team defending direction from average position of tracks
+        all_med_x = [ident_meta[tid]["med_x"] for tid in ident_meta]
+        defending_left = (np.mean(all_med_x) <= 0) if all_med_x else True
+
+        def attack_depth(tid):
+            x = ident_meta[tid]["med_x"]
+            return x if defending_left else -x
+
+        def pos_rank(lineup):
+            p = (lineup.position or "").upper()
+            if "DEF" in p or "DF" in p or "BACK" in p:
+                return 1
+            if "MID" in p or "MF" in p:
+                return 2
+            if "FWD" in p or "FW" in p or "ATT" in p or "ST" in p or "WING" in p:
+                return 3
+            return 4
+
+        starters = [l for l in unmatched_lineups.values() if l.is_starting]
+        subs = [l for l in unmatched_lineups.values() if not l.is_starting]
+        sorted_lineups = sorted(starters, key=lambda l: (pos_rank(l), l.jersey_number)) + sorted(subs, key=lambda l: (pos_rank(l), l.jersey_number))
+
+        # Select top duration tracks first so starters receive active tracks
+        slots_remaining = max(CAP_PER_SIDE - existing_count_by_side.get(side, 0) - len(assigned_pairs), 0)
+        usable_lineups = sorted_lineups[:slots_remaining]
+
+        top_tracks = sorted(unmatched_idents, key=lambda tid: -ident_meta[tid]["duration"])[:len(usable_lineups)]
+        # Order those top tracks from defense to attack
+        top_tracks_by_pos = sorted(top_tracks, key=lambda tid: attack_depth(tid))
+
+        for tid, l in zip(top_tracks_by_pos, usable_lineups):
+            assigned_pairs.append((tid, l.id))
+            if tid in unmatched_idents:
+                unmatched_idents.remove(tid)
+            if l.id in unmatched_lineups:
+                unmatched_lineups.pop(l.id)
+
+        for tid, lid in assigned_pairs:
             to_create.append(TrackPlayerIdentification(
-                match=match, track_id=track_id, lineup_entry_id=lineup_id, is_auto_assigned=False,
+                match=match,
+                track_id=tid,
+                lineup_entry_id=lid,
+                is_auto_assigned=False,
             ))
-            already_claimed_lineup_ids.add(lineup_id)
+            already_claimed_lineup_ids.add(lid)
+            already_assigned_track_ids.add(tid)
             existing_count_by_side[side] += 1
 
     if to_create:

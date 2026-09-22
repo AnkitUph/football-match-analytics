@@ -204,3 +204,86 @@ def classify_teams_with_fallback(
         return blind_fallback()
 
     return known_color_result
+
+
+def classify_teams_with_dinov2(
+    track_embeddings: dict[int, np.ndarray],
+    track_colors: dict[int, np.ndarray],
+    home_bgr: np.ndarray | None,
+    away_bgr: np.ndarray | None,
+    config: TeamReidConfig,
+) -> dict[int, Team]:
+    """
+    Advanced Team Classification using Hugging Face DINOv2 visual embeddings.
+
+    Clusters 384-dimensional semantic appearance embeddings using K-Means (k=2).
+    Because DINOv2 encodes the player's full kit (jersey color, patterns, sleeves,
+    shorts) while being invariant to scale and lighting, it cleanly separates the
+    two opposing teams without being misled by shadows or tiny 9x11 torso noise.
+
+    Maps the two clusters to Team A (Home) and Team B (Away) by comparing the
+    cluster-median colors against the match reference kit colors.
+    """
+    track_ids = [tid for tid in track_embeddings.keys() if track_embeddings[tid] is not None]
+
+    # If fewer than 4 tracks have embeddings, fall back to color clustering
+    if len(track_ids) < 4:
+        return classify_teams_with_fallback(track_colors, home_bgr, away_bgr, config)
+
+    X = np.array([track_embeddings[tid] for tid in track_ids], dtype=np.float32)
+    # L2 normalize just in case
+    norms = np.linalg.norm(X, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    X = X / norms
+
+    try:
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=10).fit(X)
+        labels = kmeans.labels_
+    except Exception:
+        return classify_teams_with_fallback(track_colors, home_bgr, away_bgr, config)
+
+    # Separate track IDs into Cluster 0 and Cluster 1
+    c0_tids = [tid for tid, l in zip(track_ids, labels) if l == 0]
+    c1_tids = [tid for tid, l in zip(track_ids, labels) if l == 1]
+
+    # If one cluster has almost everything (>85%), fall back to color clustering
+    c0_ratio = len(c0_tids) / max(len(track_ids), 1)
+    if c0_ratio < 0.15 or c0_ratio > 0.85:
+        return classify_teams_with_fallback(track_colors, home_bgr, away_bgr, config)
+
+    # Compute average kit colors for both clusters to determine Home vs Away mapping
+    def get_cluster_color(tids):
+        cols = [track_colors[t] for t in tids if t in track_colors and track_colors[t] is not None]
+        return np.median(np.array(cols), axis=0) if cols else np.array([128.0, 128.0, 128.0])
+
+    col_0 = get_cluster_color(c0_tids)
+    col_1 = get_cluster_color(c1_tids)
+
+    # Decide whether Cluster 0 is Team A or Team B
+    c0_is_team_a = True
+    if home_bgr is not None and away_bgr is not None:
+        home_n = _normalize_color(home_bgr)
+        away_n = _normalize_color(away_bgr)
+        c0_n = _normalize_color(col_0)
+        c1_n = _normalize_color(col_1)
+
+        # Hypothesis 1: Cluster 0 is Home, Cluster 1 is Away
+        cost_direct = np.linalg.norm(c0_n - home_n) + np.linalg.norm(c1_n - away_n)
+        # Hypothesis 2: Cluster 1 is Home, Cluster 0 is Away
+        cost_swap = np.linalg.norm(c1_n - home_n) + np.linalg.norm(c0_n - away_n)
+
+        c0_is_team_a = (cost_direct <= cost_swap)
+
+    result = {}
+    for tid, l in zip(track_ids, labels):
+        if l == 0:
+            result[tid] = Team.TEAM_A if c0_is_team_a else Team.TEAM_B
+        else:
+            result[tid] = Team.TEAM_B if c0_is_team_a else Team.TEAM_A
+
+    # For any tracks that didn't have embeddings, fill in from track_colors
+    for tid in track_colors:
+        if tid not in result:
+            result[tid] = Team.UNKNOWN
+
+    return result

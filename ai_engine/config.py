@@ -36,29 +36,12 @@ CLASS_NAMES = {
 class DetectionConfig:
     model_path: Path = MODELS_DIR / "best_openvino_model"
     imgsz: int = 640
-    conf_thresh: float = 0.35
+    conf_thresh: float = 0.20
     # Ball-specific override, lower than the general threshold.
-    #
-    # VALIDATED FINDING (real footage, test_11.mp4): ball confidence skews
-    # much lower than other classes overall (mean ~0.41 even for "real"
-    # detections at 0.35 threshold), and during fast motion (shots,
-    # deflections) confidence can drop to 0.05-0.3 even when the box is
-    # tracking a real, spatially coherent ball path. Tested lowering this
-    # in isolation — recovers real detections in many ordinary low-blur
-    # situations. Does NOT fully solve tracking through dramatic events
-    # (hard shots, saves): even at conf=0.15-0.20, most of a confirmed
-    # real trajectory during one such event still fell through, and going
-    # lower (0.05) reintroduced clear spatial noise (candidates jumping to
-    # unrelated frame locations at similar confidence to the real ones).
-    # Treat extended gaps during fast action as expected honest gaps
-    # (see ball_tracking.interpolation_max_gap_frames), not a bug to keep
-    # chasing via threshold tuning alone — Stage 6's shot detection is
-    # designed to work from the ball's last known trajectory before such
-    # a gap, rather than requiring the gap itself to be filled.
     ball_conf_thresh: float = 0.15
     iou_thresh: float = 0.5
     device: str = "intel:gpu"  # OpenVINO device string — "intel:gpu", "intel:cpu", "intel:npu"
-    target_fps: int = 12       # downsample target, per Stage 1 plan (10-15fps)
+    target_fps: int = 25       # full 25fps tracking for continuous, non-flickering video overlays
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +55,9 @@ class TrackingConfig:
     match_thresh: float = 0.5
     new_track_thresh: float = 0.6
     gmc_method: str = "sparseOptFlow"
+    enable_stitching: bool = True
+    stitch_max_gap_frames: int = 125
+    stitch_similarity_thresh: float = 0.82
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +82,10 @@ class ShotDetectionConfig:
 class TeamReidConfig:
     n_teams: int = 2  # + referee, handled separately
     kmeans_clusters: int = 2
-    reid_model_name: str = "osnet_x0_25"  # torchreid pretrained
-    reid_embedding_dim: int = 512
+    use_hf_dinov2: bool = True
+    hf_model_name: str = "facebook/dinov2-small"
+    reid_model_name: str = "facebook/dinov2-small"
+    reid_embedding_dim: int = 384
     reid_similarity_threshold: float = 0.6  # below this -> not a confident match
     ocr_enabled: bool = True
     ocr_min_confidence: float = 0.5
@@ -114,7 +102,7 @@ class TeamReidConfig:
 
 @dataclass
 class BallTrackingConfig:
-    interpolation_max_gap_frames: int = 15  # per Stage 4 plan (5-15 frames)
+    interpolation_max_gap_frames: int = 20  # bridge up to ~0.8s during long aerial/ground passes
     kalman_process_noise: float = 1e-2
     kalman_measurement_noise: float = 1e-1
 
@@ -129,7 +117,7 @@ class PitchMappingConfig:
     pitch_width_m: float = 68.0
     max_gallery_size: int = 22
     max_per_team: int = 11
-    min_tracklet_duration_sec: float = 1.5  # filter transient noise tracklets
+    min_tracklet_duration_sec: float = 0.2  # filter transient single-frame noise tracklets (>=5 frames kept for stitching)
     homography_ransac_thresh: float = 5.0
 
 

@@ -14,7 +14,7 @@ that's by design. Stage 5's identity association (using Stage 3's Re-ID
 embeddings) is what produces the permanent cross-cut Master ID.
 """
 
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from ai_engine.config import DetectionConfig, TrackingConfig, CLASS_NAMES
 from ai_engine.stage1_detection.model_loader import get_yolo_model
@@ -26,6 +26,7 @@ class Tracker:
         self.detection_config = detection_config
         self.tracking_config = tracking_config
         self._model = None
+        self.ball_by_frame: dict[int, Detection | None] = {}
 
     def _load_model(self):
         if self._model is None:
@@ -62,6 +63,19 @@ class Tracker:
         vid_stride = max(1, round(source_fps / self.detection_config.target_fps))
 
         tracklets: dict[int, Tracklet] = {}
+        self.ball_by_frame = {}
+        raw_balls_queue = []
+
+        def _capture_raw_detections(predictor):
+            if predictor.results:
+                res = predictor.results[0]
+                if res.boxes is not None:
+                    ball_boxes = [b for b in res.boxes if int(b.cls.item()) == 0]
+                    raw_balls_queue.append(ball_boxes)
+                else:
+                    raw_balls_queue.append([])
+            else:
+                raw_balls_queue.append([])
 
         # Ultralytics doesn't support per-class confidence thresholds in
         # one call — run the model at the LOWER of the two thresholds
@@ -83,8 +97,33 @@ class Tracker:
             verbose=False,
         )
 
+        # Hook our callback at index 0 of on_predict_postprocess_end
+        # so we extract raw ball detections BEFORE BoT-SORT discards them
+        if "on_predict_postprocess_end" in model.callbacks:
+            model.callbacks["on_predict_postprocess_end"].insert(0, _capture_raw_detections)
+
         frame_idx = 0
         for result in results_generator:
+            # Harvest raw ball detection for this frame before tracker filtering
+            if raw_balls_queue:
+                balls = raw_balls_queue.pop(0)
+                if balls:
+                    best = max(balls, key=lambda b: float(b.conf.item()))
+                    x1, y1, x2, y2 = best.xyxy[0].tolist()
+                    self.ball_by_frame[frame_idx] = Detection(
+                        frame_idx=frame_idx,
+                        cls=ObjectClass.BALL,
+                        conf=float(best.conf.item()),
+                        x1=x1,
+                        y1=y1,
+                        x2=x2,
+                        y2=y2,
+                    )
+                else:
+                    self.ball_by_frame[frame_idx] = None
+            else:
+                self.ball_by_frame[frame_idx] = None
+
             if result.boxes is None or result.boxes.id is None:
                 frame_idx += vid_stride
                 continue
@@ -122,6 +161,14 @@ class Tracker:
                 tracklets[track_id].detections.append(detection)
 
             frame_idx += vid_stride
+
+        # Majority-vote tracklet class across all its detections
+        # Prevents a single noisy first-frame detection from locking a player into referee or vice-versa
+        for t in tracklets.values():
+            if t.detections:
+                classes = [d.cls for d in t.detections if d.cls]
+                if classes:
+                    t.cls = Counter(classes).most_common(1)[0][0]
 
         return tracklets
 

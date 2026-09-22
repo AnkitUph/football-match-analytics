@@ -32,9 +32,8 @@ scenedetect>=0.6.4,<1
 # Stage 3 (team color clustering)
 scikit-learn>=1.4,<2
 
-# Stage 3 (Re-ID embeddings, second pass — skip installing this until
-# you actually reach that stage; it's a slower git install)
-torchreid @ git+https://github.com/KaiyangZhou/deep-person-reid.git
+# Stage 3 (Re-ID embeddings with Hugging Face DINOv2)
+transformers>=4.40.0
 
 # Stage 3 (jersey number OCR, second pass, optional)
 easyocr>=1.7,<2

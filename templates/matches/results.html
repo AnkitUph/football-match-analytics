@@ -405,9 +405,16 @@
     .team-swatch { width: 38px; height: 38px; border-radius: 50%; border: 2px solid rgba(0,0,0,0.06); }
     .team-name { font-size: 14px; font-weight: 700; color: #1a1a1a; }
     .score { font-size: 36px; font-weight: 800; color: #203a43; min-width: 100px; }
+    .header-actions {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 12px;
+        flex-wrap: wrap;
+    }
     .status-pill {
         display: inline-block;
-        margin-top: 12px;
         padding: 4px 14px;
         border-radius: 20px;
         font-size: 11px;
@@ -415,6 +422,27 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
         background: #e6f7ed; color: #1a7f4e;
+    }
+    .recalibrate-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 4px 14px;
+        border-radius: 20px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        background: #f0f4f8;
+        color: #2b6cb0;
+        text-decoration: none;
+        border: 1px solid #cbd5e0;
+        transition: all 0.2s ease;
+    }
+    .recalibrate-btn:hover {
+        background: #e2e8f0;
+        color: #1a4971;
+        border-color: #a0aec0;
     }
 
     /* Tabs */
@@ -963,7 +991,15 @@
                     <span class="team-name">{{ match.away_team.name }}</span>
                 </div>
             </div>
-            <span class="status-pill">{{ match.get_status_display }}</span>
+            <div class="header-actions">
+                <span class="status-pill">{{ match.get_status_display }}</span>
+                {% if is_uploader %}
+                <a href="{% url 'matches:calibrate' match.public_id %}" class="recalibrate-btn" title="Recalibrate pitch landmarks manually">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                    Recalibrate Pitch
+                </a>
+                {% endif %}
+            </div>
         </div>
 
         {% if is_uploader %}

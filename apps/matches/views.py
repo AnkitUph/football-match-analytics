@@ -992,7 +992,10 @@ def calibrate_save(request, public_id):
             calibration_frame=frame_idx,
             defaults={"points": points},
         )
-        transaction.on_commit(lambda: compute_pitch_mapping.delay(match.id))
+    try:
+        compute_pitch_mapping(match.id)
+    except Exception:
+        logger.exception("compute_pitch_mapping failed in calibrate_save for match=%s", match.id)
 
     return JsonResponse({"ok": True, "redirect_url": reverse("matches:results", args=[match.public_id])})
 
@@ -1020,12 +1023,15 @@ def delete_calibration(request, public_id, calibration_id):
     calibration.delete()
 
     if match.calibrations.exists():
-        transaction.on_commit(lambda: compute_pitch_mapping.delay(match.id))
+        try:
+            compute_pitch_mapping(match.id)
+        except Exception:
+            logger.exception("compute_pitch_mapping failed in delete_calibration for match=%s", match.id)
 
     return JsonResponse({"ok": True, "redirect_url": reverse("matches:calibrate", args=[match.public_id])})
 
 
-def _load_track_summaries(files_obj, match=None, cap_per_team=10):
+def _load_track_summaries(files_obj, match=None, cap_per_team=11):
     """
     Reads MatchFiles.player_stats_csv (written by compute_pitch_mapping,
     one row per STITCHED/merged tracklet — see that function's comments
