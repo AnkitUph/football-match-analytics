@@ -450,12 +450,17 @@ def detect_shots(
             if xs:
                 team_medians[team] = sorted(xs)[len(xs) // 2]
         if Team.TEAM_A in team_medians and Team.TEAM_B in team_medians:
-            if team_medians[Team.TEAM_A] < team_medians[Team.TEAM_B]:
-                team_defending_goal[Team.TEAM_A] = (-52.5, 0.0)
-                team_defending_goal[Team.TEAM_B] = (52.5, 0.0)
-            else:
-                team_defending_goal[Team.TEAM_A] = (52.5, 0.0)
-                team_defending_goal[Team.TEAM_B] = (-52.5, 0.0)
+            # Defending goal can only be reliably inferred if the two teams are clearly separated
+            # across opposite pitch halves (i.e. one team's median is on negative half, other on positive).
+            # When both medians share the same sign, the footage is localized in one attacking third
+            # and comparing medians within the same half does not indicate defending goal direction.
+            if team_medians[Team.TEAM_A] * team_medians[Team.TEAM_B] < 0:
+                if team_medians[Team.TEAM_A] < team_medians[Team.TEAM_B]:
+                    team_defending_goal[Team.TEAM_A] = (-52.5, 0.0)
+                    team_defending_goal[Team.TEAM_B] = (52.5, 0.0)
+                else:
+                    team_defending_goal[Team.TEAM_A] = (52.5, 0.0)
+                    team_defending_goal[Team.TEAM_B] = (-52.5, 0.0)
 
     for current, next_point in zip(valid_points, valid_points[1:]):
         dt_frames = next_point.frame_idx - current.frame_idx
@@ -473,6 +478,15 @@ def detect_shots(
 
         best = None  # (goal_center, origin_dist, alignment)
         for goal_center_pitch in goal_centers:
+            # Must originate strictly inside pitch boundaries
+            if not (abs(current.x_m) <= 51.5 and abs(current.y_m) <= 33.5):
+                continue
+            # Must be approaching the goal line from within the pitch (not moving away or from behind goal)
+            if goal_center_pitch[0] > 0 and (current.x_m >= 51.5 or vx <= 0):
+                continue
+            if goal_center_pitch[0] < 0 and (current.x_m <= -51.5 or vx >= 0):
+                continue
+
             origin_dist = ((goal_center_pitch[0] - current.x_m) ** 2 + (goal_center_pitch[1] - current.y_m) ** 2) ** 0.5
             # Must be within realistic shooting distance (e.g. <= 35m from goal)
             if not (min_origin_distance_m <= origin_dist <= max_origin_distance_m):
@@ -523,6 +537,8 @@ def detect_shots(
                         if d < closest_d:
                             closest_d = d
                             closest_team = ident.team
+                if closest_team == Team.REFEREE:
+                    continue
                 if closest_team and team_defending_goal.get(closest_team) == goal_center_pitch:
                     continue  # Clearance / backpass towards own defending goal
 

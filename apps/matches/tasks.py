@@ -455,6 +455,10 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
         cap.release()
         return
 
+    # Scale anchor count with video duration: 1 anchor per ~60 seconds (1500 frames)
+    # Ensures long clips have sufficient calibration coverage even when optical flow loses tracking
+    num_anchors = max(num_anchors, total_frames // 1500)
+
     saved_count = 0
     for i in range(num_anchors):
         window_start = int(total_frames * i / num_anchors)
@@ -848,7 +852,13 @@ def compute_pitch_mapping(self, match_id):
     recorded_passes = detect_passes_with_metadata(possession_events, identities, ball_pitch_trajectory, fps=25.0)
     corner_events = detect_corner_kicks(ball_pitch_trajectory, identities, fps=25.0)
     pass_intervals = [
-        (p["start_frame"], p["frame_idx"]) for p in recorded_passes if p.get("is_completed")
+        (p["start_frame"], p["frame_idx"])
+        for p in recorded_passes
+        if p.get("is_completed") and not (
+            abs(float(p.get("end_x", 0.0))) >= 47.0
+            and abs(float(p.get("end_y", 0.0))) <= 12.0
+            and float(p.get("speed_mps", 0.0)) >= 14.0
+        )
     ]
     shot_events = detect_shots(
         ball_pitch_trajectory,

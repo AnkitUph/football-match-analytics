@@ -15,10 +15,13 @@ embeddings) is what produces the permanent cross-cut Master ID.
 """
 
 from collections import defaultdict, Counter
+import logging
 
 from ai_engine.config import DetectionConfig, TrackingConfig, CLASS_NAMES
 from ai_engine.stage1_detection.model_loader import get_yolo_model
 from ai_engine.utils.types import Detection, ObjectClass, Tracklet
+
+logger = logging.getLogger(__name__)
 
 
 class Tracker:
@@ -104,6 +107,8 @@ class Tracker:
 
         frame_idx = 0
         for result in results_generator:
+            if frame_idx % 500 == 0:
+                logger.info("Tracking progress: frame %d", frame_idx)
             # Harvest raw ball detection for this frame before tracker filtering
             if raw_balls_queue:
                 balls = raw_balls_queue.pop(0)
