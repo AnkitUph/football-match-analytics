@@ -1,6 +1,12 @@
 {
-  "inference_id": "6031205f-5f6f-45be-adec-bfc8267b7df7",
-  "time": 0.0263508518692106,
+  "inference_id": "6b8e22fe-e02f-4db1-aaf6-9cf7ac4f42f2",
+  "time": 0.025876836851239204,
+  "resolved_model": {
+    "model_id": "football-field-detection-f07vi/14",
+    "model_package_id": "d9e17d96240d37f366490718373a0555",
+    "backend": "onnx",
+    "quantization": "fp32"
+  },
   "image": {
     "width": 1920,
     "height": 1080
@@ -14,7 +20,7 @@
       "confidence": 0.9755842685699463,
       "class": "pitch",
       "class_id": 0,
-      "detection_id": "c1f34287-d43d-4c03-b362-90e22b5b367b",
+      "detection_id": "517452b8-0221-4c77-9af6-40686fbb0e18",
       "keypoints": [
         {
           "x": 228.0,

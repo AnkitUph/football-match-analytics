@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libgomp1 \
     git \
+    ffmpeg \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y \

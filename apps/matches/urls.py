@@ -20,4 +20,7 @@ urlpatterns = [
     path("<uuid:public_id>/goals/<int:goal_id>/delete/", views.delete_goal, name="delete_goal"),
     path("<uuid:public_id>/player-heatmap/<int:lineup_entry_id>/", views.player_heatmap, name="player_heatmap"),
     path("detect-kit-colors/", views.detect_kit_colors, name="detect_kit_colors"),
+    path("<uuid:public_id>/report/pdf/", views.download_match_report_pdf, name="download_report_pdf"),
+    path("<uuid:public_id>/export/json/", views.export_match_json, name="export_json"),
+    path("<uuid:public_id>/export/csv/<str:file_type>/", views.export_match_csv, name="export_csv"),
 ]

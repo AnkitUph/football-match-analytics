@@ -23,10 +23,362 @@
         padding: 6px 14px;
         border: 1px solid rgba(255,255,255,0.4);
         border-radius: 6px;
+        transition: all 0.15s ease;
     }
     header a:hover { background: rgba(255,255,255,0.1); }
+    header a.btn-pdf {
+        background: #4FAE79;
+        color: #fff;
+        border-color: #4FAE79;
+        font-weight: 600;
+        box-shadow: 0 2px 6px rgba(79, 174, 121, 0.3);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+    header a.btn-pdf:hover {
+        background: #439a6a;
+        border-color: #439a6a;
+    }
 
-    .container { max-width: 900px; margin: 0 auto; padding: 28px 20px 60px; }
+    .export-dropdown-wrapper {
+        position: relative;
+        display: inline-block;
+    }
+    .btn-export-toggle {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        padding: 7px 13px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.15s ease;
+    }
+    .btn-export-toggle:hover {
+        background: rgba(255, 255, 255, 0.15);
+        border-color: rgba(255, 255, 255, 0.35);
+    }
+    .export-dropdown-menu {
+        display: none;
+        position: absolute;
+        right: 0;
+        top: calc(100% + 8px);
+        background: #1A2E35;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        min-width: 270px;
+        z-index: 1000;
+        padding: 6px 0;
+        backdrop-filter: blur(12px);
+    }
+    .export-dropdown-menu.show {
+        display: block;
+        animation: fadeIn 0.15s ease-out;
+    }
+    .export-item {
+        display: flex !important;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px !important;
+        color: #e0e0e0 !important;
+        text-decoration: none;
+        border-radius: 0 !important;
+        border: none !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+        transition: background 0.15s ease;
+    }
+    .export-item:last-child {
+        border-bottom: none !important;
+    }
+    .export-item:hover {
+        background: rgba(79, 174, 121, 0.15) !important;
+        color: #fff !important;
+    }
+    .export-icon {
+        font-size: 18px;
+        flex-shrink: 0;
+    }
+    .export-label {
+        font-weight: 600;
+        font-size: 13px;
+        color: #fff;
+    }
+    .export-desc {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.6);
+        margin-top: 2px;
+    }
+
+    .container { max-width: 1400px; margin: 0 auto; padding: 24px 20px 60px; }
+
+    /* Tactical Workspace Layout */
+    .results-workspace {
+        display: flex;
+        gap: 24px;
+        align-items: flex-start;
+    }
+    .main-stats-col {
+        flex: 1;
+        min-width: 0;
+    }
+    .side-replay-col {
+        width: 480px;
+        flex-shrink: 0;
+        position: sticky;
+        top: 20px;
+        z-index: 30;
+    }
+
+    /* Replay Widget Card */
+    .replay-card {
+        background: #fff;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.07);
+        border: 1px solid #e2e8f0;
+    }
+    .replay-card-header {
+        background: linear-gradient(135deg, #0f2027, #203a43);
+        padding: 12px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        color: #fff;
+    }
+    .replay-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .replay-title {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: #f1f5f9;
+    }
+    .replay-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10px;
+        font-weight: 700;
+        color: #4FAE79;
+        background: rgba(79, 174, 121, 0.18);
+        border: 1px solid rgba(79, 174, 121, 0.35);
+        padding: 2px 8px;
+        border-radius: 12px;
+        letter-spacing: 0.3px;
+    }
+    .replay-badge-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #4FAE79;
+        box-shadow: 0 0 6px #4FAE79;
+    }
+    .replay-mode-switch {
+        display: flex;
+        background: rgba(0,0,0,0.35);
+        border-radius: 20px;
+        padding: 2px;
+        border: 1px solid rgba(255,255,255,0.12);
+    }
+    .mode-btn {
+        border: none;
+        background: none;
+        color: #94a8b2;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 16px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+    .mode-btn.active {
+        background: #4FAE79;
+        color: #fff;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+    }
+
+    /* Video Player Area */
+    .replay-video-wrap {
+        position: relative;
+        background: #000;
+        width: 100%;
+        aspect-ratio: 16/9;
+        overflow: hidden;
+    }
+    #replay-video {
+        width: 100%;
+        height: 100%;
+        display: block;
+        object-fit: contain;
+        background: #000;
+    }
+    .video-hud {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        background: rgba(15, 32, 39, 0.85);
+        backdrop-filter: blur(4px);
+        color: #e2e8f0;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 3px 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.12);
+        display: flex;
+        gap: 8px;
+        font-family: monospace;
+        pointer-events: none;
+    }
+
+    /* Controls Bar */
+    .replay-control-bar {
+        padding: 10px 14px;
+        background: #f8fafc;
+        border-bottom: 1px solid #edf2f7;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .speed-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .ctrl-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #718096;
+        margin-right: 4px;
+    }
+    .speed-pill {
+        border: 1px solid #e2e8f0;
+        background: #fff;
+        color: #4a5568;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 7px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.1s ease;
+    }
+    .speed-pill:hover {
+        background: #edf2f7;
+    }
+    .speed-pill.active {
+        background: #203a43;
+        color: #fff;
+        border-color: #203a43;
+    }
+    .action-pill {
+        border: 1px solid #e2e8f0;
+        background: #fff;
+        color: #4a5568;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .action-pill.active {
+        background: #eef7f2;
+        color: #1a7f4e;
+        border-color: #cce7d8;
+    }
+
+    /* Key Moments */
+    .key-moments-box {
+        padding: 12px 14px;
+        border-bottom: 1px solid #edf2f7;
+    }
+    .key-moments-hdr {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #4a5568;
+        margin-bottom: 8px;
+    }
+    .key-moments-chips {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        max-height: 160px;
+        overflow-y: auto;
+    }
+    .moment-chip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 10px;
+        background: #f8fafc;
+        border: 1px solid #edf2f7;
+        border-radius: 6px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: all 0.12s ease;
+    }
+    .moment-chip:hover {
+        background: #eef7f2;
+        border-color: #cce7d8;
+        transform: translateX(2px);
+    }
+    .moment-chip-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .moment-chip-min {
+        font-weight: 700;
+        color: #203a43;
+        min-width: 22px;
+    }
+    .moment-chip-type {
+        color: #4a5568;
+        font-weight: 600;
+    }
+    .moment-chip-meta {
+        font-size: 10px;
+        color: #718096;
+    }
+    .replay-hint {
+        padding: 10px 14px;
+        font-size: 11px;
+        color: #718096;
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        line-height: 1.4;
+        background: #fafbfc;
+    }
+
+    @media (max-width: 1120px) {
+        .results-workspace {
+            flex-direction: column;
+        }
+        .side-replay-col {
+            width: 100%;
+            position: static;
+            margin-bottom: 20px;
+        }
+    }
 
     .dummy-banner {
         background: #fff8e6;
@@ -117,21 +469,173 @@
     .metric-value { font-size: 22px; font-weight: 800; color: #203a43; }
     .metric-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
 
-    /* Shots */
-    .shot-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid #f4f4f4; font-size: 13px; }
+    /* Tactical Pitch Visualizer Modes */
+    .pitch-header-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    .pitch-mode-pills {
+        display: inline-flex;
+        background: #edf2f7;
+        border-radius: 24px;
+        padding: 3px;
+        gap: 2px;
+    }
+    .pitch-mode-btn {
+        background: transparent;
+        border: none;
+        border-radius: 20px;
+        padding: 6px 14px;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: #4a5568;
+        cursor: pointer;
+        transition: all 0.15s ease;
+    }
+    .pitch-mode-btn:hover { color: #1a202c; }
+    .pitch-mode-btn.active {
+        background: #203a43;
+        color: #ffffff;
+        box-shadow: 0 2px 6px rgba(32, 58, 67, 0.25);
+    }
+    .tactical-metric-hud {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 12px;
+        margin-top: 14px;
+    }
+    .tactical-hud-card {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 10px 12px;
+        text-align: center;
+    }
+    .tactical-hud-val {
+        font-size: 18px;
+        font-weight: 800;
+        color: #1a202c;
+    }
+    .tactical-hud-lbl {
+        font-size: 10px;
+        font-weight: 700;
+        color: #718096;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 2px;
+    }
+    .tactical-node {
+        cursor: pointer;
+        transition: transform 0.15s ease, filter 0.15s ease;
+    }
+    .tactical-node:hover {
+        filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.9));
+    }
+    .tactical-link {
+        transition: stroke-opacity 0.15s ease, stroke-width 0.15s ease;
+        cursor: pointer;
+    }
+    .tactical-link:hover {
+        stroke-opacity: 1 !important;
+        stroke-width: 4px !important;
+        filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.8));
+    }
+    .tactical-hull-poly {
+        transition: fill-opacity 0.2s ease, stroke-width 0.2s ease;
+    }
+
+    /* Shots & Shot Map */
+    .shot-map-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+    .shot-filters { display: flex; gap: 6px; }
+    .shot-filter-btn {
+        background: #f1f3f5; border: 1px solid #e1e4e8; border-radius: 20px;
+        padding: 4px 12px; font-size: 11px; font-weight: 600; color: #555;
+        cursor: pointer; transition: all 0.15s ease;
+    }
+    .shot-filter-btn:hover { background: #e9ecef; color: #203a43; }
+    .shot-filter-btn.active { background: #203a43; border-color: #203a43; color: #fff; }
+    
+    .shot-map-legend { display: flex; align-items: center; gap: 14px; font-size: 11px; color: #666; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; }
+    .legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+    .legend-dot.home { background: #4FAE79; }
+    .legend-dot.away { background: #5B9BD5; }
+    .legend-dot.goal { background: #F1C40F; box-shadow: 0 0 5px rgba(241, 196, 15, 0.6); }
+
+    .shot-pitch-wrapper {
+        position: relative;
+        background: #192e22;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.35), 0 4px 14px rgba(0,0,0,0.06);
+        margin-bottom: 16px;
+    }
+    .shot-pitch-svg {
+        display: block;
+        width: 100%;
+        height: auto;
+    }
+
+    .shot-node {
+        cursor: pointer;
+        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.2s ease;
+    }
+    .shot-node:hover, .shot-node.active {
+        filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.9));
+    }
+    .shot-traj {
+        pointer-events: none;
+        transition: opacity 0.2s ease, stroke-width 0.2s ease;
+    }
+    .shot-traj.dimmed { opacity: 0.15; }
+    .shot-traj.active { stroke-width: 3px !important; stroke-dasharray: none !important; opacity: 1 !important; filter: drop-shadow(0 0 4px rgba(255,255,255,0.7)); }
+
+    .shot-tooltip {
+        position: absolute;
+        display: none;
+        pointer-events: none;
+        z-index: 50;
+        background: rgba(15, 25, 35, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #fff;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 11px;
+        line-height: 1.4;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+        transform: translate(-50%, -120%);
+        white-space: nowrap;
+        backdrop-filter: blur(4px);
+    }
+    .shot-tooltip-player { font-weight: 700; font-size: 12px; margin-bottom: 2px; }
+    .shot-tooltip-meta { color: #aaa; }
+    .shot-tooltip-highlight { color: #4FAE79; font-weight: 700; }
+
+    .shot-row { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-top: 1px solid #f4f4f4; font-size: 13px; cursor: pointer; border-radius: 6px; transition: background 0.15s ease; }
     .shot-row:first-child { border-top: none; }
+    .shot-row:hover, .shot-row.active { background: #eef5f2; }
     .shot-minute { width: 32px; font-weight: 700; color: #888; font-size: 12px; }
     .shot-side { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .shot-side.home { background: #203a43; }
-    .shot-side.away { background: #94a8b2; }
-    .shot-player { flex: 1; }
-    .shot-xg { font-size: 11px; color: #999; width: 55px; text-align: right; }
-    .shot-outcome { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 8px; border-radius: 10px; width: 70px; text-align: center; }
-    .shot-outcome.Goal { background: #e6f7ed; color: #1a7f4e; }
-    .shot-outcome.Saved { background: #e3edf1; color: #2c5364; }
-    .shot-outcome.Blocked { background: #f4f0e6; color: #8a6d1a; }
-    .shot-outcome.Off-Target { background: #fdeaea; color: #c0392b; }
-    .shot-outcome.Woodwork { background: #ece6fd; color: #5a3fc0; }
+    .shot-side.home { background: #4FAE79; }
+    .shot-side.away { background: #5B9BD5; }
+    .shot-player { flex: 1; display: flex; align-items: center; gap: 6px; }
+    .badge-inferred {
+        font-size: 9px; font-weight: 600; color: #6c7a89; background: #e9eef2;
+        padding: 1px 6px; border-radius: 6px; display: inline-block;
+    }
+    .shot-meta-val { font-size: 11px; color: #888; width: 60px; text-align: right; }
+    .shot-xg { font-size: 11px; color: #777; font-weight: 600; width: 60px; text-align: right; }
+    .shot-outcome { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 2px 8px; border-radius: 10px; width: 88px; text-align: center; }
+    .shot-outcome.goal { background: #e6f7ed; color: #1a7f4e; }
+    .shot-outcome.saved { background: #e3edf1; color: #2c5364; }
+    .shot-outcome.blocked { background: #f4f0e6; color: #8a6d1a; }
+    .shot-outcome.saved-blocked { background: #e3edf1; color: #2c5364; }
+    .shot-outcome.off-target { background: #fdeaea; color: #c0392b; }
+    .shot-outcome.woodwork { background: #ece6fd; color: #5a3fc0; }
 
     /* Timeline */
     .timeline { position: relative; padding-left: 22px; }
@@ -143,6 +647,7 @@
         background: #94a8b2; border: 2px solid #fff; box-shadow: 0 0 0 1px #ddd;
     }
     .timeline-event.goal::before { background: #1a7f4e; }
+    .timeline-event.shot::before { background: #3498db; }
     .timeline-event.red_card::before { background: #c0392b; }
     .timeline-event.yellow_card::before { background: #f0ad4e; }
     .timeline-event.kickoff::before, .timeline-event.fulltime::before { background: #203a43; }
@@ -150,10 +655,23 @@
 
     /* Team stats table */
     table.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    table.stats-table td { padding: 9px 6px; text-align: center; border-top: 1px solid #f2f2f2; }
-    table.stats-table td.stat-label { text-align: left; color: #666; font-weight: 600; }
+    table.stats-table td, table.stats-table th { padding: 9px 8px; text-align: center; }
+    table.stats-table tr:not(.category-header) td { border-top: 1px solid #f2f2f2; }
+    table.stats-table td.stat-label { text-align: left; color: #4a5568; font-weight: 600; }
     table.stats-table td.home-val { font-weight: 700; color: #203a43; }
-    table.stats-table td.away-val { font-weight: 700; color: #555; }
+    table.stats-table td.away-val { font-weight: 700; color: #4a5568; }
+    table.stats-table tr.category-header td {
+        background: #f8fafc;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        color: #718096;
+        text-align: left;
+        padding: 8px 10px;
+        border-top: 1px solid #e2e8f0;
+        border-bottom: 1px solid #e2e8f0;
+    }
 
     /* Heatmap placeholder */
     .pitch-placeholder {
@@ -171,12 +689,82 @@
     .pitch-placeholder::after { content: ""; position: absolute; left: 50%; top: 6%; bottom: 6%; width: 2px; background: rgba(255,255,255,0.4); }
     .pitch-note { background: rgba(15,32,39,0.55); color: #fff; font-size: 12px; padding: 8px 16px; border-radius: 20px; z-index: 1; }
 
-    /* Real heatmaps (home/away side by side) */
-    .heatmap-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
-    .heatmap-columns figure { margin: 0; }
-    .heatmap-columns figcaption { font-size: 12px; font-weight: 700; color: #666; margin-bottom: 6px; text-align: center; }
-    .heatmap-columns img { width: 100%; border-radius: 10px; display: block; }
+    /* FotMob-style Heatmaps (home/away side by side) */
+    .heatmap-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 16px; }
+    .heatmap-card {
+        background: #11201B;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+        display: flex;
+        flex-direction: column;
+    }
+    .heatmap-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        padding: 0 4px;
+    }
+    .heatmap-team-tag {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+    }
+    .heatmap-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+    .heatmap-dir-tag {
+        font-size: 11px;
+        font-weight: 600;
+        color: #A2E8C2;
+        background: rgba(79, 174, 121, 0.15);
+        padding: 2px 8px;
+        border-radius: 12px;
+        border: 1px solid rgba(79, 174, 121, 0.3);
+    }
+    .heatmap-card img {
+        width: 100%;
+        border-radius: 8px;
+        display: block;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
     @media (max-width: 640px) { .heatmap-columns { grid-template-columns: 1fr; } }
+
+    /* FotMob Thermal Scale Legend */
+    .fotmob-heat-legend {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        margin-top: 14px;
+        padding: 6px 14px;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        width: fit-content;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    .heat-legend-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.7);
+    }
+    .heat-legend-gradient {
+        width: 140px;
+        height: 8px;
+        border-radius: 4px;
+        background: linear-gradient(to right, rgba(35, 140, 96, 0.4), #31E094, #A6F248, #FFE600, #FF7518, #F21D1D);
+        box-shadow: 0 0 6px rgba(242, 29, 29, 0.4);
+    }
 
     /* Lineup */
     .lineup-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
@@ -201,8 +789,8 @@
         font-size: 12px; font-weight: 700; flex-shrink: 0;
     }
     .lineup-info { flex: 1; }
-    .lineup-name { font-size: 13.5px; font-weight: 600; color: #1a1a1a; }
-    .lineup-position { font-size: 11px; color: #999; }
+    .lineup-name { font-size: 13.5px; font-weight: 600; color: #1a1a1a; display: flex; align-items: center; }
+    .lineup-position { font-size: 11px; color: #718096; margin-top: 2px; }
     .lineup-rating {
         font-size: 12px; font-weight: 700; color: #fff;
         background: #4FAE79; padding: 3px 8px; border-radius: 6px;
@@ -212,6 +800,16 @@
         font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
         color: #b8720a; background: #fff3e0; padding: 2px 7px; border-radius: 8px;
         margin-left: 8px; vertical-align: middle;
+    }
+    .badge-tracked {
+        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+        color: #2e7d32; background: #e8f5e9; padding: 2px 6px; border-radius: 6px;
+        margin-left: 6px; vertical-align: middle;
+    }
+    .badge-unverified {
+        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+        color: #b8720a; background: #fff8e1; padding: 2px 6px; border-radius: 6px;
+        margin-left: 6px; vertical-align: middle;
     }
 
     /* Player modal */
@@ -293,10 +891,46 @@
 <body>
     <header>
         <h1>⚽ Football Analytics</h1>
-        <div>
-            {% if match_report %}
-                <a href="{{ match_report.pdf_file.url }}" target="_blank" style="margin-right:16px;">Download PDF Report</a>
-            {% endif %}
+        <div style="display:flex; align-items:center; gap:10px;">
+            <a href="{% url 'matches:download_report_pdf' match.public_id %}" target="_blank" class="btn-pdf">📄 PDF Report</a>
+
+            <div class="export-dropdown-wrapper">
+                <button type="button" class="btn-export-toggle" id="export-dropdown-btn" onclick="toggleExportMenu(event)">
+                    <span>⬇ Export Data</span>
+                    <span style="font-size:10px;">▼</span>
+                </button>
+                <div class="export-dropdown-menu" id="export-dropdown-menu">
+                    <a href="{% url 'matches:export_json' match.public_id %}?download=1" class="export-item">
+                        <span class="export-icon">📊</span>
+                        <div>
+                            <div class="export-label">Match Analytics (JSON)</div>
+                            <div class="export-desc">Full stats, tactical coordinates, passes & shots</div>
+                        </div>
+                    </a>
+                    <a href="{% url 'matches:export_csv' match.public_id 'tracking' %}" class="export-item">
+                        <span class="export-icon">🏃</span>
+                        <div>
+                            <div class="export-label">Player Tracking (CSV)</div>
+                            <div class="export-desc">Frame-by-frame pitch (x, y) coordinates & speeds</div>
+                        </div>
+                    </a>
+                    <a href="{% url 'matches:export_csv' match.public_id 'passes' %}" class="export-item">
+                        <span class="export-icon">🕸️</span>
+                        <div>
+                            <div class="export-label">Pass Events (CSV)</div>
+                            <div class="export-desc">Detected passer, receiver, vectors & completion</div>
+                        </div>
+                    </a>
+                    <a href="{% url 'matches:export_csv' match.public_id 'shots' %}" class="export-item">
+                        <span class="export-icon">🎯</span>
+                        <div>
+                            <div class="export-label">Shots & xG (CSV)</div>
+                            <div class="export-desc">Shot origins, velocities, outcomes & xG ratings</div>
+                        </div>
+                    </a>
+                </div>
+            </div>
+
             <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
         </div>
     </header>
@@ -384,40 +1018,185 @@
 
         <!-- Overview -->
         <div class="tab-panel active" id="tab-overview">
-            <div class="section">
+            <div class="results-workspace">
+                <div class="main-stats-col">
+                    <div class="section">
                 <h2>Possession {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}</h2>
                 <div class="possession-bar">
                     <div class="possession-home" style="--pct: {{ home_possession }}; width: calc(var(--pct) * 1%);"></div>
                     <div class="possession-away" style="--pct: {{ away_possession }}; width: calc(var(--pct) * 1%);"></div>
                 </div>
                 <div class="possession-labels">
-                    <span>{{ match.home_team.short_name }}</span>
-                    <span>{{ match.away_team.short_name }}</span>
+                    <span>{{ match.home_team.short_name }} <strong>{{ home_possession }}%</strong></span>
+                    <span><strong>{{ away_possession }}%</strong> {{ match.away_team.short_name }}</span>
                 </div>
             </div>
 
             <div class="section">
-                <h2>xG &amp; Distance {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}</h2>
+                <h2>Match Key Metrics {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}</h2>
                 <div class="metric-grid">
                     <div class="metric-card"><div class="metric-value">{{ team_stats.home.xg }}</div><div class="metric-label">{{ match.home_team.short_name }} xG</div></div>
                     <div class="metric-card"><div class="metric-value">{{ team_stats.away.xg }}</div><div class="metric-label">{{ match.away_team.short_name }} xG</div></div>
+                    <div class="metric-card"><div class="metric-value">{{ team_stats.home.passes_completed|default:team_stats.home.passes }} <span style="font-size:13px;font-weight:600;color:#666;">({{ team_stats.home.pass_accuracy }}%)</span></div><div class="metric-label">{{ match.home_team.short_name }} Passes</div></div>
+                    <div class="metric-card"><div class="metric-value">{{ team_stats.away.passes_completed|default:team_stats.away.passes }} <span style="font-size:13px;font-weight:600;color:#666;">({{ team_stats.away.pass_accuracy }}%)</span></div><div class="metric-label">{{ match.away_team.short_name }} Passes</div></div>
                     <div class="metric-card"><div class="metric-value">{{ team_stats.home.distance_km }}km</div><div class="metric-label">{{ match.home_team.short_name }} Distance</div></div>
                     <div class="metric-card"><div class="metric-value">{{ team_stats.away.distance_km }}km</div><div class="metric-label">{{ match.away_team.short_name }} Distance</div></div>
                 </div>
             </div>
 
             <div class="section">
-                <h2>Shots {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}</h2>
-                {% if using_real_stats %}<p style="font-size:12px;color:#999;margin-bottom:10px;">Shot-by-shot detail isn't tracked yet — only team totals are real so far.</p>{% endif %}
-                {% for shot in shots %}
-                <div class="shot-row">
-                    <span class="shot-minute">{{ shot.minute }}'</span>
-                    <span class="shot-side {{ shot.side }}"></span>
-                    <span class="shot-player">{{ shot.player }}</span>
-                    <span class="shot-xg">xG {{ shot.xg }}</span>
-                    <span class="shot-outcome {{ shot.outcome|slugify }}">{{ shot.outcome }}</span>
+            <div class="section" id="tactical-pitch-section">
+                <div class="pitch-header-row">
+                    <h2 style="margin-bottom:0; border-bottom:none; padding-bottom:0;">
+                        Tactical Pitch Visualizer {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}
+                    </h2>
+                    <div class="pitch-mode-pills">
+                        <button type="button" class="pitch-mode-btn active" id="btn-mode-shots" onclick="setPitchMode('shots')">🎯 Shots &amp; xG</button>
+                        <button type="button" class="pitch-mode-btn" id="btn-mode-passes" onclick="setPitchMode('passes')">🕸️ Passing Network</button>
+                        <button type="button" class="pitch-mode-btn" id="btn-mode-shape" onclick="setPitchMode('shape')">📐 Team Shape</button>
+                    </div>
                 </div>
-                {% endfor %}
+
+                <div class="pitch-subfilters-row" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px;">
+                    <div id="subfilters-shots" class="shot-filters">
+                        <button type="button" class="shot-filter-btn active" data-filter="all">All ({{ shots|length }})</button>
+                        <button type="button" class="shot-filter-btn" data-filter="home">{{ match.home_team.short_name }}</button>
+                        <button type="button" class="shot-filter-btn" data-filter="away">{{ match.away_team.short_name }}</button>
+                        <button type="button" class="shot-filter-btn" data-filter="goal">Goals</button>
+                    </div>
+                    <div id="subfilters-tactical" class="shot-filters" style="display:none;">
+                        <button type="button" class="shot-filter-btn active" data-tfilter="both" onclick="setTacticalTeamFilter('both')">Both Teams</button>
+                        <button type="button" class="shot-filter-btn" data-tfilter="home" onclick="setTacticalTeamFilter('home')">{{ match.home_team.short_name }}</button>
+                        <button type="button" class="shot-filter-btn" data-tfilter="away" onclick="setTacticalTeamFilter('away')">{{ match.away_team.short_name }}</button>
+                    </div>
+                    <div id="tactical-mode-caption" style="font-size:11.5px; color:#718096;">
+                        Shot trajectories &amp; xG model derived from computer vision tracking.
+                    </div>
+                </div>
+
+                <div class="shot-pitch-wrapper" id="shot-pitch-wrapper">
+                    <div class="shot-tooltip" id="shot-map-tooltip"></div>
+                    <svg class="shot-pitch-svg" id="shot-pitch-svg" viewBox="0 0 1100 720" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <pattern id="lawn-stripes" width="210" height="720" patternUnits="userSpaceOnUse">
+                                <rect x="0" y="0" width="105" height="720" fill="rgba(255,255,255,0.02)"/>
+                                <rect x="105" y="0" width="105" height="720" fill="rgba(0,0,0,0.03)"/>
+                            </pattern>
+                        </defs>
+                        <rect x="25" y="20" width="1050" height="680" fill="#1b3223"/>
+                        <rect x="25" y="20" width="1050" height="680" fill="url(#lawn-stripes)"/>
+
+                        <!-- Pitch boundary & halfway line -->
+                        <rect x="25" y="20" width="1050" height="680" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <line x1="550" y1="20" x2="550" y2="700" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <circle cx="550" cy="360" r="91.5" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <circle cx="550" cy="360" r="3.5" fill="rgba(255,255,255,0.5)"/>
+
+                        <!-- Penalty areas -->
+                        <rect x="25" y="158.4" width="165" height="403.2" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <rect x="910" y="158.4" width="165" height="403.2" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+
+                        <!-- Goal areas -->
+                        <rect x="25" y="268.4" width="55" height="183.2" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <rect x="1020" y="268.4" width="55" height="183.2" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+
+                        <!-- Penalty spots -->
+                        <circle cx="135" cy="360" r="3" fill="rgba(255,255,255,0.5)"/>
+                        <circle cx="965" cy="360" r="3" fill="rgba(255,255,255,0.5)"/>
+
+                        <!-- Penalty arcs -->
+                        <path d="M 190 286.9 A 91.5 91.5 0 0 1 190 433.1" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <path d="M 910 286.9 A 91.5 91.5 0 0 0 910 433.1" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+
+                        <!-- Goals -->
+                        <rect x="7" y="323.4" width="18" height="73.2" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.5)" stroke-width="2"/>
+                        <rect x="1075" y="323.4" width="18" height="73.2" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.5)" stroke-width="2"/>
+
+                        <!-- Corner arcs -->
+                        <path d="M 25 35 A 15 15 0 0 0 40 20" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <path d="M 25 685 A 15 15 0 0 1 40 700" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <path d="M 1060 20 A 15 15 0 0 0 1075 35" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+                        <path d="M 1060 700 A 15 15 0 0 1 1075 685" fill="none" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+
+                        <!-- Team attack direction indicators -->
+                        <text x="50" y="685" fill="rgba(255,255,255,0.35)" font-size="12" font-weight="600" font-family="sans-serif">{{ match.home_team.short_name }} &rarr;</text>
+                        <text x="1050" y="685" text-anchor="end" fill="rgba(255,255,255,0.35)" font-size="12" font-weight="600" font-family="sans-serif">&larr; {{ match.away_team.short_name }}</text>
+
+                        <!-- Dynamic Tactical Hull Group -->
+                        <g id="tactical-hull-group"></g>
+
+                        <!-- Dynamic Passing Network Links -->
+                        <g id="tactical-network-links"></g>
+
+                        <!-- Dynamic Passing Network Player Nodes -->
+                        <g id="tactical-network-nodes"></g>
+
+                        <!-- Dynamic Shot Lines and Nodes -->
+                        <g id="shot-trajectories"></g>
+                        <g id="shot-nodes"></g>
+                    </svg>
+                </div>
+
+                <!-- HUD 1: Shot Legend -->
+                <div id="hud-shots-legend" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+                    <div class="shot-map-legend">
+                        <span class="legend-item"><span class="legend-dot home"></span> {{ match.home_team.short_name }}</span>
+                        <span class="legend-item"><span class="legend-dot away"></span> {{ match.away_team.short_name }}</span>
+                        <span class="legend-item"><span class="legend-dot goal"></span> Goal</span>
+                    </div>
+                    <div style="font-size:11px;color:#888;">Bubble size indicates Expected Goals (xG) &bull; Click node to seek video</div>
+                </div>
+
+                <!-- HUD 2: Passing Network Legend -->
+                <div id="hud-passes-legend" style="display:none;margin-bottom:12px;font-size:11.5px;color:#666;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                    <div style="display:flex;align-items:center;gap:14px;">
+                        <span class="legend-item"><span class="legend-dot home"></span> {{ match.home_team.short_name }} Players</span>
+                        <span class="legend-item"><span class="legend-dot away"></span> {{ match.away_team.short_name }} Players</span>
+                        <span style="color:#888;">Node size: involvement &bull; Line weight: pass frequency</span>
+                    </div>
+                    <div style="font-size:11px;color:#888;">Hover node or link for details &bull; Click to seek video</div>
+                </div>
+
+                <!-- HUD 3: Team Shape & Compactness Metrics Grid -->
+                <div class="tactical-metric-hud" id="hud-shape-metrics" style="display:none;margin-bottom:12px;">
+                    <div class="tactical-hud-card">
+                        <div class="tactical-hud-val" id="hud-home-area">—</div>
+                        <div class="tactical-hud-lbl">{{ match.home_team.short_name }} Compactness Area</div>
+                    </div>
+                    <div class="tactical-hud-card">
+                        <div class="tactical-hud-val" id="hud-away-area">—</div>
+                        <div class="tactical-hud-lbl">{{ match.away_team.short_name }} Compactness Area</div>
+                    </div>
+                    <div class="tactical-hud-card">
+                        <div class="tactical-hud-val" id="hud-home-dim">—</div>
+                        <div class="tactical-hud-lbl">{{ match.home_team.short_name }} Length &times; Width</div>
+                    </div>
+                    <div class="tactical-hud-card">
+                        <div class="tactical-hud-val" id="hud-away-dim">—</div>
+                        <div class="tactical-hud-lbl">{{ match.away_team.short_name }} Length &times; Width</div>
+                    </div>
+                </div>
+
+                <!-- Shot list rows (only shown in Shots mode) -->
+                <div class="shots-list" id="shots-list-container">
+                    {% for shot in shots %}
+                    <div class="shot-row" data-shot-index="{{ forloop.counter0 }}" data-side="{{ shot.side }}" data-outcome="{{ shot.outcome|slugify }}">
+                        <span class="shot-minute">{{ shot.minute }}'</span>
+                        <span class="shot-side {{ shot.side }}" title="{{ shot.side|title }}"></span>
+                        <span class="shot-player">
+                            {{ shot.player }}
+                            {% if shot.player_inferred %}<span class="badge-inferred">Inferred</span>{% endif %}
+                        </span>
+                        {% if shot.distance_m %}<span class="shot-meta-val">{{ shot.distance_m|floatformat:1 }}m</span>{% endif %}
+                        {% if shot.speed_mps %}<span class="shot-meta-val">{{ shot.speed_mps|floatformat:1 }}m/s</span>{% endif %}
+                        <span class="shot-xg">xG {{ shot.xg|floatformat:2 }}</span>
+                        <span class="shot-outcome {{ shot.outcome|slugify }}">{{ shot.outcome }}</span>
+                    </div>
+                    {% empty %}
+                    <p style="font-size:12px;color:#999;padding:12px;text-align:center;">No shots recorded for this match.</p>
+                    {% endfor %}
+                </div>
+            </div>
             </div>
 
             <div class="section">
@@ -430,7 +1209,91 @@
                     {% endfor %}
                 </div>
             </div>
-        </div>
+        </div><!-- /.main-stats-col -->
+
+                <!-- Side Video Replay Column (Overview Only) -->
+                <aside class="side-replay-col">
+                    <div class="replay-card">
+                        <div class="replay-card-header">
+                            <div class="replay-title">
+                                <span class="replay-dot"></span>
+                                Match Replay
+                            </div>
+                            <div class="replay-mode-toggle">
+                                {% if annotated_video_url %}
+                                    <button type="button" class="mode-btn active" id="btn-mode-annotated" onclick="switchVideoMode('annotated')">Tracked (AI)</button>
+                                {% endif %}
+                                {% if original_video_url %}
+                                    <button type="button" class="mode-btn {% if not annotated_video_url %}active{% endif %}" id="btn-mode-raw" onclick="switchVideoMode('raw')">Raw Footage</button>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        {% if has_video %}
+                            <div class="replay-video-wrap">
+                                <video id="replay-video"
+                                       playsinline
+                                       controls
+                                       preload="metadata"
+                                       src="{% if annotated_video_url %}{{ annotated_video_url }}{% else %}{{ original_video_url }}{% endif %}">
+                                    Your browser does not support HTML5 video playback.
+                                </video>
+                                <div class="replay-hud">
+                                    <span class="hud-tag" id="hud-mode-tag">{% if annotated_video_url %}AI Tracking Active{% else %}Raw Video{% endif %}</span>
+                                    <span class="hud-tag" id="hud-time">00:00</span>
+                                    <span class="hud-tag" id="hud-frame">Frame: 0</span>
+                                </div>
+                            </div>
+
+                            <div class="replay-controls-bar">
+                                <div class="speed-selector">
+                                    <span class="speed-label">Speed</span>
+                                    <div class="speed-pills">
+                                        <button type="button" class="speed-pill" data-speed="0.5" onclick="setVideoSpeed(0.5)">0.5x</button>
+                                        <button type="button" class="speed-pill active" data-speed="1.0" onclick="setVideoSpeed(1.0)">1x</button>
+                                        <button type="button" class="speed-pill" data-speed="1.5" onclick="setVideoSpeed(1.5)">1.5x</button>
+                                        <button type="button" class="speed-pill" data-speed="2.0" onclick="setVideoSpeed(2.0)">2x</button>
+                                    </div>
+                                </div>
+                                <button type="button" class="loop-btn" id="btn-video-loop" onclick="toggleVideoLoop()" title="Toggle Loop Playback">
+                                    🔁 Loop: Off
+                                </button>
+                            </div>
+
+                            <div class="replay-moments-section">
+                                <div class="moments-header">
+                                    <span>Key Match Moments</span>
+                                    <span style="font-size:11px; color:#888;">Tap to seek video</span>
+                                </div>
+                                <div class="moments-list" id="moments-chips-list">
+                                    {% if shots %}
+                                        {% for shot in shots %}
+                                            <button type="button" class="moment-chip" onclick="seekVideoToFrame({{ shot.frame_idx|default:0 }})">
+                                                <span class="moment-dot" style="background:{% if shot.side == 'home' %}#2563eb{% else %}#dc2626{% endif %};"></span>
+                                                Shot: {{ shot.player }} ({{ shot.minute }}')
+                                                {% if shot.xg %}<span style="font-size:10px; color:#888; margin-left:4px;">xG {{ shot.xg }}</span>{% endif %}
+                                            </button>
+                                        {% endfor %}
+                                    {% else %}
+                                        <div style="font-size:12px; color:#999; padding:6px 0;">No individual moments detected.</div>
+                                    {% endif %}
+                                </div>
+                            </div>
+
+                            <div class="replay-hint">
+                                💡 <strong>Interactive Pitch Sync:</strong> Click any shot bubble on the 2D Pitch Shot Map or shot list below to jump the video directly to that play!
+                            </div>
+                        {% else %}
+                            <div class="video-placeholder">
+                                <span style="font-size:28px; margin-bottom:8px;">📹</span>
+                                <strong>Video footage unavailable</strong>
+                                <p style="margin:4px 0 0; font-size:12px; color:#94a3b8;">No match video was uploaded for this game.</p>
+                            </div>
+                        {% endif %}
+                    </div>
+                </aside>
+            </div><!-- /.results-workspace -->
+        </div><!-- /#tab-overview -->
 
         <!-- Team Stats -->
         <div class="tab-panel" id="tab-stats">
@@ -444,12 +1307,40 @@
                     {% endif %}
                 </h2>
                 <table class="stats-table">
+                    <thead>
+                        <tr style="border-bottom: 2px solid #edf2f7; font-size: 11px; text-transform: uppercase; color: #888;">
+                            <th style="text-align:left; padding: 8px 8px; font-weight:700;">Metric</th>
+                            <th style="text-align:center; padding: 8px 8px; color: #203a43; font-weight:700;">{{ match.home_team.short_name }}</th>
+                            <th style="width: 20px;"></th>
+                            <th style="text-align:center; padding: 8px 8px; color: #555; font-weight:700;">{{ match.away_team.short_name }}</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr><td class="stat-label">Shots</td><td class="home-val">{{ team_stats.home.shots }}</td><td></td><td class="away-val">{{ team_stats.away.shots }}</td></tr>
+                        <!-- Attacking & Shooting -->
+                        <tr class="category-header"><td colspan="4">Attacking &amp; Finishing</td></tr>
+                        <tr><td class="stat-label">Expected Goals (xG)</td><td class="home-val">{{ team_stats.home.xg }}</td><td></td><td class="away-val">{{ team_stats.away.xg }}</td></tr>
+                        <tr><td class="stat-label">Total Shots</td><td class="home-val">{{ team_stats.home.shots }}</td><td></td><td class="away-val">{{ team_stats.away.shots }}</td></tr>
                         <tr><td class="stat-label">Shots on Target</td><td class="home-val">{{ team_stats.home.shots_on_target }}</td><td></td><td class="away-val">{{ team_stats.away.shots_on_target }}</td></tr>
-                        <tr><td class="stat-label">Passes</td><td class="home-val">{{ team_stats.home.passes }}</td><td></td><td class="away-val">{{ team_stats.away.passes }}</td></tr>
+                        <tr><td class="stat-label">Shot Accuracy</td><td class="home-val">{{ team_stats.home.shot_accuracy }}%</td><td></td><td class="away-val">{{ team_stats.away.shot_accuracy }}%</td></tr>
+                        
+                        <!-- Passing & Playmaking -->
+                        <tr class="category-header"><td colspan="4">Passing &amp; Possession</td></tr>
+                        <tr><td class="stat-label">Possession</td><td class="home-val">{{ home_possession }}%</td><td></td><td class="away-val">{{ away_possession }}%</td></tr>
+                        <tr><td class="stat-label">Passes Completed</td><td class="home-val">{{ team_stats.home.passes_completed|default:team_stats.home.passes }}</td><td></td><td class="away-val">{{ team_stats.away.passes_completed|default:team_stats.away.passes }}</td></tr>
+                        <tr><td class="stat-label">Passes Attempted</td><td class="home-val">{{ team_stats.home.passes_attempted }}</td><td></td><td class="away-val">{{ team_stats.away.passes_attempted }}</td></tr>
                         <tr><td class="stat-label">Pass Accuracy</td><td class="home-val">{{ team_stats.home.pass_accuracy }}%</td><td></td><td class="away-val">{{ team_stats.away.pass_accuracy }}%</td></tr>
                         <tr><td class="stat-label">Corners</td><td class="home-val">{{ team_stats.home.corners }}</td><td></td><td class="away-val">{{ team_stats.away.corners }}</td></tr>
+
+                        <!-- Defending & Ball Recovery -->
+                        <tr class="category-header"><td colspan="4">Defending &amp; Ball Recovery</td></tr>
+                        <tr><td class="stat-label">Tackles Won</td><td class="home-val">{{ team_stats.home.tackles }}</td><td></td><td class="away-val">{{ team_stats.away.tackles }}</td></tr>
+                        <tr><td class="stat-label">Interceptions</td><td class="home-val">{{ team_stats.home.interceptions }}</td><td></td><td class="away-val">{{ team_stats.away.interceptions }}</td></tr>
+                        <tr><td class="stat-label">Clearances</td><td class="home-val">{{ team_stats.home.clearances }}</td><td></td><td class="away-val">{{ team_stats.away.clearances }}</td></tr>
+
+                        <!-- Physical & Discipline -->
+                        <tr class="category-header"><td colspan="4">Physical &amp; Discipline</td></tr>
+                        <tr><td class="stat-label">Distance Covered</td><td class="home-val">{{ team_stats.home.distance_km }} km</td><td></td><td class="away-val">{{ team_stats.away.distance_km }} km</td></tr>
+                        <tr><td class="stat-label">Average Speed</td><td class="home-val">{{ team_stats.home.average_speed }} km/h</td><td></td><td class="away-val">{{ team_stats.away.average_speed }} km/h</td></tr>
                         <tr><td class="stat-label">Fouls</td><td class="home-val">{{ team_stats.home.fouls }}</td><td></td><td class="away-val">{{ team_stats.away.fouls }}</td></tr>
                         <tr><td class="stat-label">Yellow Cards</td><td class="home-val">{{ team_stats.home.yellow_cards }}</td><td></td><td class="away-val">{{ team_stats.away.yellow_cards }}</td></tr>
                         <tr><td class="stat-label">Red Cards</td><td class="home-val">{{ team_stats.home.red_cards }}</td><td></td><td class="away-val">{{ team_stats.away.red_cards }}</td></tr>
@@ -459,10 +1350,16 @@
 
             <div class="section">
                 {% if home_heatmap or away_heatmap %}
-                    <h2>Heatmap</h2>
+                    <h2>Team Heatmaps <span style="font-size:12px; font-weight:500; color:rgba(255,255,255,0.6); margin-left:8px;">Positional density & spatial control</span></h2>
                     <div class="heatmap-columns">
-                        <figure>
-                            <figcaption>{{ match.home_team.short_name }}</figcaption>
+                        <div class="heatmap-card">
+                            <div class="heatmap-card-header">
+                                <div class="heatmap-team-tag">
+                                    <span class="heatmap-dot" style="background:#4FAE79;"></span>
+                                    <span>{{ match.home_team.name }}</span>
+                                </div>
+                                <span class="heatmap-dir-tag">Attacking Right &rarr;</span>
+                            </div>
                             {% if home_heatmap %}
                                 <img src="data:image/png;base64,{{ home_heatmap }}" alt="{{ match.home_team.short_name }} heatmap">
                             {% else %}
@@ -470,9 +1367,16 @@
                                     <span class="pitch-note">Not enough tracked positions yet</span>
                                 </div>
                             {% endif %}
-                        </figure>
-                        <figure>
-                            <figcaption>{{ match.away_team.short_name }}</figcaption>
+                        </div>
+
+                        <div class="heatmap-card">
+                            <div class="heatmap-card-header">
+                                <div class="heatmap-team-tag">
+                                    <span class="heatmap-dot" style="background:#5B9BD5;"></span>
+                                    <span>{{ match.away_team.name }}</span>
+                                </div>
+                                <span class="heatmap-dir-tag">&larr; Attacking Left</span>
+                            </div>
                             {% if away_heatmap %}
                                 <img src="data:image/png;base64,{{ away_heatmap }}" alt="{{ match.away_team.short_name }} heatmap">
                             {% else %}
@@ -480,7 +1384,13 @@
                                     <span class="pitch-note">Not enough tracked positions yet</span>
                                 </div>
                             {% endif %}
-                        </figure>
+                        </div>
+                    </div>
+
+                    <div class="fotmob-heat-legend">
+                        <span class="heat-legend-label">Low Activity</span>
+                        <div class="heat-legend-gradient"></div>
+                        <span class="heat-legend-label">High Intensity</span>
                     </div>
                 {% else %}
                     <h2>Heatmap <span class="badge-dummy">Placeholder</span></h2>
@@ -513,8 +1423,9 @@
                     </div>
                 </div>
             </div>
-        </div>
-    </div>
+        </div><!-- /#tab-lineup -->
+    </div><!-- /.container -->
+
 
     <!-- Player modal -->
     <div class="modal-overlay" id="player-modal" onclick="if(event.target===this) closeModal()">
@@ -527,30 +1438,144 @@
             </div>
             <div class="modal-body">
                 <div id="modal-stat-groups"></div>
-                <div id="modal-heatmap-wrap" class="modal-pitch" style="margin-top:18px;"></div>
+                <div style="margin-top:20px; border-top:1px solid #f0f0f0; padding-top:16px;">
+                    <div style="font-size:12px; font-weight:700; color:#1A2E35; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                        <span>Territory Heatmap</span>
+                        <span id="modal-attack-dir" style="font-size:11px; font-weight:600; color:#2e7d32; text-transform:none;"></span>
+                    </div>
+                    <div id="modal-heatmap-wrap" class="modal-pitch"></div>
+                    <div class="fotmob-heat-legend" style="background:#f4f6f8; margin-top:10px; border:none;">
+                        <span class="heat-legend-label" style="color:#555;">Low Activity</span>
+                        <div class="heat-legend-gradient"></div>
+                        <span class="heat-legend-label" style="color:#555;">High Intensity</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     {{ home_players|json_script:"home-players-data" }}
     {{ away_players|json_script:"away-players-data" }}
+    {{ shots|json_script:"shots-data" }}
+    {{ tactical_data|json_script:"tactical-data" }}
 
     <script>
+        // --- Match Video Replay Controller ---
+        const ANNOTATED_VIDEO_URL = "{{ annotated_video_url|default:'' }}";
+        const RAW_VIDEO_URL = "{{ original_video_url|default:'' }}";
+        let currentVideoMode = ANNOTATED_VIDEO_URL ? 'annotated' : 'raw';
+        const videoEl = document.getElementById('replay-video');
+        const hudTime = document.getElementById('hud-time');
+        const hudFrame = document.getElementById('hud-frame');
+        const hudModeTag = document.getElementById('hud-mode-tag');
+
+        function formatTime(seconds) {
+            if (isNaN(seconds)) return "00:00";
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            const tenths = Math.floor((seconds % 1) * 10);
+            return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${tenths}`;
+        }
+
+        window.switchVideoMode = function(mode) {
+            if (!videoEl) return;
+            const targetUrl = mode === 'annotated' ? ANNOTATED_VIDEO_URL : RAW_VIDEO_URL;
+            if (!targetUrl) return;
+
+            const prevTime = videoEl.currentTime;
+            const wasPlaying = !videoEl.paused;
+
+            videoEl.src = targetUrl;
+            videoEl.currentTime = prevTime;
+            if (wasPlaying) {
+                videoEl.play().catch(() => {});
+            }
+
+            currentVideoMode = mode;
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+            const activeBtn = document.getElementById(mode === 'annotated' ? 'btn-mode-annotated' : 'btn-mode-raw');
+            if (activeBtn) activeBtn.classList.add('active');
+
+            if (hudModeTag) {
+                hudModeTag.textContent = mode === 'annotated' ? 'AI Tracking Active' : 'Raw Video';
+            }
+        };
+
+        window.setVideoSpeed = function(speed) {
+            if (!videoEl) return;
+            videoEl.playbackRate = speed;
+            document.querySelectorAll('.speed-pill').forEach(pill => {
+                pill.classList.toggle('active', parseFloat(pill.dataset.speed) === speed);
+            });
+        };
+
+        window.toggleVideoLoop = function() {
+            if (!videoEl) return;
+            videoEl.loop = !videoEl.loop;
+            const loopBtn = document.getElementById('btn-video-loop');
+            if (loopBtn) {
+                loopBtn.classList.toggle('active', videoEl.loop);
+                loopBtn.innerHTML = videoEl.loop ? '🔁 Loop: On' : '🔁 Loop: Off';
+            }
+        };
+
+        window.seekVideoToFrame = function(frameIdx) {
+            if (!videoEl) return;
+            if (frameIdx == null || frameIdx < 0) return;
+            // Switch to overview tab so the replay widget is visible
+            showTab('overview');
+            // 25 fps nominal video rate; lead in by 0.6 seconds so user sees play develop
+            const targetTime = Math.max(0, (frameIdx / 25.0) - 0.6);
+            videoEl.currentTime = targetTime;
+            videoEl.play().catch(() => {});
+
+            // Visual pulse on the video container
+            const wrap = document.querySelector('.replay-video-wrap');
+            if (wrap) {
+                wrap.style.boxShadow = '0 0 0 3px #4FAE79, 0 8px 24px rgba(79, 174, 121, 0.35)';
+                setTimeout(() => { wrap.style.boxShadow = ''; }, 1200);
+            }
+        };
+
+        if (videoEl) {
+            videoEl.addEventListener('timeupdate', () => {
+                if (hudTime) hudTime.textContent = formatTime(videoEl.currentTime);
+                if (hudFrame) {
+                    const estFrame = Math.round(videoEl.currentTime * 25);
+                    hudFrame.textContent = `Frame: ${estFrame}`;
+                }
+            });
+        }
+
         const homePlayers = JSON.parse(document.getElementById('home-players-data').textContent);
         const awayPlayers = JSON.parse(document.getElementById('away-players-data').textContent);
 
         function renderLineup(containerId, players) {
             const container = document.getElementById(containerId);
-            container.innerHTML = players.map((p, i) => `
+            container.innerHTML = players.map((p, i) => {
+                let badgeHtml = '';
+                if (p.distance_is_real) {
+                    badgeHtml = p.distance_confirmed
+                        ? '<span class="badge-tracked" title="Identified & confirmed tracking data">Tracked</span>'
+                        : '<span class="badge-unverified" title="Automatically linked from CV trajectory">Auto</span>';
+                }
+                const subStats = [];
+                if (p.position) subStats.push(p.position);
+                if (p.distance_is_real && p.distance_km) subStats.push(p.distance_km + ' km');
+                if (p.passes_completed_is_real && p.passes_completed !== undefined) subStats.push(p.passes_completed + ' passes');
+
+                return `
                 <div class="lineup-row" onclick="openPlayer('${containerId}', ${i})">
                     <div class="lineup-jersey">${p.jersey_number}</div>
                     <div class="lineup-info">
-                        <div class="lineup-name">${p.name}</div>
-                        <div class="lineup-position">${p.position}</div>
+                        <div class="lineup-name">
+                            ${p.name}${badgeHtml}
+                        </div>
+                        <div class="lineup-position">${subStats.join(' · ')}</div>
                     </div>
                     <div class="lineup-rating">${p.rating}</div>
                 </div>
-            `).join('');
+            `}).join('');
         }
         renderLineup('lineup-home', homePlayers);
         renderLineup('lineup-away', awayPlayers);
@@ -622,19 +1647,33 @@
         // flag rather than reusing distance_confirmed. See
         // _dummy_player_rows in views.py for what's real vs. dummy.
         const TRACKED_STAT_FLAGS = {
+            'Rating': { real: 'rating_is_real', confirmed: 'distance_confirmed' },
             'Distance Covered': { real: 'distance_is_real', confirmed: 'distance_confirmed' },
+            'Top Speed': { real: 'top_speed_is_real', confirmed: 'distance_confirmed' },
+            'Average Speed': { real: 'average_speed_is_real', confirmed: 'distance_confirmed' },
             'Passes Completed': { real: 'passes_completed_is_real', confirmed: 'distance_confirmed' },
+            'Passes Attempted': { real: 'passes_attempted_is_real', confirmed: 'distance_confirmed' },
+            'Pass Accuracy': { real: 'pass_accuracy_is_real', confirmed: 'distance_confirmed' },
             'Shots': { real: 'shots_is_real', confirmed: 'distance_confirmed' },
+            'Shots on Target': { real: 'shots_on_target_is_real', confirmed: 'distance_confirmed' },
             'Expected Goals (xG)': { real: 'xg_is_real', confirmed: 'distance_confirmed' },
+            'Key Passes': { real: 'key_passes_is_real', confirmed: 'distance_confirmed' },
+            'Dribbles Completed': { real: 'dribbles_completed_is_real', confirmed: 'distance_confirmed' },
+            'Tackles': { real: 'tackles_is_real', confirmed: 'distance_confirmed' },
+            'Interceptions': { real: 'interceptions_is_real', confirmed: 'distance_confirmed' },
+            'Clearances': { real: 'clearances_is_real', confirmed: 'distance_confirmed' },
             'Goals': { real: 'goals_is_real', confirmed: 'goals_confirmed' },
         };
         // label -> [label of the real stat that, when real, makes THIS
         // label's dummy value worth flagging as "(estimated)" since it
         // has no real counterpart of its own]
         const ESTIMATED_WHEN_REAL = {
-            'Passes Attempted': 'passes_completed_is_real',
-            'Pass Accuracy': 'passes_completed_is_real',
-            'Shots on Target': 'shots_is_real',
+            'Assists': 'passes_completed_is_real',
+            'Fouls Committed': 'distance_is_real',
+            'Fouls Suffered': 'distance_is_real',
+            'Yellow Cards': 'distance_is_real',
+            'Red Cards': 'distance_is_real',
+            'Offsides': 'distance_is_real',
         };
 
         function statLabelSuffix(label, p) {
@@ -652,13 +1691,19 @@
         }
 
         function openPlayer(containerId, index) {
-            const players = containerId === 'lineup-home' ? homePlayers : awayPlayers;
-            const teamName = containerId === 'lineup-home' ? "{{ match.home_team.name|escapejs }}" : "{{ match.away_team.name|escapejs }}";
+            const isHome = containerId === 'lineup-home';
+            const players = isHome ? homePlayers : awayPlayers;
+            const teamName = isHome ? "{{ match.home_team.name|escapejs }}" : "{{ match.away_team.name|escapejs }}";
             const p = players[index];
 
             document.getElementById('modal-jersey').textContent = p.jersey_number;
             document.getElementById('modal-name').textContent = p.name;
             document.getElementById('modal-meta').textContent = p.position + ' · ' + teamName;
+
+            const attackDirEl = document.getElementById('modal-attack-dir');
+            if (attackDirEl) {
+                attackDirEl.textContent = isHome ? 'Attacking Right →' : '← Attacking Left';
+            }
 
             const container = document.getElementById('modal-stat-groups');
             container.innerHTML = statGroups.map(group => `
@@ -713,6 +1758,9 @@
         function showTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
             document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + tab));
+            if (tab !== 'overview' && videoEl && !videoEl.paused) {
+                videoEl.pause();
+            }
         }
 
         // --- Manage Goals panel (manual entry only — see MatchGoal's
@@ -786,6 +1834,498 @@
                     .catch(() => { document.getElementById('goals-error').textContent = 'Network error — could not remove goal.'; });
             };
         }
+
+        // --- Tactical Pitch Visualizer Controller (Shots, Passing Network, Team Shape) ---
+        (function() {
+            const shotsDataEl = document.getElementById('shots-data');
+            const tacticalDataEl = document.getElementById('tactical-data');
+            const shotsData = JSON.parse(shotsDataEl ? shotsDataEl.textContent || '[]' : '[]');
+            const tacticalData = JSON.parse(tacticalDataEl ? tacticalDataEl.textContent || '{}' : '{}');
+
+            const trajGroup = document.getElementById('shot-trajectories');
+            const shotNodeGroup = document.getElementById('shot-nodes');
+            const hullGroup = document.getElementById('tactical-hull-group');
+            const linkGroup = document.getElementById('tactical-network-links');
+            const netNodeGroup = document.getElementById('tactical-network-nodes');
+            const tooltip = document.getElementById('shot-map-tooltip');
+            const pitchWrapper = document.getElementById('shot-pitch-wrapper');
+
+            let currentMode = 'shots';
+            let shotFilter = 'all';
+            let tacticalFilter = 'both';
+
+            const homeColor = '#4FAE79';
+            const awayColor = '#5B9BD5';
+            const homeShort = "{{ match.home_team.short_name|escapejs }}";
+            const awayShort = "{{ match.away_team.short_name|escapejs }}";
+
+            function pitchToSvg(px, py) {
+                const clampedX = Math.max(-53.5, Math.min(53.5, px != null ? px : 0));
+                const clampedY = Math.max(-34.5, Math.min(34.5, py != null ? py : 0));
+                return {
+                    x: 25 + (clampedX + 52.5) * 10,
+                    y: 20 + (34.0 - clampedY) * 10,
+                };
+            }
+
+            function clearLayers() {
+                if (trajGroup) trajGroup.innerHTML = '';
+                if (shotNodeGroup) shotNodeGroup.innerHTML = '';
+                if (hullGroup) hullGroup.innerHTML = '';
+                if (linkGroup) linkGroup.innerHTML = '';
+                if (netNodeGroup) netNodeGroup.innerHTML = '';
+            }
+
+            function updateTooltipPos(evt) {
+                if (!pitchWrapper || !tooltip) return;
+                const rect = pitchWrapper.getBoundingClientRect();
+                const x = Math.max(10, Math.min(rect.width - 240, evt.clientX - rect.left + 15));
+                const y = Math.max(10, Math.min(rect.height - 120, evt.clientY - rect.top + 15));
+                tooltip.style.left = `${x}px`;
+                tooltip.style.top = `${y}px`;
+            }
+
+            // 1. Shots Rendering
+            function renderShots(filterSide) {
+                if (!trajGroup || !shotNodeGroup) return;
+                trajGroup.innerHTML = '';
+                shotNodeGroup.innerHTML = '';
+
+                shotsData.forEach((shot, idx) => {
+                    const isGoal = (shot.outcome || '').toLowerCase() === 'goal';
+                    if (filterSide === 'home' && shot.side !== 'home') return;
+                    if (filterSide === 'away' && shot.side !== 'away') return;
+                    if (filterSide === 'goal' && !isGoal) return;
+
+                    const origin = pitchToSvg(shot.pitch_x, shot.pitch_y);
+                    const target = (shot.target_goal_x != null && shot.target_goal_y != null)
+                        ? pitchToSvg(shot.target_goal_x, shot.target_goal_y)
+                        : null;
+
+                    const teamColor = isGoal ? '#F1C40F' : (shot.side === 'home' ? homeColor : awayColor);
+                    const xgVal = typeof shot.xg === 'number' ? shot.xg : parseFloat(shot.xg) || 0.05;
+                    const radius = Math.max(6.5, Math.min(22, Math.sqrt(xgVal) * 30));
+
+                    if (target) {
+                        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                        line.setAttribute('x1', origin.x);
+                        line.setAttribute('y1', origin.y);
+                        line.setAttribute('x2', target.x);
+                        line.setAttribute('y2', target.y);
+                        line.setAttribute('stroke', teamColor);
+                        line.setAttribute('stroke-width', isGoal ? '2.5' : '1.5');
+                        line.setAttribute('stroke-dasharray', '4,4');
+                        line.setAttribute('stroke-opacity', '0.65');
+                        line.setAttribute('class', `shot-traj shot-traj-${idx}`);
+                        trajGroup.appendChild(line);
+                    }
+
+                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', origin.x);
+                    circle.setAttribute('cy', origin.y);
+                    circle.setAttribute('r', radius);
+                    circle.setAttribute('fill', teamColor);
+                    circle.setAttribute('stroke', '#ffffff');
+                    circle.setAttribute('stroke-width', '1.5');
+                    circle.setAttribute('fill-opacity', '0.9');
+                    circle.setAttribute('class', `shot-node shot-node-${idx}`);
+                    circle.setAttribute('data-idx', idx);
+
+                    circle.addEventListener('mouseenter', (e) => highlightShot(idx, e));
+                    circle.addEventListener('mousemove', (e) => updateTooltipPos(e));
+                    circle.addEventListener('mouseleave', () => unhighlightShot(idx));
+                    circle.addEventListener('click', () => {
+                        const row = document.querySelector(`.shot-row[data-shot-index="${idx}"]`);
+                        if (row) {
+                            row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            row.classList.add('active');
+                            setTimeout(() => row.classList.remove('active'), 1500);
+                        }
+                        if (shot.frame_idx != null) {
+                            seekVideoToFrame(shot.frame_idx);
+                        }
+                    });
+
+                    shotNodeGroup.appendChild(circle);
+                });
+            }
+
+            function highlightShot(idx, evt) {
+                const shot = shotsData[idx];
+                if (!shot) return;
+
+                document.querySelectorAll('.shot-traj').forEach(l => l.classList.add('dimmed'));
+                const activeLine = document.querySelector(`.shot-traj-${idx}`);
+                if (activeLine) {
+                    activeLine.classList.remove('dimmed');
+                    activeLine.classList.add('active');
+                }
+                const activeNode = document.querySelector(`.shot-node-${idx}`);
+                if (activeNode) activeNode.classList.add('active');
+
+                document.querySelectorAll('.shot-row').forEach(r => r.classList.remove('active'));
+                const activeRow = document.querySelector(`.shot-row[data-shot-index="${idx}"]`);
+                if (activeRow) activeRow.classList.add('active');
+
+                if (tooltip) {
+                    const inferredHtml = shot.player_inferred ? ' <span style="opacity:0.7;font-size:10px;">(inferred)</span>' : '';
+                    const distHtml = shot.distance_m ? ` &bull; ${Number(shot.distance_m).toFixed(1)}m` : '';
+                    const speedHtml = shot.speed_mps ? ` &bull; ${Number(shot.speed_mps).toFixed(1)}m/s` : '';
+                    const xgNum = typeof shot.xg === 'number' ? shot.xg : parseFloat(shot.xg) || 0;
+                    tooltip.innerHTML = `
+                        <div class="shot-tooltip-player">${shot.player}${inferredHtml}</div>
+                        <div class="shot-tooltip-meta">${shot.minute}' &bull; ${shot.side ? shot.side.toUpperCase() : ''} &bull; <span class="shot-tooltip-highlight">xG ${xgNum.toFixed(2)}</span></div>
+                        <div class="shot-tooltip-meta">${shot.outcome}${distHtml}${speedHtml}</div>
+                    `;
+                    tooltip.style.display = 'block';
+                    updateTooltipPos(evt);
+                }
+            }
+
+            function unhighlightShot(idx) {
+                document.querySelectorAll('.shot-traj').forEach(l => l.classList.remove('dimmed', 'active'));
+                document.querySelectorAll('.shot-node').forEach(n => n.classList.remove('active'));
+                document.querySelectorAll('.shot-row').forEach(r => r.classList.remove('active'));
+                if (tooltip) tooltip.style.display = 'none';
+            }
+
+            // 2. Passing Network Rendering
+            function renderPassingNetwork(teamFilter) {
+                if (!linkGroup || !netNodeGroup || !tacticalData) return;
+                linkGroup.innerHTML = '';
+                netNodeGroup.innerHTML = '';
+
+                const sidesToRender = teamFilter === 'both' ? ['home', 'away'] : [teamFilter];
+
+                sidesToRender.forEach(side => {
+                    const tData = tacticalData[side];
+                    if (!tData || !tData.nodes) return;
+
+                    const teamColor = side === 'home' ? homeColor : awayColor;
+                    const nodeMap = {};
+                    tData.nodes.forEach(n => { nodeMap[n.id] = n; });
+
+                    if (tData.links) {
+                        tData.links.forEach(link => {
+                            const src = nodeMap[link.source];
+                            const tgt = nodeMap[link.target];
+                            if (!src || !tgt) return;
+
+                            const p1 = pitchToSvg(src.x, src.y);
+                            const p2 = pitchToSvg(tgt.x, tgt.y);
+                            const weight = Math.max(1.5, Math.min(6.5, Math.sqrt(link.count) * 1.8));
+
+                            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                            line.setAttribute('x1', p1.x);
+                            line.setAttribute('y1', p1.y);
+                            line.setAttribute('x2', p2.x);
+                            line.setAttribute('y2', p2.y);
+                            line.setAttribute('stroke', teamColor);
+                            line.setAttribute('stroke-width', weight);
+                            line.setAttribute('stroke-opacity', '0.5');
+                            line.setAttribute('stroke-linecap', 'round');
+                            line.setAttribute('class', 'tactical-link');
+
+                            line.addEventListener('mouseenter', (e) => {
+                                line.setAttribute('stroke-opacity', '1');
+                                if (tooltip) {
+                                    tooltip.innerHTML = `
+                                        <div class="shot-tooltip-player">${link.source_name} &harr; ${link.target_name}</div>
+                                        <div class="shot-tooltip-meta"><span class="shot-tooltip-highlight">${link.count} Passes</span> &bull; ${link.completed} Completed</div>
+                                        <div style="font-size:10px;color:#aaa;margin-top:4px;">Click to seek video replay</div>
+                                    `;
+                                    tooltip.style.display = 'block';
+                                    updateTooltipPos(e);
+                                }
+                            });
+                            line.addEventListener('mousemove', (e) => updateTooltipPos(e));
+                            line.addEventListener('mouseleave', () => {
+                                line.setAttribute('stroke-opacity', '0.5');
+                                if (tooltip) tooltip.style.display = 'none';
+                            });
+                            line.addEventListener('click', () => {
+                                if (link.first_frame) seekVideoToFrame(link.first_frame);
+                            });
+
+                            linkGroup.appendChild(line);
+                        });
+                    }
+
+                    tData.nodes.forEach(node => {
+                        const pt = pitchToSvg(node.x, node.y);
+                        const radius = Math.max(12, Math.min(20, 12 + Math.sqrt(node.passes_made || 0) * 1.2));
+
+                        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                        g.setAttribute('class', 'tactical-node');
+                        g.setAttribute('transform', `translate(${pt.x}, ${pt.y})`);
+
+                        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        circle.setAttribute('r', radius);
+                        circle.setAttribute('fill', teamColor);
+                        circle.setAttribute('stroke', '#ffffff');
+                        circle.setAttribute('stroke-width', '2');
+                        circle.setAttribute('fill-opacity', '0.92');
+                        g.appendChild(circle);
+
+                        const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        txt.setAttribute('text-anchor', 'middle');
+                        txt.setAttribute('dy', '4');
+                        txt.setAttribute('fill', '#ffffff');
+                        txt.setAttribute('font-size', '11');
+                        txt.setAttribute('font-weight', '800');
+                        txt.setAttribute('font-family', 'sans-serif');
+                        txt.textContent = node.jersey != null ? node.jersey : '';
+                        g.appendChild(txt);
+
+                        const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        lbl.setAttribute('text-anchor', 'middle');
+                        lbl.setAttribute('y', radius + 11);
+                        lbl.setAttribute('fill', 'rgba(255, 255, 255, 0.9)');
+                        lbl.setAttribute('font-size', '10');
+                        lbl.setAttribute('font-weight', '600');
+                        lbl.setAttribute('font-family', 'sans-serif');
+                        lbl.textContent = node.name || '';
+                        g.appendChild(lbl);
+
+                        g.addEventListener('mouseenter', (e) => {
+                            if (tooltip) {
+                                const trackedBadge = node.is_tracked ? '<span style="color:#4FAE79;font-size:10px;">(Tracked)</span>' : '<span style="color:#e0b34e;font-size:10px;">(Estimated)</span>';
+                                tooltip.innerHTML = `
+                                    <div class="shot-tooltip-player">${node.name} #${node.jersey || ''} ${trackedBadge}</div>
+                                    <div class="shot-tooltip-meta">${node.position} &bull; ${side.toUpperCase()}</div>
+                                    <div class="shot-tooltip-meta">Passes: ${node.passes_made} made &bull; ${node.passes_received} received</div>
+                                    <div style="font-size:10.5px;color:#aaa;">Avg Pitch Pos: (${node.x}m, ${node.y}m)</div>
+                                `;
+                                tooltip.style.display = 'block';
+                                updateTooltipPos(e);
+                            }
+                        });
+                        g.addEventListener('mousemove', (e) => updateTooltipPos(e));
+                        g.addEventListener('mouseleave', () => {
+                            if (tooltip) tooltip.style.display = 'none';
+                        });
+                        g.addEventListener('click', () => {
+                            const pShot = shotsData.find(s => s.player && s.player.includes(node.name));
+                            if (pShot && pShot.frame_idx != null) {
+                                seekVideoToFrame(pShot.frame_idx);
+                            }
+                        });
+
+                        netNodeGroup.appendChild(g);
+                    });
+                });
+            }
+
+            // 3. Team Shape & Convex Hull Rendering
+            function renderTeamShape(teamFilter) {
+                if (!hullGroup || !tacticalData) return;
+                hullGroup.innerHTML = '';
+
+                const sidesToRender = teamFilter === 'both' ? ['home', 'away'] : [teamFilter];
+
+                const homeAreaEl = document.getElementById('hud-home-area');
+                const awayAreaEl = document.getElementById('hud-away-area');
+                const homeDimEl = document.getElementById('hud-home-dim');
+                const awayDimEl = document.getElementById('hud-away-dim');
+
+                if (tacticalData.home && tacticalData.home.shape) {
+                    const hs = tacticalData.home.shape;
+                    if (homeAreaEl) homeAreaEl.textContent = `${hs.area_sqm} m²`;
+                    if (homeDimEl) homeDimEl.textContent = `${hs.length_m}m × ${hs.width_m}m`;
+                }
+                if (tacticalData.away && tacticalData.away.shape) {
+                    const as = tacticalData.away.shape;
+                    if (awayAreaEl) awayAreaEl.textContent = `${as.area_sqm} m²`;
+                    if (awayDimEl) awayDimEl.textContent = `${as.length_m}m × ${as.width_m}m`;
+                }
+
+                sidesToRender.forEach(side => {
+                    const tData = tacticalData[side];
+                    if (!tData || !tData.shape || !tData.shape.hull_vertices) return;
+
+                    const teamColor = side === 'home' ? homeColor : awayColor;
+                    const shape = tData.shape;
+
+                    const ptsStr = shape.hull_vertices.map(v => {
+                        const p = pitchToSvg(v.x, v.y);
+                        return `${p.x},${p.y}`;
+                    }).join(' ');
+
+                    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                    poly.setAttribute('points', ptsStr);
+                    poly.setAttribute('fill', teamColor);
+                    poly.setAttribute('fill-opacity', '0.22');
+                    poly.setAttribute('stroke', teamColor);
+                    poly.setAttribute('stroke-width', '2.5');
+                    poly.setAttribute('stroke-dasharray', '6,4');
+                    poly.setAttribute('class', 'tactical-hull-poly');
+                    hullGroup.appendChild(poly);
+
+                    // Centroid Marker
+                    const cPt = pitchToSvg(shape.centroid.x, shape.centroid.y);
+
+                    const cCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    cCircle.setAttribute('cx', cPt.x);
+                    cCircle.setAttribute('cy', cPt.y);
+                    cCircle.setAttribute('r', '6');
+                    cCircle.setAttribute('fill', '#ffffff');
+                    cCircle.setAttribute('stroke', teamColor);
+                    cCircle.setAttribute('stroke-width', '2.5');
+                    hullGroup.appendChild(cCircle);
+
+                    const cRing = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    cRing.setAttribute('cx', cPt.x);
+                    cRing.setAttribute('cy', cPt.y);
+                    cRing.setAttribute('r', '13');
+                    cRing.setAttribute('fill', 'none');
+                    cRing.setAttribute('stroke', teamColor);
+                    cRing.setAttribute('stroke-width', '1.5');
+                    cRing.setAttribute('stroke-dasharray', '3,3');
+                    cRing.setAttribute('stroke-opacity', '0.7');
+                    hullGroup.appendChild(cRing);
+
+                    const cText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    cText.setAttribute('x', cPt.x);
+                    cText.setAttribute('y', cPt.y - 14);
+                    cText.setAttribute('text-anchor', 'middle');
+                    cText.setAttribute('fill', '#ffffff');
+                    cText.setAttribute('font-size', '10.5');
+                    cText.setAttribute('font-weight', '700');
+                    cText.setAttribute('font-family', 'sans-serif');
+                    cText.textContent = `${side === 'home' ? homeShort : awayShort} Centroid`;
+                    hullGroup.appendChild(cText);
+
+                    // Player node positions inside the hull
+                    if (tData.nodes) {
+                        tData.nodes.forEach(node => {
+                            const pt = pitchToSvg(node.x, node.y);
+                            const nCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                            nCircle.setAttribute('cx', pt.x);
+                            nCircle.setAttribute('cy', pt.y);
+                            nCircle.setAttribute('r', '5');
+                            nCircle.setAttribute('fill', teamColor);
+                            nCircle.setAttribute('stroke', '#ffffff');
+                            nCircle.setAttribute('stroke-width', '1.5');
+                            hullGroup.appendChild(nCircle);
+
+                            const nLbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                            nLbl.setAttribute('x', pt.x);
+                            nLbl.setAttribute('y', pt.y + 12);
+                            nLbl.setAttribute('text-anchor', 'middle');
+                            nLbl.setAttribute('fill', 'rgba(255,255,255,0.8)');
+                            nLbl.setAttribute('font-size', '9');
+                            nLbl.setAttribute('font-weight', '600');
+                            nLbl.setAttribute('font-family', 'sans-serif');
+                            nLbl.textContent = `#${node.jersey || ''}`;
+                            hullGroup.appendChild(nLbl);
+                        });
+                    }
+                });
+            }
+
+            window.setPitchMode = function(mode) {
+                currentMode = mode;
+                clearLayers();
+
+                document.querySelectorAll('.pitch-mode-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.mode === mode);
+                });
+
+                const shotsFilters = document.getElementById('subfilters-shots');
+                const tacticalFilters = document.getElementById('subfilters-tactical');
+                const shotsLegend = document.getElementById('hud-shots-legend');
+                const passesLegend = document.getElementById('hud-passes-legend');
+                const shapeMetrics = document.getElementById('hud-shape-metrics');
+                const shotsList = document.getElementById('shots-list-container');
+                const caption = document.getElementById('tactical-mode-caption');
+
+                if (shotsFilters) shotsFilters.style.display = mode === 'shots' ? 'flex' : 'none';
+                if (tacticalFilters) tacticalFilters.style.display = mode !== 'shots' ? 'flex' : 'none';
+                if (shotsLegend) shotsLegend.style.display = mode === 'shots' ? 'flex' : 'none';
+                if (passesLegend) passesLegend.style.display = mode === 'passes' ? 'flex' : 'none';
+                if (shapeMetrics) shapeMetrics.style.display = mode === 'shape' ? 'grid' : 'none';
+                if (shotsList) shotsList.style.display = mode === 'shots' ? 'block' : 'none';
+
+                if (mode === 'shots') {
+                    if (caption) caption.textContent = 'Shot trajectories & xG model derived from computer vision tracking.';
+                    renderShots(shotFilter);
+                } else if (mode === 'passes') {
+                    if (caption) caption.textContent = 'Passing network based on average pitch coordinates and pair pass frequencies.';
+                    renderPassingNetwork(tacticalFilter);
+                } else if (mode === 'shape') {
+                    if (caption) caption.textContent = 'Team tactical shape, length, width, and outfield convex hull compactness.';
+                    renderTeamShape(tacticalFilter);
+                }
+            };
+
+            window.setTacticalTeamFilter = function(tFilter) {
+                tacticalFilter = tFilter;
+                document.querySelectorAll('#subfilters-tactical .shot-filter-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.tfilter === tFilter);
+                });
+                if (currentMode === 'passes') {
+                    renderPassingNetwork(tacticalFilter);
+                } else if (currentMode === 'shape') {
+                    renderTeamShape(tacticalFilter);
+                }
+            };
+
+            document.querySelectorAll('.shot-row').forEach(row => {
+                const idx = parseInt(row.getAttribute('data-shot-index'), 10);
+                row.addEventListener('mouseenter', () => {
+                    if (currentMode !== 'shots') return;
+                    const node = document.querySelector(`.shot-node-${idx}`);
+                    if (node && pitchWrapper) {
+                        const nodeRect = node.getBoundingClientRect();
+                        highlightShot(idx, {
+                            clientX: nodeRect.left + nodeRect.width / 2,
+                            clientY: nodeRect.top + nodeRect.height / 2
+                        });
+                    }
+                });
+                row.addEventListener('mouseleave', () => {
+                    if (currentMode === 'shots') unhighlightShot(idx);
+                });
+                row.addEventListener('click', () => {
+                    const shot = shotsData[idx];
+                    if (shot && shot.frame_idx != null) {
+                        seekVideoToFrame(shot.frame_idx);
+                    }
+                });
+            });
+
+            document.querySelectorAll('#subfilters-shots .shot-filter-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('#subfilters-shots .shot-filter-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    shotFilter = btn.dataset.filter;
+                    renderShots(shotFilter);
+                    document.querySelectorAll('.shot-row').forEach(row => {
+                        const side = row.dataset.side;
+                        const outcome = row.dataset.outcome;
+                        if (shotFilter === 'all') row.style.display = '';
+                        else if (shotFilter === 'home') row.style.display = side === 'home' ? '' : 'none';
+                        else if (shotFilter === 'away') row.style.display = side === 'away' ? '' : 'none';
+                        else if (shotFilter === 'goal') row.style.display = outcome === 'goal' ? '' : 'none';
+                    });
+                });
+            });
+
+            renderShots('all');
+        })();
+
+        // --- Export Dropdown Controller ---
+        function toggleExportMenu(e) {
+            e.stopPropagation();
+            const menu = document.getElementById('export-dropdown-menu');
+            if (menu) menu.classList.toggle('show');
+        }
+        document.addEventListener('click', (e) => {
+            const menu = document.getElementById('export-dropdown-menu');
+            if (menu && !menu.contains(e.target)) {
+                menu.classList.remove('show');
+            }
+        });
     </script>
 </body>
 </html>

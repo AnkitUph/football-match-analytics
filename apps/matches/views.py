@@ -13,7 +13,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import IntegrityError, transaction
-from django.http import HttpResponse, HttpResponseBadRequest, JsonResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseBadRequest, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from apps.analytics.models import TeamStatistics
@@ -432,8 +432,19 @@ def _load_real_stats_by_jersey(files_obj):
         stats = {
             "distance_km": distance_km,
             "passes_completed": _safe_int(row.get("passes_completed")),
+            "passes_attempted": _safe_int(row.get("passes_attempted")),
+            "pass_accuracy": _safe_float(row.get("pass_accuracy")),
             "shots": _safe_int(row.get("shots")),
+            "shots_on_target": _safe_int(row.get("shots_on_target")),
             "xg": _safe_float(row.get("xg")),
+            "top_speed": _safe_float(row.get("top_speed")),
+            "average_speed": _safe_float(row.get("average_speed")),
+            "tackles": _safe_int(row.get("tackles")),
+            "interceptions": _safe_int(row.get("interceptions")),
+            "clearances": _safe_int(row.get("clearances")),
+            "dribbles_completed": _safe_int(row.get("dribbles_completed")),
+            "key_passes": _safe_int(row.get("key_passes")),
+            "rating": _safe_float(row.get("rating"), default=6.0),
             "is_confirmed": True,
         }
 
@@ -543,23 +554,64 @@ def _dummy_player_rows(rng, lineup_qs, team, real_stats_by_jersey=None, real_goa
         real_stats = real_stats_by_jersey.get(jersey_number)
         if real_stats is not None:
             distance_km = round(real_stats["distance_km"], 2)
-            # Overrides the dummy figures computed above — but
-            # passes_attempted/pass_accuracy and shots_on_target stay
-            # dummy on purpose (see this function's docstring: no real
-            # counterpart exists for either to pair with).
             passes_completed = real_stats["passes_completed"]
+            passes_attempted = real_stats["passes_attempted"]
+            pass_accuracy = real_stats["pass_accuracy"]
             shots = real_stats["shots"]
+            shots_on_target = real_stats["shots_on_target"]
             xg = real_stats["xg"]
+            top_speed = real_stats["top_speed"]
+            average_speed = real_stats["average_speed"]
+            tackles = real_stats["tackles"]
+            interceptions = real_stats["interceptions"]
+            clearances = real_stats["clearances"]
+            dribbles_completed = real_stats["dribbles_completed"]
+            key_passes = real_stats["key_passes"]
+            rating = real_stats["rating"]
+
             distance_confirmed = real_stats["is_confirmed"]
+            distance_is_real = True
             passes_completed_is_real = True
+            passes_attempted_is_real = True
+            pass_accuracy_is_real = True
             shots_is_real = True
+            shots_on_target_is_real = True
             xg_is_real = True
+            top_speed_is_real = True
+            average_speed_is_real = True
+            tackles_is_real = True
+            interceptions_is_real = True
+            clearances_is_real = True
+            dribbles_completed_is_real = True
+            key_passes_is_real = True
+            rating_is_real = True
         else:
             distance_km = round(rng.uniform(7.5, 11.8), 2)
+            top_speed = round(rng.uniform(24, 34), 1)
+            average_speed = round(rng.uniform(7, 11), 1)
+            tackles = rng.randint(0, 6)
+            interceptions = rng.randint(0, 5)
+            clearances = rng.randint(0, 8) if position in ("DEF", "GK") else rng.randint(0, 2)
+            dribbles_completed = rng.randint(0, 5)
+            key_passes = rng.randint(0, 4)
+            rating = round(rng.uniform(5.8, 8.9), 1)
+
             distance_confirmed = False
+            distance_is_real = False
             passes_completed_is_real = False
+            passes_attempted_is_real = False
+            pass_accuracy_is_real = False
             shots_is_real = False
+            shots_on_target_is_real = False
             xg_is_real = False
+            top_speed_is_real = False
+            average_speed_is_real = False
+            tackles_is_real = False
+            interceptions_is_real = False
+            clearances_is_real = False
+            dribbles_completed_is_real = False
+            key_passes_is_real = False
+            rating_is_real = False
 
         if real_goals_by_lineup_id is not None:
             # A dict (even empty) means at least one goal has been
@@ -588,28 +640,39 @@ def _dummy_player_rows(rng, lineup_qs, team, real_stats_by_jersey=None, real_goa
             "shots": shots,
             "shots_is_real": shots_is_real,
             "shots_on_target": shots_on_target,
+            "shots_on_target_is_real": shots_on_target_is_real,
             "passes_attempted": passes_attempted,
+            "passes_attempted_is_real": passes_attempted_is_real,
             "passes_completed": passes_completed,
+            "passes_completed_is_real": passes_completed_is_real,
             "pass_accuracy": pass_accuracy,
-            "key_passes": rng.randint(0, 4),
-            "dribbles_completed": rng.randint(0, 5),
-            "tackles": rng.randint(0, 6),
-            "interceptions": rng.randint(0, 5),
-            "clearances": rng.randint(0, 8) if position in ("DEF", "GK") else rng.randint(0, 2),
+            "pass_accuracy_is_real": pass_accuracy_is_real,
+            "key_passes": key_passes,
+            "key_passes_is_real": key_passes_is_real,
+            "dribbles_completed": dribbles_completed,
+            "dribbles_completed_is_real": dribbles_completed_is_real,
+            "tackles": tackles,
+            "tackles_is_real": tackles_is_real,
+            "interceptions": interceptions,
+            "interceptions_is_real": interceptions_is_real,
+            "clearances": clearances,
+            "clearances_is_real": clearances_is_real,
             "fouls_committed": rng.randint(0, 4),
             "fouls_suffered": rng.randint(0, 4),
             "yellow_cards": rng.choice([0, 0, 0, 0, 1]),
             "red_cards": 0,
             "offsides": rng.randint(0, 3) if position == "FWD" else 0,
             "distance_km": distance_km,
-            "distance_is_real": real_stats is not None,
+            "distance_is_real": distance_is_real,
             "distance_confirmed": distance_confirmed,
-            "passes_completed_is_real": passes_completed_is_real,
-            "top_speed": round(rng.uniform(24, 34), 1),
-            "average_speed": round(rng.uniform(7, 11), 1),
+            "top_speed": top_speed,
+            "top_speed_is_real": top_speed_is_real,
+            "average_speed": average_speed,
+            "average_speed_is_real": average_speed_is_real,
             "xg": xg,
             "xg_is_real": xg_is_real,
-            "rating": round(rng.uniform(5.8, 8.9), 1),
+            "rating": rating,
+            "rating_is_real": rating_is_real,
         })
     return rows
 
@@ -1268,6 +1331,12 @@ def identify_players_save(request, public_id):
             for track_id, lineup_entry_id, is_auto_assigned in to_create
         ])
 
+    try:
+        from apps.analytics.services import sync_player_statistics
+        sync_player_statistics(match)
+    except Exception:
+        pass
+
     # Regenerate the PDF report so it reflects these confirmations —
     # previously missing entirely: generate_match_report was only
     # triggered from process_match/compute_pitch_mapping, so a report
@@ -1361,6 +1430,12 @@ def add_goal(request, public_id):
         _recompute_match_score(match)
 
     try:
+        from apps.analytics.services import sync_player_statistics
+        sync_player_statistics(match)
+    except Exception:
+        pass
+
+    try:
         from apps.reports.generator import generate_match_report
         generate_match_report(match)
     except Exception:
@@ -1380,6 +1455,12 @@ def delete_goal(request, public_id, goal_id):
     with transaction.atomic():
         goal.delete()
         _recompute_match_score(match)
+
+    try:
+        from apps.analytics.services import sync_player_statistics
+        sync_player_statistics(match)
+    except Exception:
+        pass
 
     try:
         from apps.reports.generator import generate_match_report
@@ -1445,8 +1526,19 @@ def _load_real_stats_by_assignment(match, files_obj):
         stats = {
             "distance_km": distance_km,
             "passes_completed": _safe_int(row.get("passes_completed")),
+            "passes_attempted": _safe_int(row.get("passes_attempted")),
+            "pass_accuracy": _safe_float(row.get("pass_accuracy")),
             "shots": _safe_int(row.get("shots")),
+            "shots_on_target": _safe_int(row.get("shots_on_target")),
             "xg": _safe_float(row.get("xg")),
+            "top_speed": _safe_float(row.get("top_speed")),
+            "average_speed": _safe_float(row.get("average_speed")),
+            "tackles": _safe_int(row.get("tackles")),
+            "interceptions": _safe_int(row.get("interceptions")),
+            "clearances": _safe_int(row.get("clearances")),
+            "dribbles_completed": _safe_int(row.get("dribbles_completed")),
+            "key_passes": _safe_int(row.get("key_passes")),
+            "rating": _safe_float(row.get("rating"), default=6.0),
             "is_confirmed": not ident.is_auto_assigned,
         }
 
@@ -1457,6 +1549,428 @@ def _load_real_stats_by_assignment(match, files_obj):
             away_by_jersey[lineup_entry.jersey_number] = stats
 
     return home_by_jersey, away_by_jersey
+
+
+def _load_real_shots(match, files_obj):
+    """
+    Loads detected shots from MatchFiles.shots_csv.
+    Pairs track_id with TrackPlayerIdentification to identify the shooter
+    (marked player_inferred=True).
+    """
+    shots = []
+    if not files_obj or not files_obj.shots_csv:
+        return shots
+
+    assignments = {
+        ident.track_id: ident.lineup_entry
+        for ident in TrackPlayerIdentification.objects.filter(match=match).select_related("lineup_entry")
+    }
+
+    try:
+        with files_obj.shots_csv.open("rb") as f:
+            reader = csv.DictReader(io.StringIO(f.read().decode("utf-8")))
+            for row in reader:
+                track_id = _safe_int(row.get("track_id"))
+                lineup_entry = assignments.get(track_id)
+                team_val = row.get("team", "")
+
+                if lineup_entry:
+                    side = "home" if lineup_entry.side == MatchLineup.Side.HOME else "away"
+                    player_label = f"#{lineup_entry.jersey_number} {lineup_entry.player_name}"
+                else:
+                    side = "home" if team_val == "team_a" else "away"
+                    team_obj = match.home_team if side == "home" else match.away_team
+                    player_label = f"{team_obj.short_name} Player"
+
+                xg_val = _safe_float(row.get("xg"))
+                dist_val = _safe_float(row.get("distance_m"))
+                speed_val = _safe_float(row.get("speed_mps"))
+                minute_val = _safe_int(row.get("minute"), default=1)
+
+                is_on_target = row.get("is_on_target", "").lower() in ("true", "1")
+                outcome = row.get("outcome") or ("On Target" if is_on_target else "Off Target")
+
+                shots.append({
+                    "frame_idx": _safe_int(row.get("frame_idx")),
+                    "minute": minute_val,
+                    "player": player_label,
+                    "player_inferred": True,
+                    "side": side,
+                    "xg": xg_val,
+                    "outcome": outcome,
+                    "is_on_target": is_on_target,
+                    "pitch_x": _safe_float(row.get("pitch_x")),
+                    "pitch_y": _safe_float(row.get("pitch_y")),
+                    "target_goal_x": _safe_float(row.get("target_goal_x")),
+                    "target_goal_y": _safe_float(row.get("target_goal_y")),
+                    "distance_m": dist_val,
+                    "speed_mps": speed_val,
+                })
+    except Exception:
+        logger.exception("Failed to parse shots_csv for match=%s", match.id)
+
+    return shots
+
+
+def _load_real_passes(match, files_obj):
+    """
+    Loads detected passes from MatchFiles.passes_csv.
+    Pairs passer_track_id and receiver_track_id with TrackPlayerIdentification
+    to identify the passer and receiver.
+    """
+    passes = []
+    if not files_obj or not files_obj.passes_csv:
+        return passes
+
+    assignments = {
+        ident.track_id: ident.lineup_entry
+        for ident in TrackPlayerIdentification.objects.filter(match=match).select_related("lineup_entry")
+    }
+
+    try:
+        with files_obj.passes_csv.open("rb") as f:
+            reader = csv.DictReader(io.StringIO(f.read().decode("utf-8")))
+            for row in reader:
+                passer_tid = _safe_int(row.get("passer_track_id"))
+                receiver_tid = _safe_int(row.get("receiver_track_id"))
+                passer_entry = assignments.get(passer_tid)
+                receiver_entry = assignments.get(receiver_tid)
+                passer_team_val = row.get("passer_team", "")
+
+                if passer_entry:
+                    side = "home" if passer_entry.side == MatchLineup.Side.HOME else "away"
+                    passer_label = f"#{passer_entry.jersey_number} {passer_entry.player_name}"
+                else:
+                    side = "home" if passer_team_val == "team_a" else "away"
+                    team_obj = match.home_team if side == "home" else match.away_team
+                    passer_label = f"{team_obj.short_name} Player"
+
+                if receiver_entry:
+                    receiver_label = f"#{receiver_entry.jersey_number} {receiver_entry.player_name}"
+                elif receiver_tid:
+                    rec_side = "home" if row.get("receiver_team", "") == "team_a" else "away"
+                    rec_team_obj = match.home_team if rec_side == "home" else match.away_team
+                    receiver_label = f"{rec_team_obj.short_name} Player"
+                else:
+                    receiver_label = "Incomplete / Intercepted"
+
+                is_completed = str(row.get("is_completed", "")).strip().lower() in ("true", "1")
+
+                passes.append({
+                    "frame_idx": _safe_int(row.get("frame_idx")),
+                    "start_frame": _safe_int(row.get("start_frame")),
+                    "minute": _safe_int(row.get("minute"), default=1),
+                    "passer": passer_label,
+                    "passer_track_id": passer_tid,
+                    "receiver": receiver_label,
+                    "receiver_track_id": receiver_tid,
+                    "side": side,
+                    "start_x": _safe_float(row.get("start_x")),
+                    "start_y": _safe_float(row.get("start_y")),
+                    "end_x": _safe_float(row.get("end_x")),
+                    "end_y": _safe_float(row.get("end_y")),
+                    "distance_m": _safe_float(row.get("distance_m")),
+                    "speed_mps": _safe_float(row.get("speed_mps")),
+                    "is_completed": is_completed,
+                })
+    except Exception:
+        logger.exception("Failed to parse passes_csv for match=%s", match.id)
+
+    return passes
+
+
+def _load_team_defensive_stats(files_obj):
+    """
+    Computes total tackles, interceptions, clearances for home (team_a) and away (team_b)
+    from files_obj.player_stats_csv.
+    """
+    totals = {
+        "home": {"tackles": 0, "interceptions": 0, "clearances": 0},
+        "away": {"tackles": 0, "interceptions": 0, "clearances": 0},
+    }
+    if not files_obj or not files_obj.player_stats_csv:
+        return totals
+
+    try:
+        with files_obj.player_stats_csv.open("rb") as f:
+            reader = csv.DictReader(io.StringIO(f.read().decode("utf-8")))
+            for row in reader:
+                team_key = "home" if row.get("team") == "team_a" else "away" if row.get("team") == "team_b" else None
+                if not team_key:
+                    continue
+                totals[team_key]["tackles"] += _safe_int(row.get("tackles"))
+                totals[team_key]["interceptions"] += _safe_int(row.get("interceptions"))
+                totals[team_key]["clearances"] += _safe_int(row.get("clearances"))
+    except Exception:
+        logger.exception("Failed to parse player_stats_csv for defensive totals")
+
+    return totals
+
+
+def _compute_tactical_pitch_data(match, files_obj, using_real_stats, home_players, away_players):
+    """
+    Computes passing networks and team shape (convex hull, compactness area,
+    length, width, centroid) for Home and Away teams.
+    """
+    import numpy as np
+    from scipy.spatial import ConvexHull
+
+    def build_fallback_team_tactical(players, side, match_seed):
+        rng = random.Random(f"{match_seed}_{side}_tactics")
+        dir_mult = 1.0 if side == "home" else -1.0
+
+        pos_templates = {
+            "GK": [(-44.0 * dir_mult, 0.0)],
+            "DEF": [
+                (-28.0 * dir_mult, -20.0),
+                (-30.0 * dir_mult, -7.0),
+                (-30.0 * dir_mult, 7.0),
+                (-28.0 * dir_mult, 20.0),
+            ],
+            "MID": [
+                (-15.0 * dir_mult, -14.0),
+                (-12.0 * dir_mult, 0.0),
+                (-15.0 * dir_mult, 14.0),
+            ],
+            "FWD": [
+                (12.0 * dir_mult, -18.0),
+                (16.0 * dir_mult, 0.0),
+                (12.0 * dir_mult, 18.0),
+            ],
+        }
+
+        pos_counters = {"GK": 0, "DEF": 0, "MID": 0, "FWD": 0}
+        nodes = []
+        for p in players:
+            pos_type = p.get("position", "MID")
+            if pos_type not in pos_templates:
+                pos_type = "MID"
+            idx = pos_counters[pos_type]
+            pos_counters[pos_type] += 1
+            if idx < len(pos_templates[pos_type]):
+                base_x, base_y = pos_templates[pos_type][idx]
+            else:
+                base_x = rng.uniform(-15.0, 15.0) * dir_mult
+                base_y = rng.uniform(-22.0, 22.0)
+
+            jitter_x = rng.uniform(-2.0, 2.0)
+            jitter_y = rng.uniform(-2.0, 2.0)
+            node_x = round(base_x + jitter_x, 2)
+            node_y = round(base_y + jitter_y, 2)
+
+            nodes.append({
+                "id": p.get("jersey_number") or p.get("name"),
+                "jersey": p.get("jersey_number"),
+                "name": p.get("name"),
+                "position": pos_type,
+                "x": node_x,
+                "y": node_y,
+                "is_tracked": False,
+                "passes_made": rng.randint(18, 55),
+                "passes_received": rng.randint(15, 50),
+            })
+
+        links = []
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                n1, n2 = nodes[i], nodes[j]
+                d = ((n1["x"] - n2["x"])**2 + (n1["y"] - n2["y"])**2)**0.5
+                if d < 28.0:
+                    p_count = rng.randint(3, 14)
+                    links.append({
+                        "source": n1["id"],
+                        "target": n2["id"],
+                        "source_name": n1["name"],
+                        "target_name": n2["name"],
+                        "count": p_count,
+                        "completed": int(p_count * rng.uniform(0.8, 0.95)),
+                        "first_frame": rng.randint(50, 600),
+                    })
+
+        outfield = [n for n in nodes if n["position"] != "GK"]
+        if len(outfield) >= 3:
+            pts = np.array([[n["x"], n["y"]] for n in outfield])
+            try:
+                hull = ConvexHull(pts)
+                hull_verts = [{"x": round(float(pts[v, 0]), 2), "y": round(float(pts[v, 1]), 2)} for v in hull.vertices]
+                centroid = {
+                    "x": round(float(np.mean(pts[:, 0])), 2),
+                    "y": round(float(np.mean(pts[:, 1])), 2),
+                }
+                shape = {
+                    "hull_vertices": hull_verts,
+                    "centroid": centroid,
+                    "length_m": round(float(np.ptp(pts[:, 0])), 1),
+                    "width_m": round(float(np.ptp(pts[:, 1])), 1),
+                    "area_sqm": round(float(hull.volume), 1),
+                }
+            except Exception:
+                shape = None
+        else:
+            shape = None
+
+        return {
+            "nodes": nodes,
+            "links": links,
+            "shape": shape,
+            "is_real": False,
+        }
+
+    if not files_obj or not files_obj.player_tracking_csv:
+        return {
+            "home": build_fallback_team_tactical(home_players, "home", str(match.public_id)),
+            "away": build_fallback_team_tactical(away_players, "away", str(match.public_id)),
+        }
+
+    track_pts = defaultdict(list)
+    try:
+        with files_obj.player_tracking_csv.open("rb") as pf:
+            for r in csv.DictReader(io.StringIO(pf.read().decode("utf-8"))):
+                px = r.get("pitch_x") if r.get("pitch_x") is not None else r.get("x")
+                py = r.get("pitch_y") if r.get("pitch_y") is not None else r.get("y")
+                if px not in (None, "") and py not in (None, ""):
+                    tid = _safe_int(r.get("track_id"))
+                    if tid is not None:
+                        track_pts[tid].append((float(px), float(py)))
+    except Exception:
+        logger.exception("Failed to parse player_tracking_csv for tactical data")
+
+    pass_pair_counts = defaultdict(lambda: {"count": 0, "completed": 0, "first_frame": 999999})
+    passes_made_by_tid = defaultdict(int)
+    passes_rec_by_tid = defaultdict(int)
+    if files_obj.passes_csv:
+        try:
+            with files_obj.passes_csv.open("rb") as pf:
+                for r in csv.DictReader(io.StringIO(pf.read().decode("utf-8"))):
+                    p_tid = _safe_int(r.get("passer_track_id"))
+                    r_tid = _safe_int(r.get("receiver_track_id"))
+                    is_comp = str(r.get("is_completed", "")).strip().lower() in ("true", "1")
+                    frame = _safe_int(r.get("frame_idx"))
+                    if p_tid:
+                        passes_made_by_tid[p_tid] += 1
+                    if r_tid:
+                        passes_rec_by_tid[r_tid] += 1
+                    if p_tid and r_tid and p_tid != r_tid:
+                        key = (p_tid, r_tid)
+                        pass_pair_counts[key]["count"] += 1
+                        if is_comp:
+                            pass_pair_counts[key]["completed"] += 1
+                        if frame < pass_pair_counts[key]["first_frame"]:
+                            pass_pair_counts[key]["first_frame"] = frame
+        except Exception:
+            logger.exception("Failed to parse passes_csv for tactical links")
+
+    home_nodes, away_nodes = [], []
+    for ident in TrackPlayerIdentification.objects.filter(match=match).select_related("lineup_entry"):
+        entry = ident.lineup_entry
+        tid = ident.track_id
+        pts = track_pts.get(tid, [])
+        is_tracked = len(pts) >= 5
+
+        dir_mult = 1.0 if entry.side == MatchLineup.Side.HOME else -1.0
+        if is_tracked:
+            avg_x = round(float(np.mean([p[0] for p in pts])), 2)
+            avg_y = round(float(np.mean([p[1] for p in pts])), 2)
+        else:
+            def_pos = {"GK": -42.0, "DEF": -28.0, "MID": -12.0, "FWD": 14.0}.get(entry.position, -10.0)
+            avg_x = round(def_pos * dir_mult, 2)
+            avg_y = 0.0
+
+        node = {
+            "id": tid,
+            "track_id": tid,
+            "lineup_id": entry.id,
+            "name": entry.player_name,
+            "jersey": entry.jersey_number,
+            "position": entry.position,
+            "x": avg_x,
+            "y": avg_y,
+            "is_tracked": is_tracked,
+            "passes_made": passes_made_by_tid.get(tid, 0),
+            "passes_received": passes_rec_by_tid.get(tid, 0),
+            "samples": len(pts),
+        }
+        if entry.side == MatchLineup.Side.HOME:
+            home_nodes.append(node)
+        else:
+            away_nodes.append(node)
+
+    def compute_team_shape(nodes):
+        if not nodes:
+            return None
+        tracked_nodes = [n for n in nodes if n.get("is_tracked")]
+        outfield = [n for n in tracked_nodes if n.get("position") != "GK"]
+        pts_to_use = outfield if len(outfield) >= 3 else tracked_nodes
+        if len(pts_to_use) < 3:
+            outfield_all = [n for n in nodes if n.get("position") != "GK"]
+            pts_to_use = outfield_all if len(outfield_all) >= 3 else nodes
+        if len(pts_to_use) < 3:
+            return None
+
+        pts = np.array([[n["x"], n["y"]] for n in pts_to_use])
+        try:
+            hull = ConvexHull(pts)
+            hull_verts = [{"x": round(float(pts[v, 0]), 2), "y": round(float(pts[v, 1]), 2)} for v in hull.vertices]
+            centroid = {
+                "x": round(float(np.mean(pts[:, 0])), 2),
+                "y": round(float(np.mean(pts[:, 1])), 2),
+            }
+            return {
+                "hull_vertices": hull_verts,
+                "centroid": centroid,
+                "length_m": round(float(np.ptp(pts[:, 0])), 1),
+                "width_m": round(float(np.ptp(pts[:, 1])), 1),
+                "area_sqm": round(float(hull.volume), 1),
+            }
+        except Exception:
+            return None
+
+    def extract_team_links(nodes):
+        node_ids = {n["id"] for n in nodes}
+        node_name_map = {n["id"]: n["name"] for n in nodes}
+        team_links = []
+        for (p_tid, r_tid), data in pass_pair_counts.items():
+            if p_tid in node_ids and r_tid in node_ids:
+                team_links.append({
+                    "source": p_tid,
+                    "target": r_tid,
+                    "source_name": node_name_map.get(p_tid, f"#{p_tid}"),
+                    "target_name": node_name_map.get(r_tid, f"#{r_tid}"),
+                    "count": data["count"],
+                    "completed": data["completed"],
+                    "first_frame": data["first_frame"] if data["first_frame"] < 999999 else 0,
+                })
+        return team_links
+
+    home_tracked_count = sum(1 for n in home_nodes if n.get("is_tracked"))
+    away_tracked_count = sum(1 for n in away_nodes if n.get("is_tracked"))
+
+    home_data = (
+        {
+            "nodes": home_nodes,
+            "links": extract_team_links(home_nodes),
+            "shape": compute_team_shape(home_nodes),
+            "is_real": home_tracked_count >= 3,
+        }
+        if len(home_nodes) >= 3
+        else build_fallback_team_tactical(home_players, "home", str(match.public_id))
+    )
+
+    away_data = (
+        {
+            "nodes": away_nodes,
+            "links": extract_team_links(away_nodes),
+            "shape": compute_team_shape(away_nodes),
+            "is_real": away_tracked_count >= 3,
+        }
+        if len(away_nodes) >= 3
+        else build_fallback_team_tactical(away_players, "away", str(match.public_id))
+    )
+
+    return {
+        "home": home_data,
+        "away": away_data,
+    }
 
 
 def build_match_report_context(match):
@@ -1475,29 +1989,12 @@ def build_match_report_context(match):
     home_lineup = match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number")
     away_lineup = match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number")
 
-    # Player-level stats always come from the dummy generator for now —
-    # real per-player goals/etc need full event detection (not built).
-    # Distance, completed passes, shots, and xg are partial exceptions:
-    # for a player a human manually identified (see /identify/ page and
-    # TrackPlayerIdentification), these come from real pitch-mapped
-    # tracking / event detection (see _load_real_stats_by_jersey's
-    # docstring for exactly what's real vs. inferred within that set).
-    # Jersey-OCR-based stats are also checked as a fallback, in case OCR
-    # is ever re-enabled on higher-resolution footage where it's
-    # actually viable (see ai_engine/stage3_team_reid/jersey_ocr.py) —
-    # manual assignment takes priority when both exist. Everything
-    # else on a player's row is still the Phase 5 dummy generator's output.
     files_obj = getattr(match, "files", None)
     home_stats_ocr, away_stats_ocr = _load_real_stats_by_jersey(files_obj)
     home_stats_manual, away_stats_manual = _load_real_stats_by_assignment(match, files_obj)
     home_stats_by_jersey = {**home_stats_ocr, **home_stats_manual}
     away_stats_by_jersey = {**away_stats_ocr, **away_stats_manual}
 
-    # Goals are a separate real-data source from the CV-pipeline CSV
-    # fields above — see MatchGoal's docstring and _dummy_player_rows'
-    # real_goals_by_lineup_id param. One shared dict works for both
-    # sides since lineup_entry_id (== MatchGoal.scorer_id) is already
-    # unique per match regardless of side.
     match_goals = list(MatchGoal.objects.filter(match=match).select_related("scorer", "team"))
     if match_goals:
         goals_by_lineup_id = defaultdict(int)
@@ -1511,10 +2008,6 @@ def build_match_report_context(match):
     away_players = _dummy_player_rows(rng, away_lineup, match.away_team, away_stats_by_jersey, goals_by_lineup_id)
 
     # --- Team-level stats: real if this match has them, dummy otherwise ---
-    # TeamStatistics only gets populated once a calibration exists for
-    # this match's footage (Stage 5 dependency) — a fresh upload won't
-    # have real rows yet, and will fall through to the dummy block
-    # below, same as every match did before Stage 7 existed.
     real_team_stats = {
         ts.team_id: ts
         for ts in TeamStatistics.objects.filter(match=match)
@@ -1532,15 +2025,28 @@ def build_match_report_context(match):
             home_possession = 50
         away_possession = 100 - home_possession
 
-        def real_team_stat_block(ts):
+        def_stats = _load_team_defensive_stats(files_obj)
+
+        def real_team_stat_block(ts, def_info=None):
+            def_info = def_info or {"tackles": 0, "interceptions": 0, "clearances": 0}
             if ts is None:
-                return {"shots": 0, "shots_on_target": 0, "passes": 0, "pass_accuracy": 0,
-                        "corners": 0, "fouls": 0, "yellow_cards": 0, "red_cards": 0,
-                        "xg": 0, "distance_km": 0}
+                return {
+                    "shots": 0, "shots_on_target": 0, "shot_accuracy": 0.0,
+                    "passes": 0, "passes_completed": 0, "passes_attempted": 0, "pass_accuracy": 0.0,
+                    "corners": 0, "fouls": 0, "yellow_cards": 0, "red_cards": 0,
+                    "xg": 0.0, "distance_km": 0.0, "average_speed": 0.0,
+                    "tackles": 0, "interceptions": 0, "clearances": 0,
+                }
+            s_count = ts.shots
+            sot_count = ts.shots_on_target
+            shot_acc = round(100.0 * sot_count / s_count, 1) if s_count > 0 else 0.0
             return {
-                "shots": ts.shots,
-                "shots_on_target": ts.shots_on_target,
+                "shots": s_count,
+                "shots_on_target": sot_count,
+                "shot_accuracy": shot_acc,
                 "passes": ts.passes_completed,
+                "passes_completed": ts.passes_completed,
+                "passes_attempted": ts.passes_attempted,
                 "pass_accuracy": round(ts.pass_accuracy, 1),
                 "corners": ts.corners,
                 "fouls": ts.fouls,
@@ -1548,31 +2054,25 @@ def build_match_report_context(match):
                 "red_cards": ts.red_cards,
                 "xg": round(ts.xg, 2),
                 "distance_km": round(ts.total_distance / 1000, 2),
+                "average_speed": round(ts.average_team_speed, 1),
+                "tackles": def_info["tackles"],
+                "interceptions": def_info["interceptions"],
+                "clearances": def_info["clearances"],
             }
 
-        team_stats = {"home": real_team_stat_block(home_ts), "away": real_team_stat_block(away_ts)}
+        team_stats = {
+            "home": real_team_stat_block(home_ts, def_stats["home"]),
+            "away": real_team_stat_block(away_ts, def_stats["away"]),
+        }
 
-        # Real heatmaps, generated on-demand from the saved CSV's
-        # pitch_x/pitch_y columns — no persisted image, no new model
-        # fields (see ai_engine/heatmap.py). None if this match's CSV
-        # predates the pitch columns, or has no in-calibration rows for
-        # a team yet (e.g. that team barely appears in the box-view
-        # segment) — the template falls back to the placeholder pitch.
         from ai_engine.heatmap import render_heatmap_png
 
         home_positions, away_positions = _load_pitch_positions_by_team(getattr(match, "files", None))
-        home_heatmap = render_heatmap_png(home_positions)
-        away_heatmap = render_heatmap_png(away_positions)
+        home_heatmap = render_heatmap_png(home_positions, attack_direction="right")
+        away_heatmap = render_heatmap_png(away_positions, attack_direction="left")
 
-        # No per-shot event data exists yet (that needs the events_csv/
-        # shots_csv model work discussed separately) — shots stays empty
-        # rather than dummy-filled when we ARE showing real team stats,
-        # so the page doesn't mix real aggregate numbers with fabricated
-        # shot-by-shot detail that contradicts them. Goals in the
-        # timeline ARE real, though — unlike shots, they're human-
-        # entered (MatchGoal), not auto-detected, so there's no
-        # fabrication risk in showing them here.
-        shots = []
+        shots = _load_real_shots(match, files_obj)
+        passes = _load_real_passes(match, files_obj)
         timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
         for g in match_goals:
             scorer_label = g.scorer.player_name if g.scorer else "Unknown scorer"
@@ -1581,6 +2081,12 @@ def build_match_report_context(match):
                 "minute": g.minute if g.minute is not None else "",
                 "type": "goal",
                 "description": f"Goal{og_label} — {scorer_label} ({g.team.short_name})",
+            })
+        for s in shots:
+            timeline.append({
+                "minute": s["minute"],
+                "type": "shot",
+                "description": f"Shot ({s['outcome']}) — {s['player']} (inferred, xG {s['xg']:.2f})",
             })
         timeline.append({"minute": 90, "type": "fulltime", "description": "Full Time"})
         timeline.sort(key=lambda e: e["minute"] if isinstance(e["minute"], int) else 999)
@@ -1592,17 +2098,28 @@ def build_match_report_context(match):
         away_possession = 100 - home_possession
 
         def team_stat_block():
+            att = rng.randint(350, 650)
+            comp = int(att * rng.uniform(0.75, 0.90))
+            s_count = rng.randint(8, 18)
+            sot_count = rng.randint(3, min(9, s_count))
             return {
-                "shots": rng.randint(8, 18),
-                "shots_on_target": rng.randint(3, 9),
-                "passes": rng.randint(300, 600),
-                "pass_accuracy": rng.randint(75, 90),
+                "shots": s_count,
+                "shots_on_target": sot_count,
+                "shot_accuracy": round(100.0 * sot_count / s_count, 1) if s_count > 0 else 0.0,
+                "passes": comp,
+                "passes_completed": comp,
+                "passes_attempted": att,
+                "pass_accuracy": round(100.0 * comp / att, 1),
                 "corners": rng.randint(2, 9),
                 "fouls": rng.randint(6, 14),
                 "yellow_cards": rng.randint(0, 4),
                 "red_cards": rng.choice([0, 0, 0, 0, 1]),
                 "xg": round(rng.uniform(0.8, 2.9), 2),
                 "distance_km": round(rng.uniform(105, 118), 1),
+                "average_speed": round(rng.uniform(6.5, 8.5), 1),
+                "tackles": rng.randint(12, 28),
+                "interceptions": rng.randint(8, 20),
+                "clearances": rng.randint(10, 25),
             }
 
         team_stats = {"home": team_stat_block(), "away": team_stat_block()}
@@ -1612,14 +2129,33 @@ def build_match_report_context(match):
         shots = []
         for _ in range(rng.randint(10, 18)):
             player, side = rng.choice(shot_pool)
+            if side == "home":
+                px = round(rng.uniform(18.0, 48.0), 1)
+                py = round(rng.uniform(-20.0, 20.0), 1)
+                tgx, tgy = 52.5, 0.0
+            else:
+                px = round(rng.uniform(-48.0, -18.0), 1)
+                py = round(rng.uniform(-20.0, 20.0), 1)
+                tgx, tgy = -52.5, 0.0
+            dist = round(((tgx - px)**2 + (tgy - py)**2)**0.5, 1)
+            speed = round(rng.uniform(16.0, 31.0), 1)
             shots.append({
+                "frame_idx": rng.randint(25, 750),
                 "minute": rng.randint(1, 90),
                 "player": player["name"],
                 "side": side,
                 "xg": round(rng.uniform(0.02, 0.75), 2),
                 "outcome": rng.choice(shot_outcomes),
+                "pitch_x": px,
+                "pitch_y": py,
+                "target_goal_x": tgx,
+                "target_goal_y": tgy,
+                "distance_m": dist,
+                "speed_mps": speed,
             })
         shots.sort(key=lambda s: s["minute"])
+
+        passes = []
 
         timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
         event_types = ["goal", "yellow_card", "red_card", "substitution"]
@@ -1642,6 +2178,17 @@ def build_match_report_context(match):
         timeline.append({"minute": 90, "type": "fulltime", "description": "Full Time"})
         timeline.sort(key=lambda e: e["minute"])
 
+    video_obj = getattr(match, "video", None)
+    annotated_video_url = None
+    original_video_url = None
+    if video_obj:
+        if video_obj.annotated_video:
+            annotated_video_url = video_obj.annotated_video.url
+        if video_obj.original_video:
+            original_video_url = video_obj.original_video.url
+
+    tactical_data = _compute_tactical_pitch_data(match, files_obj, using_real_stats, home_players, away_players)
+
     return {
         "match": match,
         "home_players": home_players,
@@ -1650,6 +2197,7 @@ def build_match_report_context(match):
         "away_possession": away_possession,
         "team_stats": team_stats,
         "shots": shots,
+        "passes": passes,
         "timeline": timeline,
         "using_real_stats": using_real_stats,
         "home_heatmap": home_heatmap,
@@ -1658,6 +2206,10 @@ def build_match_report_context(match):
         "match_goals": match_goals,
         "home_lineup": home_lineup,
         "away_lineup": away_lineup,
+        "annotated_video_url": annotated_video_url,
+        "original_video_url": original_video_url,
+        "has_video": bool(annotated_video_url or original_video_url),
+        "tactical_data": tactical_data,
     }
 
 
@@ -1684,7 +2236,8 @@ def player_heatmap(request, public_id, lineup_entry_id):
     positions = _load_pitch_positions_for_track(files_obj, ident.track_id)
 
     from ai_engine.heatmap import render_heatmap_png
-    png_b64 = render_heatmap_png(positions)
+    attack_dir = "right" if ident.lineup_entry.side == MatchLineup.Side.HOME else "left"
+    png_b64 = render_heatmap_png(positions, attack_direction=attack_dir)
     if png_b64 is None:
         return HttpResponseBadRequest("Not enough tracked positions for this player yet.")
 
@@ -1743,3 +2296,111 @@ def detect_kit_colors(request):
         os.unlink(tmp_path)
 
     return JsonResponse(result)
+
+
+@login_required
+def download_match_report_pdf(request, public_id):
+    """
+    Serves the publication-grade match report PDF for this match.
+    If the report does not exist yet (or if ?regenerate=1 is passed),
+    it generates it on-demand using generate_match_report().
+    """
+    match = get_object_or_404(Match, public_id=public_id)
+    report = Report.objects.filter(match=match, report_type=Report.ReportType.MATCH).first()
+    if not report or not report.pdf_file or request.GET.get("regenerate") == "1":
+        from apps.reports.generator import generate_match_report
+        report = generate_match_report(match)
+
+    if not report or not report.pdf_file:
+        raise Http404("Report PDF could not be generated.")
+
+    as_attachment = request.GET.get("download") == "1"
+    filename = f"{match.home_team.short_name}_vs_{match.away_team.short_name}_Match_Report.pdf"
+    return FileResponse(
+        report.pdf_file.open("rb"),
+        as_attachment=as_attachment,
+        filename=filename,
+        content_type="application/pdf",
+    )
+
+
+@login_required
+def export_match_json(request, public_id):
+    """
+    Exports comprehensive structured JSON match analytics, including
+    team statistics, possession, tactical coordinates, passing networks,
+    convex hull shapes, shots, passes, and lineups.
+    """
+    match = get_object_or_404(Match, public_id=public_id)
+    ctx = build_match_report_context(match)
+
+    payload = {
+        "match": {
+            "public_id": str(match.public_id),
+            "date": match.match_date.isoformat() if hasattr(match.match_date, "isoformat") else str(match.match_date),
+            "competition": match.competition or "",
+            "stadium": match.stadium or "",
+            "home_team": {
+                "name": match.home_team.name,
+                "short_name": match.home_team.short_name,
+                "score": match.home_score,
+            },
+            "away_team": {
+                "name": match.away_team.name,
+                "short_name": match.away_team.short_name,
+                "score": match.away_score,
+            },
+            "using_real_stats": ctx.get("using_real_stats", False),
+        },
+        "possession": {
+            "home": ctx.get("home_possession", 50.0),
+            "away": ctx.get("away_possession", 50.0),
+        },
+        "team_statistics": ctx.get("team_stats", {}),
+        "tactical_data": ctx.get("tactical_data", {}),
+        "shots": ctx.get("shots", []),
+        "passes": ctx.get("passes", []),
+        "lineups": {
+            "home": ctx.get("home_players", []),
+            "away": ctx.get("away_players", []),
+        },
+    }
+
+    response = JsonResponse(payload, json_dumps_params={"indent": 2})
+    if request.GET.get("download") == "1":
+        response["Content-Disposition"] = f'attachment; filename="{match.home_team.short_name}_vs_{match.away_team.short_name}_analytics.json"'
+    return response
+
+
+@login_required
+def export_match_csv(request, public_id, file_type):
+    """
+    Direct download endpoint for match computer-vision CSV artifacts:
+    tracking, passes, shots, events, ball, or player_stats.
+    """
+    match = get_object_or_404(Match, public_id=public_id)
+    files_obj = getattr(match, "files", None)
+    if not files_obj:
+        raise Http404("No tracking data files exist for this match.")
+
+    mapping = {
+        "tracking": (files_obj.player_tracking_csv, "player_tracking.csv"),
+        "passes": (files_obj.passes_csv, "passes.csv"),
+        "shots": (files_obj.shots_csv, "shots.csv"),
+        "events": (files_obj.events_csv, "events.csv"),
+        "ball": (files_obj.ball_tracking_csv, "ball_tracking.csv"),
+        "player_stats": (files_obj.player_stats_csv, "player_stats.csv"),
+    }
+
+    entry = mapping.get(file_type)
+    if not entry or not entry[0]:
+        raise Http404(f"Requested CSV '{file_type}' has not been generated for this match.")
+
+    csv_file, default_name = entry
+    filename = f"{match.home_team.short_name}_vs_{match.away_team.short_name}_{default_name}"
+    return FileResponse(
+        csv_file.open("rb"),
+        as_attachment=True,
+        filename=filename,
+        content_type="text/csv",
+    )

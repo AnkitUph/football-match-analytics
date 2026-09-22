@@ -139,7 +139,7 @@ class PitchMappingConfig:
 
 @dataclass
 class EventDetectionConfig:
-    possession_radius_m: float = 2.0
+    possession_radius_m: float = 3.2
     possession_min_frames: int = 5
     pass_min_ball_speed_change: float = 5.0  # m/s delta, tune empirically
 

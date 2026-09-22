@@ -97,19 +97,30 @@ class HomographyTracker:
             self._old_gray, gray, self._tracked_pixel_points, None, **self._lk_params
         )
 
-        if new_pts is None or not all(status.flatten()):
+        if new_pts is None or status is None:
             self._old_gray = gray
-            return None  # lost tracking — caller must re-bootstrap or accept the gap
+            return None
 
-        self._tracked_pixel_points = new_pts
+        valid = status.flatten() == 1
+        if np.sum(valid) < 4:
+            self._old_gray = gray
+            return None  # fewer than 4 points survived, homography mathematically undefined
+
+        self._tracked_pixel_points = new_pts[valid].reshape(-1, 1, 2)
+        self._pitch_points = self._pitch_points[valid]
         self._old_gray = gray
 
+        ransac_thresh = getattr(self.config, "homography_ransac_thresh", 5.0)
         H, _ = cv2.findHomography(
-            self._tracked_pixel_points.reshape(-1, 2), self._pitch_points, 0
+            self._tracked_pixel_points.reshape(-1, 2),
+            self._pitch_points,
+            cv2.RANSAC if len(self._tracked_pixel_points) > 4 else 0,
+            ransac_thresh,
         )
         if H is not None:
             self.current_H = H
-        return self.current_H
+            return self.current_H
+        return None
 
     def try_drift_correction(self, frame: np.ndarray) -> bool:
         """

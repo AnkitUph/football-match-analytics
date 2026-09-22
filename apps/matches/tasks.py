@@ -259,6 +259,13 @@ def process_match(self, match_id):
         match.processing_progress = 100
         match.save(update_fields=["status", "processing_progress", "updated_at"])
 
+        # Generate annotated tracking video with CV bounding boxes and ball trail
+        try:
+            from ai_engine.stage7_visualization.annotated_video import render_annotated_match_video
+            render_annotated_match_video(match)
+        except Exception:
+            logger.exception("Failed to render annotated video for match=%s", match.id)
+
         # PDF report, generated automatically (not behind a button) — see
         # apps/reports/generator.py. Uses whatever data exists right now
         # (real if compute_pitch_mapping already ran/is about to via the
@@ -497,7 +504,18 @@ def compute_pitch_mapping(self, match_id):
     from ai_engine.stage5_pitch_mapping.homography_tracker import HomographyTracker
     from ai_engine.stage5_pitch_mapping.homography import image_point_to_pitch
     from ai_engine.stage5_pitch_mapping.identity_association import match_tracklets_within_shot
-    from ai_engine.stage6_event_detection.events import detect_possession, detect_passes, detect_shots, estimate_shot_xg
+    from ai_engine.stage6_event_detection.events import (
+        detect_possession,
+        detect_passes,
+        detect_shots,
+        estimate_shot_xg,
+        detect_extended_match_events,
+        compute_player_physical_metrics,
+        compute_player_rating,
+        compute_continuous_possession,
+        detect_passes_with_metadata,
+        detect_corner_kicks,
+    )
     from ai_engine.utils.types import (
         BallTrajectoryPoint,
         Detection,
@@ -686,13 +704,19 @@ def compute_pitch_mapping(self, match_id):
     # process_match — just fed from the reconstructed valid/
     # ball_trajectory above instead of a live detection run.)
     ball_pitch_trajectory = []
+    ball_csv = io.StringIO()
+    ball_writer = csv.writer(ball_csv)
+    ball_writer.writerow(["frame_idx", "x_px", "y_px", "interpolated", "pitch_x", "pitch_y"])
     for p in ball_trajectory:
-        if p.x_m is None or p.frame_idx not in homography_by_frame:
-            continue
-        pt = image_point_to_pitch(p.x_m, p.y_m, homography_by_frame[p.frame_idx])
-        ball_pitch_trajectory.append(
-            BallTrajectoryPoint(frame_idx=p.frame_idx, x_m=pt.x_m, y_m=pt.y_m, interpolated=p.interpolated)
-        )
+        px, py = "", ""
+        if p.x_m is not None and p.frame_idx in homography_by_frame:
+            pt = image_point_to_pitch(p.x_m, p.y_m, homography_by_frame[p.frame_idx])
+            ball_pitch_trajectory.append(
+                BallTrajectoryPoint(frame_idx=p.frame_idx, x_m=pt.x_m, y_m=pt.y_m, interpolated=p.interpolated)
+            )
+            px, py = round(pt.x_m, 2), round(pt.y_m, 2)
+        ball_writer.writerow([p.frame_idx, p.x_m, p.y_m, p.interpolated, px, py])
+    files.ball_tracking_csv.save(f"match_{match.id}_ball.csv", ContentFile(ball_csv.getvalue()), save=True)
 
     # --- Merge fragmented raw tracklets into one-per-real-player first ---
     # VALIDATED FINDING (see project handoff): raw BoT-SORT tracklets
@@ -739,59 +763,19 @@ def compute_pitch_mapping(self, match_id):
     except Exception:
         pass
 
-    possession_events = detect_possession(ball_pitch_trajectory, identities, DEFAULT_CONFIG.event_detection)
+    # Continuous frame-level possession + discrete possession change events
+    cont_possession = compute_continuous_possession(ball_pitch_trajectory, identities, fps=25.0)
+    possession_events = cont_possession["possession_events"]
+    if not possession_events:
+        possession_events = detect_possession(ball_pitch_trajectory, identities, DEFAULT_CONFIG.event_detection)
+    possession_pct_by_team = cont_possession["percentages"]
+
     pass_events = detect_passes(possession_events, identities)
-    # Checks BOTH goals now — see events.py's detect_shots docstring.
-    # Previously hardcoded to (52.5, 0.0), the right goal only, which
-    # made every left-goal shot structurally invisible regardless of
-    # detection quality. Found via real-data review, not testing —
-    # this project's footage happened not to have a left-goal shot in
-    # any clip validated so far, so the bug never surfaced in output.
+    recorded_passes = detect_passes_with_metadata(possession_events, identities, ball_pitch_trajectory, fps=25.0)
+    corner_events = detect_corner_kicks(ball_pitch_trajectory, identities, fps=25.0)
     shot_events = detect_shots(ball_pitch_trajectory, ((52.5, 0.0), (-52.5, 0.0)))
 
     team_by_master_id = {i.master_id: i.team for i in identities}
-
-    # FOUND VIA REAL DATA: a short tracked segment (~190 frames from a
-    # single calibration anchor) produced a degenerate 100%/0% possession
-    # split. Root cause was here — the LAST possession event in the list
-    # had its end_frame fall back to its OWN start_frame (a zero-length
-    # interval, floored to 1 frame by the max() below), while every
-    # EARLIER event correctly got its real duration up to the NEXT
-    # event's frame. On a short clip with few possession-change events,
-    # that one truncated interval can dominate the total, producing
-    # exactly this kind of skewed/degenerate split. Fix: the last event's
-    # interval should extend to the actual last analyzed frame (the last
-    # frame with a valid ball pitch position), not collapse to nothing.
-    valid_ball_frames = [p.frame_idx for p in ball_pitch_trajectory if p.x_m is not None]
-    last_tracked_frame = max(valid_ball_frames) if valid_ball_frames else 0
-
-    possession_frame_counts = {Team.TEAM_A: 0, Team.TEAM_B: 0}
-    for i, event in enumerate(possession_events):
-        start_frame = event.frame_idx
-        end_frame = (
-            possession_events[i + 1].frame_idx if i + 1 < len(possession_events) else last_tracked_frame
-        )
-        holder_team = team_by_master_id.get(event.player_master_id)
-        if holder_team in possession_frame_counts:
-            possession_frame_counts[holder_team] += max(end_frame - start_frame, 1)
-    total_possession_frames = sum(possession_frame_counts.values()) or 1
-
-    # Diagnostic, not behavior — helps distinguish "genuinely few
-    # possession changes in a short/scrappy segment" (expected, see
-    # detect_possession's own docstring on contested-ball flicker) from
-    # an actual detection problem, without needing a debugger.
-    logger.info(
-        "compute_pitch_mapping match=%s: %d possession events, %d pass events, last_tracked_frame=%s",
-        match.id, len(possession_events), len(pass_events), last_tracked_frame,
-    )
-    # TEMPORARY, verbose — remove once the 100/0 possession investigation
-    # is closed out. Dumps every event so we can see the raw picture
-    # instead of just aggregate counts.
-    for i, event in enumerate(possession_events):
-        logger.info(
-            "  possession_event[%d]: frame=%s player_master_id=%s team=%s",
-            i, event.frame_idx, event.player_master_id, team_by_master_id.get(event.player_master_id),
-        )
 
     passes_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
     for e in pass_events:
@@ -828,9 +812,12 @@ def compute_pitch_mapping(self, match_id):
     ball_pitch_by_frame = {bp.frame_idx: bp for bp in ball_pitch_trajectory}
 
     shots_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
+    shots_on_target_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
     xg_by_team = {Team.TEAM_A: 0.0, Team.TEAM_B: 0.0}
     shots_by_track_id = defaultdict(int)
+    shots_on_target_by_track_id = defaultdict(int)
     xg_by_track_id = defaultdict(float)
+    recorded_shots = []
     for e in shot_events:
         ball_pos = ball_pitch_by_frame.get(e.frame_idx)
         if ball_pos is None:
@@ -850,96 +837,315 @@ def compute_pitch_mapping(self, match_id):
             continue
 
         shot_xg = estimate_shot_xg(e.metadata["origin_distance_m"], e.metadata["alignment"])
+        is_on_target = bool(e.metadata.get("is_on_target", False))
 
         shots_by_team[closest_identity.team] += 1
+        if is_on_target:
+            shots_on_target_by_team[closest_identity.team] += 1
+            shots_on_target_by_track_id[closest_identity.master_id] += 1
+
         xg_by_team[closest_identity.team] += shot_xg
         shots_by_track_id[closest_identity.master_id] += 1
         xg_by_track_id[closest_identity.master_id] += shot_xg
 
-    # Max plausible human sprint speed, generously above a real peak
-    # (~12.4 m/s for an elite sprinter at full tilt) — used to reject
-    # single-frame tracking glitches, not to model real player speed.
-    # FOUND VIA REAL DATA: a tracked identity on real footage summed to
-    # 1259m over 119 frames (~4.8s at 25fps) = ~264 m/s, obviously
-    # impossible. Root cause: team_distance_m/identity_distance_m summed
-    # raw frame-to-frame displacement with NO sanity bound — a single
-    # bad per-frame homography solve (see homography_tracker.py: each
-    # frame's homography is resolved completely fresh, with no
-    # consistency check against its neighbors — that's what avoids
-    # chained drift, but it also means nothing catches a one-off bad
-    # solve) can silently inflate distance covered. detect_shots already
-    # guards the ball the same way (max_plausible_speed_mps) — this is
-    # the same pattern applied to player movement. SKIPS the impossible
-    # segment entirely (doesn't cap it to a plausible-but-still-invented
-    # value) — same "honest gap over fabricated number" pattern as
-    # Stage 4's ball-interpolation bounds guard.
-    MAX_PLAYER_SPEED_MPS = 12.0
+        target_goal = e.metadata.get("target_goal", (52.5, 0.0))
+        video_minute = max(1, round((e.frame_idx / 25.0) / 60.0))
+        recorded_shots.append({
+            "frame_idx": e.frame_idx,
+            "minute": video_minute,
+            "track_id": closest_identity.master_id,
+            "team": closest_identity.team.value,
+            "pitch_x": round(ball_pos.x_m, 2),
+            "pitch_y": round(ball_pos.y_m, 2),
+            "target_goal_x": target_goal[0],
+            "target_goal_y": target_goal[1],
+            "distance_m": round(e.metadata["origin_distance_m"], 1),
+            "speed_mps": round(e.metadata.get("speed_mps", 0.0), 1),
+            "alignment": round(e.metadata["alignment"], 3),
+            "xg": round(shot_xg, 3),
+            "is_on_target": is_on_target,
+            "outcome": "On Target" if is_on_target else "Off Target",
+        })
 
-    def _plausible_segment_distance_m(p1, p2, dt_frames):
-        if dt_frames <= 0:
-            return 0.0
-        dt_sec = dt_frames / 25.0
-        dist = ((p2.x_m - p1.x_m) ** 2 + (p2.y_m - p1.y_m) ** 2) ** 0.5
-        if dist / dt_sec > MAX_PLAYER_SPEED_MPS:
-            return 0.0  # tracking glitch, not real movement — don't count it
-        return dist
+    # Extended event detection: attempted passes, duels (tackles/interceptions), clearances, dribbles, key passes
+    extended_events = detect_extended_match_events(
+        ball_trajectory=ball_pitch_trajectory,
+        identities=identities,
+        possession_events=possession_events,
+        shot_events=shot_events,
+        fps=25.0,
+    )
+    passes_attempted_by_team = extended_events["team_passes_attempted"]
+    passes_attempted_by_track_id = extended_events["passes_attempted"]
+    tackles_by_track_id = extended_events["tackles"]
+    interceptions_by_track_id = extended_events["interceptions"]
+    clearances_by_track_id = extended_events["clearances"]
+    dribbles_by_track_id = extended_events["dribbles"]
+    key_passes_by_track_id = extended_events["key_passes"]
+
+    # Physical metrics calculation: distance covered, top speed, average speed
+    physical_by_track_id = {}
+    for identity in identities:
+        physical_by_track_id[identity.master_id] = compute_player_physical_metrics(identity, fps=25.0)
 
     def team_distance_m(team_enum):
-        total = 0.0
-        for identity in identities:
-            if identity.team != team_enum:
-                continue
-            frames = sorted(identity.trajectory.keys())
-            for f1, f2 in zip(frames, frames[1:]):
-                total += _plausible_segment_distance_m(identity.trajectory[f1], identity.trajectory[f2], f2 - f1)
-        return total
+        return sum(
+            physical_by_track_id[ident.master_id]["distance_m"]
+            for ident in identities
+            if ident.team == team_enum
+        )
 
-    # TEAM_A is "closer to home_kit_color" per classify_team_by_known_colors
-    # from Stage 3, which already ran (and is baked into the CSV's team
-    # column) — no need to redo that classification here.
+    def team_avg_speed(team_enum):
+        speeds = [
+            physical_by_track_id[ident.master_id].get("average_speed_kmh", 0.0)
+            for ident in identities
+            if ident.team == team_enum and physical_by_track_id[ident.master_id].get("average_speed_kmh", 0.0) > 0
+        ]
+        return round(sum(speeds) / len(speeds), 1) if speeds else 0.0
+
+    corners_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
+    for c in corner_events:
+        t_enum = Team.TEAM_A if c.get("team") == "team_a" else Team.TEAM_B
+        corners_by_team[t_enum] += 1
+
+    # TeamStatistics: real possession, shots, shots on target, passes completed/attempted, accuracy, corners, speed
     for team_enum, team_obj in [(Team.TEAM_A, match.home_team), (Team.TEAM_B, match.away_team)]:
-        possession_pct = 100.0 * possession_frame_counts[team_enum] / total_possession_frames
+        possession_pct = possession_pct_by_team.get(team_enum, 50.0)
+        completed = passes_by_team[team_enum]
+        attempted = passes_attempted_by_team.get(team_enum, completed)
+        if attempted < completed:
+            attempted = completed
+        accuracy = round(100.0 * completed / attempted, 1) if attempted > 0 else 0.0
+        s_count = shots_by_team[team_enum]
+        sot_count = shots_on_target_by_team[team_enum]
+        if sot_count > s_count:
+            sot_count = s_count
+
         TeamStatistics.objects.update_or_create(
             match=match,
             team=team_obj,
             defaults={
                 "total_distance": team_distance_m(team_enum),
                 "possession": possession_pct,
-                "shots": shots_by_team[team_enum],
-                "passes_completed": passes_by_team[team_enum],
+                "shots": s_count,
+                "shots_on_target": sot_count,
+                "passes_completed": completed,
+                "passes_attempted": attempted,
+                "pass_accuracy": accuracy,
+                "corners": corners_by_team.get(team_enum, 0),
                 "xg": round(xg_by_team[team_enum], 2),
+                "average_team_speed": team_avg_speed(team_enum),
             },
         )
 
-    # --- Real per-player distance, keyed by jersey_number for matching ---
-    # against MatchLineup at request time (see views.py). NOT a full
-    # PlayerStatistics row — no goals/passes/etc. per player exist yet,
-    # this is deliberately just distance + identity, kept in its own CSV
-    # (MatchFiles.player_stats_csv, previously unused) rather than
-    # conflated with the still-fully-dummy per-player stats table.
-    def identity_distance_m(identity):
-        frames = sorted(identity.trajectory.keys())
-        total = 0.0
-        for f1, f2 in zip(frames, frames[1:]):
-            total += _plausible_segment_distance_m(identity.trajectory[f1], identity.trajectory[f2], f2 - f1)
-        return total
+    # Compute algorithmic player ratings
+    from apps.matches.models import MatchGoal, TrackPlayerIdentification
+    goals_by_track_id = defaultdict(int)
+    track_to_lineup = dict(TrackPlayerIdentification.objects.filter(match=match).values_list("track_id", "lineup_entry_id"))
+    lineup_goals = defaultdict(int)
+    for g in MatchGoal.objects.filter(match=match, is_own_goal=False):
+        if g.scorer_id is not None:
+            lineup_goals[g.scorer_id] += 1
+    for tid, lid in track_to_lineup.items():
+        if lid in lineup_goals:
+            goals_by_track_id[tid] = lineup_goals[lid]
+
+    ratings_by_track_id = {}
+    for identity in identities:
+        tid = identity.master_id
+        phys = physical_by_track_id.get(tid, {})
+        comp = passes_completed_by_track_id.get(tid, 0)
+        att = passes_attempted_by_track_id.get(tid, comp)
+        if att < comp:
+            att = comp
+        sh = shots_by_track_id.get(tid, 0)
+        sot = shots_on_target_by_track_id.get(tid, 0)
+        if sot > sh:
+            sot = sh
+        xg_val = xg_by_track_id.get(tid, 0.0)
+        gl = goals_by_track_id.get(tid, 0)
+        tack = tackles_by_track_id.get(tid, 0)
+        inter = interceptions_by_track_id.get(tid, 0)
+        clear = clearances_by_track_id.get(tid, 0)
+        drib = dribbles_by_track_id.get(tid, 0)
+        kp = key_passes_by_track_id.get(tid, 0)
+        mins = phys.get("minutes_played", 1)
+
+        player_stats_dict = {
+            "minutes_played": mins,
+            "goals": gl,
+            "assists": 0,
+            "shots": sh,
+            "shots_on_target": sot,
+            "passes_attempted": att,
+            "passes_completed": comp,
+            "key_passes": kp,
+            "dribbles_completed": drib,
+            "tackles": tack,
+            "interceptions": inter,
+            "clearances": clear,
+            "xg": xg_val,
+            "distance_covered": phys.get("distance_m", 0.0),
+        }
+        ratings_by_track_id[tid] = compute_player_rating(player_stats_dict)
 
     player_stats_csv = io.StringIO()
     writer = csv.writer(player_stats_csv)
-    writer.writerow(["track_id", "team", "jersey_number", "jersey_conf", "distance_m", "frames_tracked", "passes_completed", "shots", "xg"])
+    writer.writerow([
+        "track_id", "team", "jersey_number", "jersey_conf", "distance_m", "frames_tracked",
+        "passes_completed", "passes_attempted", "pass_accuracy",
+        "shots", "shots_on_target", "xg",
+        "top_speed", "average_speed",
+        "tackles", "interceptions", "clearances", "dribbles_completed", "key_passes",
+        "rating"
+    ])
     for identity in identities:
+        tid = identity.master_id
+        phys = physical_by_track_id.get(tid, {})
+        dist_m = round(phys.get("distance_m", 0.0), 1)
+        comp = passes_completed_by_track_id.get(tid, 0)
+        att = passes_attempted_by_track_id.get(tid, comp)
+        if att < comp:
+            att = comp
+        acc = round((comp / att) * 100, 1) if att > 0 else 0.0
+        sh = shots_by_track_id.get(tid, 0)
+        sot = shots_on_target_by_track_id.get(tid, 0)
+        if sot > sh:
+            sot = sh
+        xg_val = round(xg_by_track_id.get(tid, 0.0), 3)
+        top_spd = phys.get("top_speed_kmh", 0.0)
+        avg_spd = phys.get("average_speed_kmh", 0.0)
+        tack = tackles_by_track_id.get(tid, 0)
+        inter = interceptions_by_track_id.get(tid, 0)
+        clear = clearances_by_track_id.get(tid, 0)
+        drib = dribbles_by_track_id.get(tid, 0)
+        kp = key_passes_by_track_id.get(tid, 0)
+        rat = ratings_by_track_id.get(tid, 6.0)
+
         writer.writerow([
-            identity.master_id,
+            tid,
             identity.team.value,
             identity.jersey_number if identity.jersey_number is not None else "",
-            "",  # per-identity conf not carried past Tracklet -> MasterIdentity today; jersey_number's presence already implies it cleared the aggregation bar
-            round(identity_distance_m(identity), 1),
+            "",
+            dist_m,
             len(identity.trajectory),
-            passes_completed_by_track_id.get(identity.master_id, 0),
-            shots_by_track_id.get(identity.master_id, 0),
-            round(xg_by_track_id.get(identity.master_id, 0.0), 3),
+            comp,
+            att,
+            acc,
+            sh,
+            sot,
+            xg_val,
+            top_spd,
+            avg_spd,
+            tack,
+            inter,
+            clear,
+            drib,
+            kp,
+            rat,
         ])
     files.player_stats_csv.save(f"match_{match.id}_player_stats.csv", ContentFile(player_stats_csv.getvalue()), save=True)
+
+    shots_csv = io.StringIO()
+    shots_writer = csv.writer(shots_csv)
+    shots_writer.writerow([
+        "frame_idx", "minute", "track_id", "team", "pitch_x", "pitch_y",
+        "target_goal_x", "target_goal_y", "distance_m", "speed_mps", "alignment", "xg",
+        "is_on_target", "outcome"
+    ])
+    for s in recorded_shots:
+        shots_writer.writerow([
+            s["frame_idx"], s["minute"], s["track_id"], s["team"],
+            s["pitch_x"], s["pitch_y"], s["target_goal_x"], s["target_goal_y"],
+            s["distance_m"], s["speed_mps"], s["alignment"], s["xg"],
+            s.get("is_on_target", False), s.get("outcome", "Off Target")
+        ])
+    files.shots_csv.save(f"match_{match.id}_shots.csv", ContentFile(shots_csv.getvalue()), save=True)
+
+    # Save passes_csv
+    passes_csv = io.StringIO()
+    passes_writer = csv.writer(passes_csv)
+    passes_writer.writerow([
+        "frame_idx", "start_frame", "minute", "passer_track_id", "receiver_track_id",
+        "passer_team", "receiver_team", "start_x", "start_y", "end_x", "end_y",
+        "distance_m", "speed_mps", "is_completed"
+    ])
+    for p in recorded_passes:
+        passes_writer.writerow([
+            p["frame_idx"], p.get("start_frame", p["frame_idx"]), p["minute"],
+            p["passer_track_id"], p["receiver_track_id"],
+            p["passer_team"], p["receiver_team"],
+            p["start_x"], p["start_y"], p["end_x"], p["end_y"],
+            p["distance_m"], p.get("speed_mps", 0.0), p["is_completed"]
+        ])
+    files.passes_csv.save(f"match_{match.id}_passes.csv", ContentFile(passes_csv.getvalue()), save=True)
+
+    # Save events_csv (consolidated match timeline)
+    events_csv = io.StringIO()
+    events_writer = csv.writer(events_csv)
+    events_writer.writerow([
+        "frame_idx", "minute", "event_type", "team", "track_id", "detail", "pitch_x", "pitch_y"
+    ])
+    all_events = []
+    for s in recorded_shots:
+        all_events.append({
+            "frame_idx": s["frame_idx"],
+            "minute": s["minute"],
+            "event_type": "shot",
+            "team": s["team"],
+            "track_id": s["track_id"],
+            "detail": f"Shot ({s['outcome']}) xG {s['xg']}",
+            "pitch_x": s["pitch_x"],
+            "pitch_y": s["pitch_y"],
+        })
+    for p in recorded_passes:
+        all_events.append({
+            "frame_idx": p["frame_idx"],
+            "minute": p["minute"],
+            "event_type": "pass" if p["is_completed"] else "interception",
+            "team": p["passer_team"],
+            "track_id": p["passer_track_id"],
+            "detail": f"Pass to #{p['receiver_track_id']} ({p['distance_m']}m)",
+            "pitch_x": p["start_x"],
+            "pitch_y": p["start_y"],
+        })
+    for c in corner_events:
+        all_events.append({
+            "frame_idx": c["frame_idx"],
+            "minute": c["minute"],
+            "event_type": "corner",
+            "team": c["team"],
+            "track_id": c.get("track_id", ""),
+            "detail": "Corner Kick",
+            "pitch_x": c["pitch_x"],
+            "pitch_y": c["pitch_y"],
+        })
+    from apps.matches.models import MatchGoal
+    for g in MatchGoal.objects.filter(match=match):
+        frame_approx = int((g.minute or 1) * 60 * 25)
+        all_events.append({
+            "frame_idx": frame_approx,
+            "minute": g.minute or 1,
+            "event_type": "goal",
+            "team": "team_a" if g.team_id == match.home_team_id else "team_b",
+            "track_id": "",
+            "detail": f"Goal scored by {g.scorer.player_name if g.scorer else 'Unknown'}",
+            "pitch_x": 52.5 if g.team_id == match.home_team_id else -52.5,
+            "pitch_y": 0.0,
+        })
+    all_events.sort(key=lambda ev: ev["frame_idx"])
+    for ev in all_events:
+        events_writer.writerow([
+            ev["frame_idx"], ev["minute"], ev["event_type"], ev["team"],
+            ev["track_id"], ev["detail"], ev["pitch_x"], ev["pitch_y"]
+        ])
+    files.events_csv.save(f"match_{match.id}_events.csv", ContentFile(events_csv.getvalue()), save=True)
+
+    try:
+        from apps.analytics.services import sync_player_statistics
+        sync_player_statistics(match)
+    except Exception:
+        logger.exception("Failed to sync PlayerStatistics for match=%s", match.id)
 
     # PDF report, regenerated in place now that real stats exist for this
     # match (initial calibration or a recalibration) — see
@@ -949,6 +1155,26 @@ def compute_pitch_mapping(self, match_id):
         generate_match_report(match)
     except Exception:
         pass
+
+    # Ensure annotated replay video is generated/updated with latest identification
+    try:
+        from ai_engine.stage7_visualization.annotated_video import render_annotated_match_video
+        render_annotated_match_video(match)
+    except Exception:
+        logger.exception("Failed to render annotated video in compute_pitch_mapping for match=%s", match.id)
+
+
+@shared_task
+def render_match_video(match_id):
+    """Celery task to render or refresh an annotated replay video on-demand."""
+    from apps.matches.models import Match
+    from ai_engine.stage7_visualization.annotated_video import render_annotated_match_video
+    try:
+        match = Match.objects.get(pk=match_id)
+        render_annotated_match_video(match)
+    except Exception:
+        logger.exception("Failed to render annotated video for match=%s", match_id)
+
 
 
 def _auto_assign_unidentified_tracks(match, identities):
@@ -1007,7 +1233,7 @@ def _auto_assign_unidentified_tracks(match, identities):
     )
 
     side_by_team = {Team.TEAM_A: MatchLineup.Side.HOME, Team.TEAM_B: MatchLineup.Side.AWAY}
-    CAP_PER_SIDE = 10
+    CAP_PER_SIDE = 11
 
     # Most-seen first, not arbitrary track_id order — len(trajectory) is
     # this identity's pitch-mapped frame count, a direct proxy for how
