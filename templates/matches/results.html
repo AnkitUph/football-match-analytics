@@ -1080,17 +1080,16 @@
                 </div>
             </div>
 
-            <div class="section">
             <div class="section" id="tactical-pitch-section">
                 <div class="pitch-header-row">
                     <h2 style="margin-bottom:0; border-bottom:none; padding-bottom:0;">
                         Tactical Pitch Visualizer {% if not using_real_stats %}<span class="badge-dummy">Dummy</span>{% endif %}
                     </h2>
                     <div class="pitch-mode-pills">
-                        <button type="button" class="pitch-mode-btn active" id="btn-mode-shots" onclick="setPitchMode('shots')">🎯 Shots &amp; xG</button>
-                        <button type="button" class="pitch-mode-btn" id="btn-mode-passes" onclick="setPitchMode('passes')">🕸️ Passing Network</button>
-                        <button type="button" class="pitch-mode-btn" id="btn-mode-events" onclick="setPitchMode('events')">⚡ Pass Events</button>
-                        <button type="button" class="pitch-mode-btn" id="btn-mode-shape" onclick="setPitchMode('shape')">📐 Team Shape</button>
+                        <button type="button" class="pitch-mode-btn active" id="btn-mode-shots" data-mode="shots" onclick="setPitchMode('shots')">🎯 Shots &amp; xG</button>
+                        <button type="button" class="pitch-mode-btn" id="btn-mode-passes" data-mode="passes" onclick="setPitchMode('passes')">🕸️ Passing Network</button>
+                        <button type="button" class="pitch-mode-btn" id="btn-mode-events" data-mode="events" onclick="setPitchMode('events')">⚡ Pass Events</button>
+                        <button type="button" class="pitch-mode-btn" id="btn-mode-shape" data-mode="shape" onclick="setPitchMode('shape')">📐 Team Shape</button>
                     </div>
                 </div>
 
@@ -1263,7 +1262,6 @@
                     <p style="font-size:12px;color:#999;padding:12px;text-align:center;">No shots recorded for this match.</p>
                     {% endfor %}
                 </div>
-            </div>
             </div>
 
             <div class="section">
@@ -1819,6 +1817,11 @@
             document.getElementById('player-modal').classList.add('open');
         }
 
+        function closeModal() {
+            const modal = document.getElementById('player-modal');
+            if (modal) modal.classList.remove('open');
+        }
+
         function openPlayerByLineupId(lineupId) {
             if (!lineupId) return;
             const hIdx = homePlayers.findIndex(p => p.lineup_entry_id === lineupId || p.id === lineupId);
@@ -1836,6 +1839,10 @@
         window.openPlayer = openPlayer;
         window.closeModal = closeModal;
 
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
         function showTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
             document.querySelectorAll('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === 'tab-' + tab));
@@ -1848,7 +1855,8 @@
         // docstring in models.py for why nothing here is auto-detected) ---
         const goalsPanel = document.getElementById('goals-panel');
         if (goalsPanel) {
-            const csrfToken = goalsPanel.querySelector('[name=csrfmiddlewaretoken]').value;
+            const csrfInput = goalsPanel.querySelector('[name=csrfmiddlewaretoken]');
+            const csrfToken = csrfInput ? csrfInput.value : '';
             const DELETE_GOAL_URL_BASE = "{% url 'matches:delete_goal' match.public_id 0 %}".replace(/0\/delete\/$/, '');
 
             // Keeps the scorer dropdown limited to the selected side's
@@ -1946,8 +1954,12 @@
             const awayShort = "{{ match.away_team.short_name|escapejs }}";
 
             function pitchToSvg(px, py) {
-                const clampedX = Math.max(-53.5, Math.min(53.5, px != null ? px : 0));
-                const clampedY = Math.max(-34.5, Math.min(34.5, py != null ? py : 0));
+                const numX = parseFloat(px);
+                const numY = parseFloat(py);
+                const validX = !isNaN(numX) ? numX : 0;
+                const validY = !isNaN(numY) ? numY : 0;
+                const clampedX = Math.max(-53.5, Math.min(53.5, validX));
+                const clampedY = Math.max(-34.5, Math.min(34.5, validY));
                 return {
                     x: 25 + (clampedX + 52.5) * 10,
                     y: 20 + (34.0 - clampedY) * 10,
@@ -2497,6 +2509,15 @@
                     const shot = shotsData[idx];
                     if (shot && shot.frame_idx != null) {
                         seekVideoToFrame(shot.frame_idx);
+                    }
+                });
+            });
+
+            document.querySelectorAll('.pitch-mode-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const mode = btn.dataset.mode || (btn.id ? btn.id.replace('btn-mode-', '') : null);
+                    if (mode && typeof window.setPitchMode === 'function') {
+                        window.setPitchMode(mode);
                     }
                 });
             });
