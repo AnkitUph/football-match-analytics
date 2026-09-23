@@ -591,6 +591,7 @@ def compute_pitch_mapping(self, match_id):
         compute_continuous_possession,
         detect_passes_with_metadata,
         detect_corner_kicks,
+        infer_team_defending_goals,
     )
     from ai_engine.utils.types import (
         BallTrajectoryPoint,
@@ -822,6 +823,8 @@ def compute_pitch_mapping(self, match_id):
 
     identities = []
     for t in stitched:
+        if getattr(t, "cls", None) == ObjectClass.BALL:
+            continue
         traj = {}
         for det in t.detections:
             if det.frame_idx not in homography_by_frame:
@@ -832,7 +835,7 @@ def compute_pitch_mapping(self, match_id):
         if traj:
             identities.append(MasterIdentity(
                 master_id=t.track_id, team=t.team, reid_embedding=[],
-                jersey_number=t.jersey_number, trajectory=traj,
+                jersey_number=t.jersey_number, cls=t.cls, trajectory=traj,
             ))
 
     cls_by_track = {t.track_id: t.cls for t in stitched}
@@ -910,43 +913,92 @@ def compute_pitch_mapping(self, match_id):
     shots_on_target_by_track_id = defaultdict(int)
     xg_by_track_id = defaultdict(float)
     recorded_shots = []
+    team_defending_goal = infer_team_defending_goals(identities, cls_by_track=cls_by_track, ball_trajectory=ball_pitch_trajectory)
+
     for e in shot_events:
         ball_pos = ball_pitch_by_frame.get(e.frame_idx)
         if ball_pos is None:
             continue
 
-        closest_identity, closest_dist = None, float("inf")
-        for identity in identities:
-            pos = identity.trajectory.get(e.frame_idx)
-            if pos is None:
-                continue
-            dist = ((pos.x_m - ball_pos.x_m) ** 2 + (pos.y_m - ball_pos.y_m) ** 2) ** 0.5
-            if dist < closest_dist:
-                closest_dist = dist
-                closest_identity = identity
+        target_goal = e.metadata.get("target_goal", (52.5, 0.0))
+        attacking_teams = [t for t, def_goal in team_defending_goal.items() if def_goal != target_goal]
+        target_attacking_team = attacking_teams[0] if attacking_teams else None
 
-        if closest_identity is None or closest_identity.team not in shots_by_team:
+        closest_identity, closest_dist = None, float("inf")
+        # Search strike window [e.frame_idx - 4, e.frame_idx + 1]
+        # Shooter must be a genuine player/goalkeeper from target_attacking_team
+        for identity in identities:
+            if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
+                continue
+            if target_attacking_team and identity.team != target_attacking_team:
+                continue
+            if identity.team not in shots_by_team:
+                continue
+            for f in range(max(0, e.frame_idx - 4), e.frame_idx + 2):
+                pos = identity.trajectory.get(f)
+                b_pt = ball_pitch_by_frame.get(f)
+                if pos is None or b_pt is None:
+                    continue
+                dist = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest_identity = identity
+
+        # If no attacker within proximity, fall back to closest attacker overall or skip if none
+        if closest_identity is None or closest_dist > 5.5:
+            closest_dist = float("inf")
+            for identity in identities:
+                if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
+                    continue
+                if target_attacking_team and identity.team != target_attacking_team:
+                    continue
+                if identity.team not in shots_by_team:
+                    continue
+                for f in range(max(0, e.frame_idx - 6), e.frame_idx + 3):
+                    pos = identity.trajectory.get(f)
+                    b_pt = ball_pitch_by_frame.get(f)
+                    if pos is None or b_pt is None:
+                        continue
+                    dist = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
+                    if dist < closest_dist:
+                        closest_dist = dist
+                        closest_identity = identity
+
+        shot_team = target_attacking_team if target_attacking_team else (closest_identity.team if closest_identity else None)
+        if shot_team is None or shot_team not in shots_by_team:
             continue
 
         shot_xg = estimate_shot_xg(e.metadata["origin_distance_m"], e.metadata["alignment"])
         is_on_target = bool(e.metadata.get("is_on_target", False))
+        is_goal = bool(e.metadata.get("is_goal", False))
+        if is_goal:
+            is_on_target = True
 
-        shots_by_team[closest_identity.team] += 1
+        shots_by_team[shot_team] += 1
         if is_on_target:
-            shots_on_target_by_team[closest_identity.team] += 1
-            shots_on_target_by_track_id[closest_identity.master_id] += 1
+            shots_on_target_by_team[shot_team] += 1
+            if closest_identity:
+                shots_on_target_by_track_id[closest_identity.master_id] += 1
 
-        xg_by_team[closest_identity.team] += shot_xg
-        shots_by_track_id[closest_identity.master_id] += 1
-        xg_by_track_id[closest_identity.master_id] += shot_xg
+        xg_by_team[shot_team] += shot_xg
+        if closest_identity:
+            shots_by_track_id[closest_identity.master_id] += 1
+            xg_by_track_id[closest_identity.master_id] += shot_xg
 
-        target_goal = e.metadata.get("target_goal", (52.5, 0.0))
         video_minute = max(1, round((e.frame_idx / 25.0) / 60.0))
+        track_id = closest_identity.master_id if closest_identity else None
+        if is_goal:
+            outcome = "Goal"
+        elif is_on_target:
+            outcome = "On Target"
+        else:
+            outcome = "Off Target"
+
         recorded_shots.append({
             "frame_idx": e.frame_idx,
             "minute": video_minute,
-            "track_id": closest_identity.master_id,
-            "team": closest_identity.team.value,
+            "track_id": track_id,
+            "team": shot_team.value,
             "pitch_x": round(ball_pos.x_m, 2),
             "pitch_y": round(ball_pos.y_m, 2),
             "target_goal_x": target_goal[0],
@@ -956,7 +1008,8 @@ def compute_pitch_mapping(self, match_id):
             "alignment": round(e.metadata["alignment"], 3),
             "xg": round(shot_xg, 3),
             "is_on_target": is_on_target,
-            "outcome": "On Target" if is_on_target else "Off Target",
+            "is_goal": is_goal,
+            "outcome": outcome,
         })
 
     # Extended event detection: attempted passes, duels (tackles/interceptions), clearances, dribbles, key passes
@@ -1032,8 +1085,30 @@ def compute_pitch_mapping(self, match_id):
 
     # Compute algorithmic player ratings
     from apps.matches.models import MatchGoal, TrackPlayerIdentification
-    goals_by_track_id = defaultdict(int)
+    from apps.matches.views import _recompute_match_score
+
     track_to_lineup = dict(TrackPlayerIdentification.objects.filter(match=match).values_list("track_id", "lineup_entry_id"))
+
+    # Auto-sync confirmed goals to MatchGoal and update scoreboard
+    for s in recorded_shots:
+        if s.get("is_goal"):
+            goal_team = match.home_team if s["team"] == "team_a" else match.away_team
+            scorer_lid = track_to_lineup.get(s.get("track_id"))
+            goal_obj, created = MatchGoal.objects.get_or_create(
+                match=match,
+                team=goal_team,
+                minute=s["minute"],
+                defaults={
+                    "scorer_id": scorer_lid,
+                    "is_own_goal": False,
+                },
+            )
+            if not created and scorer_lid and not goal_obj.scorer_id:
+                goal_obj.scorer_id = scorer_lid
+                goal_obj.save(update_fields=["scorer"])
+    _recompute_match_score(match)
+
+    goals_by_track_id = defaultdict(int)
     lineup_goals = defaultdict(int)
     for g in MatchGoal.objects.filter(match=match, is_own_goal=False):
         if g.scorer_id is not None:

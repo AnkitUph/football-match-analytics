@@ -1618,11 +1618,15 @@ def _load_real_shots(match, files_obj):
     return shots
 
 
-def _load_real_passes(match, files_obj):
+def _load_real_passes(match, files_obj, shots=None):
     """
     Loads detected passes from MatchFiles.passes_csv.
     Pairs passer_track_id and receiver_track_id with TrackPlayerIdentification
     to identify the passer and receiver.
+    Enriches each pass with tactical attributes:
+      - is_progressive (gains >= 9.5m toward attacking goal)
+      - is_cross (originates from wide channel |y| >= 14m into penalty area)
+      - is_key_pass (leads to a shot within 10 seconds / 250 frames)
     """
     passes = []
     if not files_obj or not files_obj.passes_csv:
@@ -1632,6 +1636,8 @@ def _load_real_passes(match, files_obj):
         ident.track_id: ident.lineup_entry
         for ident in TrackPlayerIdentification.objects.filter(match=match).select_related("lineup_entry")
     }
+
+    shots_list = shots or []
 
     try:
         with files_obj.passes_csv.open("rb") as f:
@@ -1661,23 +1667,52 @@ def _load_real_passes(match, files_obj):
                     receiver_label = "Incomplete / Intercepted"
 
                 is_completed = str(row.get("is_completed", "")).strip().lower() in ("true", "1")
+                sx = _safe_float(row.get("start_x"))
+                sy = _safe_float(row.get("start_y"))
+                ex = _safe_float(row.get("end_x"))
+                ey = _safe_float(row.get("end_y"))
+                dist_m = _safe_float(row.get("distance_m"))
+                speed_mps = _safe_float(row.get("speed_mps"))
+                frame_idx = _safe_int(row.get("frame_idx"))
+                start_frame = _safe_int(row.get("start_frame"), default=frame_idx)
+
+                # Tactical Classification
+                # Progressive: advances >= 9.5m toward opponent goal line
+                if side == "home":
+                    is_progressive = (ex - sx) >= 9.5
+                    is_cross = (abs(sy) >= 14.0) and (ex >= 35.0) and (abs(ey) <= 20.16)
+                else:
+                    is_progressive = (sx - ex) >= 9.5
+                    is_cross = (abs(sy) >= 14.0) and (ex <= -35.0) and (abs(ey) <= 20.16)
+
+                # Key pass: leads directly to a shot within 10 seconds (250 frames)
+                is_key_pass = False
+                for s in shots_list:
+                    if s.get("side") == side:
+                        s_frame = s.get("frame_idx", 0)
+                        if 0 <= s_frame - frame_idx <= 250 or 0 <= s_frame - start_frame <= 250:
+                            is_key_pass = True
+                            break
 
                 passes.append({
-                    "frame_idx": _safe_int(row.get("frame_idx")),
-                    "start_frame": _safe_int(row.get("start_frame")),
+                    "frame_idx": frame_idx,
+                    "start_frame": start_frame,
                     "minute": _safe_int(row.get("minute"), default=1),
                     "passer": passer_label,
                     "passer_track_id": passer_tid,
                     "receiver": receiver_label,
                     "receiver_track_id": receiver_tid,
                     "side": side,
-                    "start_x": _safe_float(row.get("start_x")),
-                    "start_y": _safe_float(row.get("start_y")),
-                    "end_x": _safe_float(row.get("end_x")),
-                    "end_y": _safe_float(row.get("end_y")),
-                    "distance_m": _safe_float(row.get("distance_m")),
-                    "speed_mps": _safe_float(row.get("speed_mps")),
+                    "start_x": sx,
+                    "start_y": sy,
+                    "end_x": ex,
+                    "end_y": ey,
+                    "distance_m": dist_m,
+                    "speed_mps": speed_mps,
                     "is_completed": is_completed,
+                    "is_progressive": is_progressive,
+                    "is_cross": is_cross,
+                    "is_key_pass": is_key_pass,
                 })
     except Exception:
         logger.exception("Failed to parse passes_csv for match=%s", match.id)
@@ -2078,7 +2113,7 @@ def build_match_report_context(match):
         away_heatmap = render_heatmap_png(away_positions, attack_direction="left")
 
         shots = _load_real_shots(match, files_obj)
-        passes = _load_real_passes(match, files_obj)
+        passes = _load_real_passes(match, files_obj, shots=shots)
         timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
         for g in match_goals:
             scorer_label = g.scorer.player_name if g.scorer else "Unknown scorer"

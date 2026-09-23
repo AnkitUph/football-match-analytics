@@ -105,6 +105,7 @@ class MasterIdentity:
     team: Team
     reid_embedding: list[float]
     jersey_number: Optional[int] = None
+    cls: Optional[ObjectClass] = None
     # frame_idx -> PitchPoint, only populated for frames inside main_wide shots
     trajectory: dict[int, PitchPoint] = field(default_factory=dict)
 

@@ -52,3 +52,4 @@ redis_data/
 # Temporary
 tmp/
 cache/
+scratch/

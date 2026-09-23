@@ -1089,6 +1089,7 @@
                     <div class="pitch-mode-pills">
                         <button type="button" class="pitch-mode-btn active" id="btn-mode-shots" onclick="setPitchMode('shots')">🎯 Shots &amp; xG</button>
                         <button type="button" class="pitch-mode-btn" id="btn-mode-passes" onclick="setPitchMode('passes')">🕸️ Passing Network</button>
+                        <button type="button" class="pitch-mode-btn" id="btn-mode-events" onclick="setPitchMode('events')">⚡ Pass Events</button>
                         <button type="button" class="pitch-mode-btn" id="btn-mode-shape" onclick="setPitchMode('shape')">📐 Team Shape</button>
                     </div>
                 </div>
@@ -1099,6 +1100,17 @@
                         <button type="button" class="shot-filter-btn" data-filter="home">{{ match.home_team.short_name }}</button>
                         <button type="button" class="shot-filter-btn" data-filter="away">{{ match.away_team.short_name }}</button>
                         <button type="button" class="shot-filter-btn" data-filter="goal">Goals</button>
+                    </div>
+                    <div id="subfilters-passes" class="shot-filters" style="display:none;">
+                        <button type="button" class="shot-filter-btn active" data-pfilter="all" onclick="setPassEventFilter('all')">All ({{ passes|length }})</button>
+                        <button type="button" class="shot-filter-btn" data-pfilter="completed" onclick="setPassEventFilter('completed')">Completed</button>
+                        <button type="button" class="shot-filter-btn" data-pfilter="progressive" onclick="setPassEventFilter('progressive')">⚡ Progressive</button>
+                        <button type="button" class="shot-filter-btn" data-pfilter="crosses" onclick="setPassEventFilter('crosses')">🎯 Crosses</button>
+                        <button type="button" class="shot-filter-btn" data-pfilter="key" onclick="setPassEventFilter('key')">⭐ Key Passes</button>
+                        <span style="border-left:1px solid rgba(255,255,255,0.2); margin: 0 4px; height: 16px; display:inline-block; vertical-align:middle;"></span>
+                        <button type="button" class="shot-filter-btn active" data-pteam="both" onclick="setPassTeamFilter('both')">Both</button>
+                        <button type="button" class="shot-filter-btn" data-pteam="home" onclick="setPassTeamFilter('home')">{{ match.home_team.short_name }}</button>
+                        <button type="button" class="shot-filter-btn" data-pteam="away" onclick="setPassTeamFilter('away')">{{ match.away_team.short_name }}</button>
                     </div>
                     <div id="subfilters-tactical" class="shot-filters" style="display:none;">
                         <button type="button" class="shot-filter-btn active" data-tfilter="both" onclick="setTacticalTeamFilter('both')">Both Teams</button>
@@ -1118,6 +1130,12 @@
                                 <rect x="0" y="0" width="105" height="720" fill="rgba(255,255,255,0.02)"/>
                                 <rect x="105" y="0" width="105" height="720" fill="rgba(0,0,0,0.03)"/>
                             </pattern>
+                            <marker id="arrow-home" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#4FAE79" />
+                            </marker>
+                            <marker id="arrow-away" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#5B9BD5" />
+                            </marker>
                         </defs>
                         <rect x="25" y="20" width="1050" height="680" fill="#1b3223"/>
                         <rect x="25" y="20" width="1050" height="680" fill="url(#lawn-stripes)"/>
@@ -1167,6 +1185,9 @@
                         <!-- Dynamic Passing Network Player Nodes -->
                         <g id="tactical-network-nodes"></g>
 
+                        <!-- Dynamic Pass Event Vectors Group -->
+                        <g id="pass-events-group"></g>
+
                         <!-- Dynamic Shot Lines and Nodes -->
                         <g id="shot-trajectories"></g>
                         <g id="shot-nodes"></g>
@@ -1191,6 +1212,16 @@
                         <span style="color:#888;">Node size: involvement &bull; Line weight: pass frequency</span>
                     </div>
                     <div style="font-size:11px;color:#888;">Hover node or link for details &bull; Click to seek video</div>
+                </div>
+
+                <!-- HUD 2.5: Pass Events Legend -->
+                <div id="hud-events-legend" style="display:none;margin-bottom:12px;font-size:11.5px;color:#cbd5e0;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                    <div style="display:flex;align-items:center;gap:14px;">
+                        <span class="legend-item"><span class="legend-dot home"></span> {{ match.home_team.short_name }} Passes</span>
+                        <span class="legend-item"><span class="legend-dot away"></span> {{ match.away_team.short_name }} Passes</span>
+                        <span style="color:#94a3b8;">Solid: Completed &bull; Dashed: Incomplete &bull; Hover for passer/receiver &bull; Click to seek replay</span>
+                    </div>
+                    <div style="font-size:11px;color:#94a3b8;">Vectors represent measured pitch trajectory &amp; direction</div>
                 </div>
 
                 <!-- HUD 3: Team Shape & Compactness Metrics Grid -->
@@ -1494,6 +1525,7 @@
     {{ away_players|json_script:"away-players-data" }}
     {{ shots|json_script:"shots-data" }}
     {{ tactical_data|json_script:"tactical-data" }}
+    {{ passes|json_script:"passes-data" }}
 
     <script>
         // --- Match Video Replay Controller ---
@@ -1787,9 +1819,22 @@
             document.getElementById('player-modal').classList.add('open');
         }
 
-        function closeModal() {
-            document.getElementById('player-modal').classList.remove('open');
+        function openPlayerByLineupId(lineupId) {
+            if (!lineupId) return;
+            const hIdx = homePlayers.findIndex(p => p.lineup_entry_id === lineupId || p.id === lineupId);
+            if (hIdx !== -1) {
+                openPlayer('lineup-home', hIdx);
+                return;
+            }
+            const aIdx = awayPlayers.findIndex(p => p.lineup_entry_id === lineupId || p.id === lineupId);
+            if (aIdx !== -1) {
+                openPlayer('lineup-away', aIdx);
+                return;
+            }
         }
+        window.openPlayerByLineupId = openPlayerByLineupId;
+        window.openPlayer = openPlayer;
+        window.closeModal = closeModal;
 
         function showTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
@@ -1875,20 +1920,25 @@
         (function() {
             const shotsDataEl = document.getElementById('shots-data');
             const tacticalDataEl = document.getElementById('tactical-data');
+            const passesDataEl = document.getElementById('passes-data');
             const shotsData = JSON.parse(shotsDataEl ? shotsDataEl.textContent || '[]' : '[]');
             const tacticalData = JSON.parse(tacticalDataEl ? tacticalDataEl.textContent || '{}' : '{}');
+            const passesData = JSON.parse(passesDataEl ? passesDataEl.textContent || '[]' : '[]');
 
             const trajGroup = document.getElementById('shot-trajectories');
             const shotNodeGroup = document.getElementById('shot-nodes');
             const hullGroup = document.getElementById('tactical-hull-group');
             const linkGroup = document.getElementById('tactical-network-links');
             const netNodeGroup = document.getElementById('tactical-network-nodes');
+            const passEventsGroup = document.getElementById('pass-events-group');
             const tooltip = document.getElementById('shot-map-tooltip');
             const pitchWrapper = document.getElementById('shot-pitch-wrapper');
 
             let currentMode = 'shots';
             let shotFilter = 'all';
             let tacticalFilter = 'both';
+            let passEventFilter = 'all';
+            let passTeamFilter = 'both';
 
             const homeColor = '#4FAE79';
             const awayColor = '#5B9BD5';
@@ -1910,6 +1960,7 @@
                 if (hullGroup) hullGroup.innerHTML = '';
                 if (linkGroup) linkGroup.innerHTML = '';
                 if (netNodeGroup) netNodeGroup.innerHTML = '';
+                if (passEventsGroup) passEventsGroup.innerHTML = '';
             }
 
             function updateTooltipPos(evt) {
@@ -2140,10 +2191,15 @@
                         g.addEventListener('mouseleave', () => {
                             if (tooltip) tooltip.style.display = 'none';
                         });
+                        g.style.cursor = 'pointer';
                         g.addEventListener('click', () => {
-                            const pShot = shotsData.find(s => s.player && s.player.includes(node.name));
-                            if (pShot && pShot.frame_idx != null) {
-                                seekVideoToFrame(pShot.frame_idx);
+                            if (node.lineup_id && window.openPlayerByLineupId) {
+                                window.openPlayerByLineupId(node.lineup_id);
+                            } else {
+                                const pShot = shotsData.find(s => s.player && s.player.includes(node.name));
+                                if (pShot && pShot.frame_idx != null) {
+                                    seekVideoToFrame(pShot.frame_idx);
+                                }
                             }
                         });
 
@@ -2259,26 +2315,122 @@
                 });
             }
 
+            // 4. Individual Pass Events Rendering
+            function renderPassEvents() {
+                if (!passEventsGroup) return;
+                passEventsGroup.innerHTML = '';
+
+                const filtered = passesData.filter(p => {
+                    if (passTeamFilter === 'home' && p.side !== 'home') return false;
+                    if (passTeamFilter === 'away' && p.side !== 'away') return false;
+
+                    if (passEventFilter === 'completed' && !p.is_completed) return false;
+                    if (passEventFilter === 'progressive' && !p.is_progressive) return false;
+                    if (passEventFilter === 'crosses' && !p.is_cross) return false;
+                    if (passEventFilter === 'key' && !p.is_key_pass) return false;
+
+                    return true;
+                });
+
+                filtered.forEach(pass => {
+                    const p1 = pitchToSvg(pass.start_x, pass.start_y);
+                    const p2 = pitchToSvg(pass.end_x, pass.end_y);
+                    const isHome = pass.side === 'home';
+                    const teamColor = isHome ? homeColor : awayColor;
+                    const markerId = isHome ? 'url(#arrow-home)' : 'url(#arrow-away)';
+
+                    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', p1.x);
+                    line.setAttribute('y1', p1.y);
+                    line.setAttribute('x2', p2.x);
+                    line.setAttribute('y2', p2.y);
+                    line.setAttribute('stroke', teamColor);
+                    line.setAttribute('stroke-width', pass.is_progressive ? '2.8' : '1.8');
+                    line.setAttribute('stroke-opacity', pass.is_completed ? '0.8' : '0.45');
+                    if (!pass.is_completed) {
+                        line.setAttribute('stroke-dasharray', '4,4');
+                    } else {
+                        line.setAttribute('marker-end', markerId);
+                    }
+                    line.setAttribute('class', 'pass-vector-line');
+
+                    const originCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    originCircle.setAttribute('cx', p1.x);
+                    originCircle.setAttribute('cy', p1.y);
+                    originCircle.setAttribute('r', '3.5');
+                    originCircle.setAttribute('fill', teamColor);
+                    originCircle.setAttribute('stroke', '#ffffff');
+                    originCircle.setAttribute('stroke-width', '1');
+
+                    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    g.setAttribute('class', 'pass-event-item');
+                    g.style.cursor = 'pointer';
+                    g.appendChild(line);
+                    g.appendChild(originCircle);
+
+                    let tags = [];
+                    if (pass.is_completed) tags.push('<span style="color:#4FAE79;font-weight:700;">Completed</span>');
+                    else tags.push('<span style="color:#e53e3e;font-weight:700;">Incomplete</span>');
+                    if (pass.is_progressive) tags.push('<span style="color:#f6ad55;font-weight:700;">⚡ Progressive</span>');
+                    if (pass.is_cross) tags.push('<span style="color:#63b3ed;font-weight:700;">🎯 Cross</span>');
+                    if (pass.is_key_pass) tags.push('<span style="color:#f6e05e;font-weight:700;">⭐ Key Pass</span>');
+
+                    g.addEventListener('mouseenter', (e) => {
+                        line.setAttribute('stroke-opacity', '1');
+                        line.setAttribute('stroke-width', '3.8');
+                        if (tooltip) {
+                            tooltip.innerHTML = `
+                                <div class="shot-tooltip-player">${pass.passer} &rarr; ${pass.receiver}</div>
+                                <div class="shot-tooltip-meta">Minute ${pass.minute}' &bull; ${pass.distance_m}m &bull; ${pass.speed_mps} m/s</div>
+                                <div style="margin-top:3px;font-size:11px;">${tags.join(' ')}</div>
+                                <div style="font-size:10px;color:#aaa;margin-top:4px;">Click to seek video replay</div>
+                            `;
+                            tooltip.style.display = 'block';
+                            updateTooltipPos(e);
+                        }
+                    });
+                    g.addEventListener('mousemove', (e) => updateTooltipPos(e));
+                    g.addEventListener('mouseleave', () => {
+                        line.setAttribute('stroke-opacity', pass.is_completed ? '0.8' : '0.45');
+                        line.setAttribute('stroke-width', pass.is_progressive ? '2.8' : '1.8');
+                        if (tooltip) tooltip.style.display = 'none';
+                    });
+                    g.addEventListener('click', () => {
+                        if (pass.start_frame != null) {
+                            seekVideoToFrame(pass.start_frame);
+                        } else if (pass.frame_idx != null) {
+                            seekVideoToFrame(pass.frame_idx);
+                        }
+                    });
+
+                    passEventsGroup.appendChild(g);
+                });
+            }
+
             window.setPitchMode = function(mode) {
                 currentMode = mode;
                 clearLayers();
 
                 document.querySelectorAll('.pitch-mode-btn').forEach(btn => {
-                    btn.classList.toggle('active', btn.dataset.mode === mode);
+                    btn.classList.toggle('active', btn.dataset.mode === mode || btn.id === 'btn-mode-' + mode);
                 });
 
                 const shotsFilters = document.getElementById('subfilters-shots');
+                const passesFilters = document.getElementById('subfilters-passes');
                 const tacticalFilters = document.getElementById('subfilters-tactical');
                 const shotsLegend = document.getElementById('hud-shots-legend');
                 const passesLegend = document.getElementById('hud-passes-legend');
+                const eventsLegend = document.getElementById('hud-events-legend');
                 const shapeMetrics = document.getElementById('hud-shape-metrics');
                 const shotsList = document.getElementById('shots-list-container');
                 const caption = document.getElementById('tactical-mode-caption');
 
                 if (shotsFilters) shotsFilters.style.display = mode === 'shots' ? 'flex' : 'none';
-                if (tacticalFilters) tacticalFilters.style.display = mode !== 'shots' ? 'flex' : 'none';
+                if (passesFilters) passesFilters.style.display = mode === 'events' ? 'flex' : 'none';
+                if (tacticalFilters) tacticalFilters.style.display = (mode === 'passes' || mode === 'shape') ? 'flex' : 'none';
                 if (shotsLegend) shotsLegend.style.display = mode === 'shots' ? 'flex' : 'none';
                 if (passesLegend) passesLegend.style.display = mode === 'passes' ? 'flex' : 'none';
+                if (eventsLegend) eventsLegend.style.display = mode === 'events' ? 'flex' : 'none';
                 if (shapeMetrics) shapeMetrics.style.display = mode === 'shape' ? 'grid' : 'none';
                 if (shotsList) shotsList.style.display = mode === 'shots' ? 'block' : 'none';
 
@@ -2288,10 +2440,29 @@
                 } else if (mode === 'passes') {
                     if (caption) caption.textContent = 'Passing network based on average pitch coordinates and pair pass frequencies.';
                     renderPassingNetwork(tacticalFilter);
+                } else if (mode === 'events') {
+                    if (caption) caption.textContent = 'Individual pass event vectors with progressive advancement and cross detection.';
+                    renderPassEvents();
                 } else if (mode === 'shape') {
                     if (caption) caption.textContent = 'Team tactical shape, length, width, and outfield convex hull compactness.';
                     renderTeamShape(tacticalFilter);
                 }
+            };
+
+            window.setPassEventFilter = function(filter) {
+                passEventFilter = filter;
+                document.querySelectorAll('#subfilters-passes [data-pfilter]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.pfilter === filter);
+                });
+                renderPassEvents();
+            };
+
+            window.setPassTeamFilter = function(team) {
+                passTeamFilter = team;
+                document.querySelectorAll('#subfilters-passes [data-pteam]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.pteam === team);
+                });
+                renderPassEvents();
             };
 
             window.setTacticalTeamFilter = function(tFilter) {

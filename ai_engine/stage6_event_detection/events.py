@@ -11,7 +11,7 @@ state across a cut using the last known state), not part of this stub.
 from collections import Counter, deque
 
 from ai_engine.config import EventDetectionConfig
-from ai_engine.utils.types import BallTrajectoryPoint, Event, MasterIdentity
+from ai_engine.utils.types import BallTrajectoryPoint, Event, MasterIdentity, ObjectClass, Team
 
 
 def detect_possession(
@@ -131,7 +131,7 @@ def detect_passes(
     for prev_event, next_event in zip(possession_events, possession_events[1:]):
         passer_team = team_by_id.get(prev_event.player_master_id)
         receiver_team = team_by_id.get(next_event.player_master_id)
-        if passer_team is None or receiver_team is None:
+        if passer_team is None or receiver_team is None or passer_team == Team.REFEREE or receiver_team == Team.REFEREE:
             continue
         if passer_team != receiver_team:
             continue  # turnover, not a pass
@@ -140,6 +140,10 @@ def detect_passes(
 
         p1 = identity_by_id.get(prev_event.player_master_id)
         p2 = identity_by_id.get(next_event.player_master_id)
+        if p1 and (getattr(p1, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or p1.team == Team.REFEREE):
+            continue
+        if p2 and (getattr(p2, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or p2.team == Team.REFEREE):
+            continue
         pos1 = p1.trajectory.get(prev_event.frame_idx) if p1 else None
         pos2 = p2.trajectory.get(next_event.frame_idx) if p2 else None
         dist = 0.0
@@ -306,11 +310,15 @@ def detect_passes_with_metadata(
 
         t1 = team_by_id.get(p1_id)
         t2 = team_by_id.get(p2_id)
-        if t1 is None or t2 is None:
+        if t1 is None or t2 is None or t1 == Team.REFEREE or t2 == Team.REFEREE:
             continue
 
         p1_ident = identity_by_id.get(p1_id)
         p2_ident = identity_by_id.get(p2_id)
+        if p1_ident and (getattr(p1_ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or p1_ident.team == Team.REFEREE):
+            continue
+        if p2_ident and (getattr(p2_ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or p2_ident.team == Team.REFEREE):
+            continue
         pos1 = p1_ident.trajectory.get(prev_ev.frame_idx) if p1_ident else None
         pos2 = p2_ident.trajectory.get(next_ev.frame_idx) if p2_ident else None
 
@@ -395,6 +403,101 @@ def detect_corner_kicks(
     return corners
 
 
+def infer_team_defending_goals(
+    identities: list[MasterIdentity],
+    cls_by_track: dict[int, "ObjectClass"] | None = None,
+    ball_trajectory: list["BallTrajectoryPoint"] | None = None,
+) -> dict["Team", tuple[float, float]]:
+    """
+    Infers which goal each team is defending ((52.5, 0.0) or (-52.5, 0.0)).
+    Uses multiple robust signals:
+    1. Team spatial medians when teams occupy opposite pitch halves (median_A * median_B < 0).
+    2. Attacking team derived from physical ball strikes in attacking thirds (striking towards goal).
+    3. Clear goalkeeper locations.
+    """
+    from ai_engine.utils.types import ObjectClass, Team
+
+    team_defending_goal: dict[Team, tuple[float, float]] = {}
+    if not identities:
+        return team_defending_goal
+
+    team_xs: dict[Team, list[float]] = {Team.TEAM_A: [], Team.TEAM_B: []}
+    gk_xs: dict[Team, list[float]] = {Team.TEAM_A: [], Team.TEAM_B: []}
+
+    for ident in identities:
+        if ident.team not in team_xs:
+            continue
+        xs = [pt.x_m for pt in ident.trajectory.values() if abs(pt.x_m) <= 55.0]
+        team_xs[ident.team].extend(xs)
+        is_gk = (
+            getattr(ident, "cls", None) == ObjectClass.GOALKEEPER
+            or getattr(ident, "cls_name", None) == "goalkeeper"
+            or (cls_by_track and cls_by_track.get(ident.master_id) == ObjectClass.GOALKEEPER)
+        )
+        if is_gk:
+            gk_xs[ident.team].extend(xs)
+
+    # 1. Team spatial medians (if clearly in opposite pitch halves)
+    team_medians = {}
+    for team in (Team.TEAM_A, Team.TEAM_B):
+        if team_xs[team]:
+            s = sorted(team_xs[team])
+            team_medians[team] = s[len(s) // 2]
+
+    if Team.TEAM_A in team_medians and Team.TEAM_B in team_medians:
+        if team_medians[Team.TEAM_A] * team_medians[Team.TEAM_B] < 0:
+            if team_medians[Team.TEAM_A] < team_medians[Team.TEAM_B]:
+                return {Team.TEAM_A: (-52.5, 0.0), Team.TEAM_B: (52.5, 0.0)}
+            else:
+                return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
+
+    # 2. Attacking strikes towards goal (ball moving towards +52.5 or -52.5 after physical player contact)
+    if ball_trajectory:
+        ball_pts = {p.frame_idx: p for p in ball_trajectory if p.x_m is not None}
+        for f_idx, b in ball_pts.items():
+            if abs(b.x_m) > 25.0:
+                target_g = (52.5, 0.0) if b.x_m > 0 else (-52.5, 0.0)
+                opp_g = (-52.5, 0.0) if b.x_m > 0 else (52.5, 0.0)
+                for ident in identities:
+                    pos = ident.trajectory.get(f_idx)
+                    if pos:
+                        dist = ((pos.x_m - b.x_m) ** 2 + (pos.y_m - b.y_m) ** 2) ** 0.5
+                        if dist <= 1.0:
+                            next_b = ball_pts.get(f_idx + 1)
+                            if next_b and (next_b.x_m - b.x_m) * (1 if b.x_m > 0 else -1) > 0.4:
+                                attacking_team = ident.team
+                                defending_team = Team.TEAM_A if attacking_team == Team.TEAM_B else Team.TEAM_B
+                                return {defending_team: target_g, attacking_team: opp_g}
+
+    # 3. Goalkeeper signal (if one team clearly has GK at one end and other does not)
+    gk_defending: dict[Team, tuple[float, float]] = {}
+    for team in (Team.TEAM_A, Team.TEAM_B):
+        if len(gk_xs[team]) >= 5:
+            med_gk = sorted(gk_xs[team])[len(gk_xs[team]) // 2]
+            if med_gk > 15.0:
+                gk_defending[team] = (52.5, 0.0)
+            elif med_gk < -15.0:
+                gk_defending[team] = (-52.5, 0.0)
+
+    if len(gk_defending) == 2 and gk_defending[Team.TEAM_A] != gk_defending[Team.TEAM_B]:
+        return gk_defending
+    elif Team.TEAM_A in gk_defending and Team.TEAM_B not in gk_defending:
+        opp = (-52.5, 0.0) if gk_defending[Team.TEAM_A] == (52.5, 0.0) else (52.5, 0.0)
+        return {Team.TEAM_A: gk_defending[Team.TEAM_A], Team.TEAM_B: opp}
+    elif Team.TEAM_B in gk_defending and Team.TEAM_A not in gk_defending:
+        opp = (-52.5, 0.0) if gk_defending[Team.TEAM_B] == (52.5, 0.0) else (52.5, 0.0)
+        return {Team.TEAM_B: gk_defending[Team.TEAM_B], Team.TEAM_A: opp}
+
+    # 4. Fallback: compare team medians
+    if Team.TEAM_A in team_medians and Team.TEAM_B in team_medians:
+        if team_medians[Team.TEAM_A] > team_medians[Team.TEAM_B]:
+            return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
+        else:
+            return {Team.TEAM_A: (-52.5, 0.0), Team.TEAM_B: (52.5, 0.0)}
+
+    return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
+
+
 def detect_shots(
     ball_trajectory: list[BallTrajectoryPoint],
     goal_centers_pitch: tuple[tuple[float, float], ...] | tuple[float, float] = ((52.5, 0.0), (-52.5, 0.0)),
@@ -403,7 +506,7 @@ def detect_shots(
     min_origin_distance_m: float = 3.0,
     max_origin_distance_m: float = 35.0,
     min_alignment: float = 0.88,
-    cooldown_frames: int = 40,
+    cooldown_frames: int = 200,
     identities: list[MasterIdentity] | None = None,
     pass_intervals: list[tuple[int, int]] | None = None,
 ) -> list[Event]:
@@ -414,10 +517,10 @@ def detect_shots(
     - Speed between min_shot_speed_mps (12.0 m/s = 43 km/h) and max_plausible_speed_mps.
     - Directional alignment >= min_alignment towards the target goal.
     - Ball trajectory must actually continue approaching the target goal over subsequent
-      frames (min 3.5m approach), excluding 1-frame deflections during tackles/tussles.
-    - Excludes actions occurring during completed teammate pass intervals.
-    - If identities are provided, validates that the shooter is attacking the target goal
-      (not clearing towards their own defending goal).
+      frames (min 7.5m approach for long shots, 5.0m inside box), excluding passes across the box.
+    - Excludes actions occurring during completed teammate pass intervals unless the strike is high velocity.
+    - If identities are provided, validates that an attacking player is within physical striking
+      proximity (<= 3.5m) and excludes non-player broadcast graphic transitions.
     """
     from ai_engine.utils.types import Team
 
@@ -435,32 +538,8 @@ def detect_shots(
     ball_map = {p.frame_idx: p for p in valid_points}
     last_event_frame = -cooldown_frames
 
-    # Infer team defending goals from relative team positions (if available)
-    team_defending_goal: dict[Team, tuple[float, float]] = {}
-    if identities:
-        team_medians: dict[Team, float] = {}
-        for team in (Team.TEAM_A, Team.TEAM_B):
-            xs = [
-                pt.x_m
-                for ident in identities
-                if ident.team == team
-                for pt in ident.trajectory.values()
-                if abs(pt.x_m) <= 55.0
-            ]
-            if xs:
-                team_medians[team] = sorted(xs)[len(xs) // 2]
-        if Team.TEAM_A in team_medians and Team.TEAM_B in team_medians:
-            # Defending goal can only be reliably inferred if the two teams are clearly separated
-            # across opposite pitch halves (i.e. one team's median is on negative half, other on positive).
-            # When both medians share the same sign, the footage is localized in one attacking third
-            # and comparing medians within the same half does not indicate defending goal direction.
-            if team_medians[Team.TEAM_A] * team_medians[Team.TEAM_B] < 0:
-                if team_medians[Team.TEAM_A] < team_medians[Team.TEAM_B]:
-                    team_defending_goal[Team.TEAM_A] = (-52.5, 0.0)
-                    team_defending_goal[Team.TEAM_B] = (52.5, 0.0)
-                else:
-                    team_defending_goal[Team.TEAM_A] = (52.5, 0.0)
-                    team_defending_goal[Team.TEAM_B] = (-52.5, 0.0)
+    # Infer team defending goals from relative team positions and goalkeepers
+    team_defending_goal = infer_team_defending_goals(identities, ball_trajectory=ball_trajectory) if identities else {}
 
     for current, next_point in zip(valid_points, valid_points[1:]):
         dt_frames = next_point.frame_idx - current.frame_idx
@@ -472,9 +551,10 @@ def detect_shots(
         vy = (next_point.y_m - current.y_m) / dt_sec
         speed = (vx**2 + vy**2) ** 0.5
 
-        # Exclude frames that are part of an already-identified completed pass
+        # Exclude frames that are part of an already-identified completed pass (unless high-speed shot)
         if pass_intervals and any(start <= current.frame_idx <= end for start, end in pass_intervals):
-            continue
+            if speed < 16.0:
+                continue
 
         best = None  # (goal_center, origin_dist, alignment)
         for goal_center_pitch in goal_centers:
@@ -513,34 +593,48 @@ def detect_shots(
             # Verify sustained trajectory towards the goal (excludes momentary 1-frame tackle deflections)
             future_pts = [
                 ball_map[f]
-                for f in range(current.frame_idx + 1, min(current.frame_idx + 18, current.frame_idx + 30))
+                for f in range(current.frame_idx + 1, current.frame_idx + 35)
                 if f in ball_map
             ]
             if future_pts:
+                # Must stay strictly within pitch boundaries (excludes broadcast graphics / tracking jumps)
+                if not all(abs(p.x_m) <= 55.0 and abs(p.y_m) <= 35.0 for p in future_pts):
+                    continue
+
                 min_future_dist = min(
                     ((goal_center_pitch[0] - p.x_m) ** 2 + (goal_center_pitch[1] - p.y_m) ** 2) ** 0.5
                     for p in future_pts
                 )
-                if (origin_dist - min_future_dist) < 3.5:
-                    continue  # Did not travel towards goal
+                min_approach = 5.0 if origin_dist <= 12.0 else 7.5
+                if (origin_dist - min_future_dist) < min_approach:
+                    continue  # Did not travel sufficiently towards goal
             else:
                 continue
 
-            # Verify shooter's team is attacking this goal, not defending it
+            # Verify shooter presence: at least one attacking player must be in physical striking proximity (<= 3.5m)
             if identities:
-                closest_team = None
-                closest_d = float("inf")
+                attacking_team = None
+                if team_defending_goal:
+                    attacking_teams = [t for t, g in team_defending_goal.items() if g != goal_center_pitch]
+                    if attacking_teams:
+                        attacking_team = attacking_teams[0]
+
+                min_att_d = float("inf")
                 for ident in identities:
-                    pos = ident.trajectory.get(current.frame_idx)
-                    if pos:
-                        d = ((pos.x_m - current.x_m) ** 2 + (pos.y_m - current.y_m) ** 2) ** 0.5
-                        if d < closest_d:
-                            closest_d = d
-                            closest_team = ident.team
-                if closest_team == Team.REFEREE:
-                    continue
-                if closest_team and team_defending_goal.get(closest_team) == goal_center_pitch:
-                    continue  # Clearance / backpass towards own defending goal
+                    if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
+                        continue
+                    if attacking_team is not None and ident.team != attacking_team:
+                        continue
+                    for f in range(max(0, current.frame_idx - 4), current.frame_idx + 2):
+                        pos = ident.trajectory.get(f)
+                        b_pos = ball_map.get(f)
+                        if pos and b_pos:
+                            d = ((pos.x_m - b_pos.x_m) ** 2 + (pos.y_m - b_pos.y_m) ** 2) ** 0.5
+                            if d < min_att_d:
+                                min_att_d = d
+
+                if min_att_d > 3.5:
+                    continue  # No attacking player close enough to have kicked the ball (discards non-player graphic artifacts)
 
             # Extrapolate ball path to goal line (x = goal_center_pitch[0])
             is_on_target = False
@@ -553,6 +647,19 @@ def detect_shots(
                     if abs(y_at_goal) <= 4.2:
                         is_on_target = True
 
+            # If future trajectory points actually reached within 2.5m of the goal line inside the posts
+            # (Allows up to 8.5m in y due to 3D elevation perspective projection of elevated netting)
+            if future_pts and any(abs(p.x_m - goal_center_pitch[0]) <= 2.5 and abs(p.y_m - goal_center_pitch[1]) <= 8.5 for p in future_pts):
+                is_on_target = True
+
+            # Goal detection: ball reaches past or onto the goal line into the net area and settles in net
+            is_goal = False
+            goal_dir = 1.0 if goal_center_pitch[0] > 0 else -1.0
+            net_pts_count = sum(1 for p in future_pts if p.x_m * goal_dir >= 51.8)
+            if net_pts_count >= 5:
+                is_goal = True
+                is_on_target = True
+
             events.append(
                 Event(
                     event_type="shot",
@@ -563,6 +670,7 @@ def detect_shots(
                         "alignment": round(alignment, 2),
                         "target_goal": goal_center_pitch,
                         "is_on_target": is_on_target,
+                        "is_goal": is_goal,
                     },
                 )
             )
