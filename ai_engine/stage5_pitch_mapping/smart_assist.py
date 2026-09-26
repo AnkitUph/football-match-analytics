@@ -72,10 +72,15 @@ def detect_pitch_keypoints(frame_bgr, api_key, confidence_threshold=0.5, max_poi
 
     landmarks_by_index = {l["roboflow_index"]: l for l in ROBOFLOW_KEYPOINTS_32}
 
+    h_frame, w_frame = frame_bgr.shape[:2]
     suggestions = []
     for kp in predictions[0].get("keypoints", []):
         confidence = kp.get("confidence", 0)
         if confidence < confidence_threshold:
+            continue
+        # Ensure point is strictly inside visible frame boundaries
+        kx, ky = kp.get("x", -1), kp.get("y", -1)
+        if kx < 0 or kx >= w_frame or ky < 0 or ky >= h_frame:
             continue
         roboflow_index = kp["class_id"] + 1  # NOT kp["class"] — see docstring above
         landmark = landmarks_by_index.get(roboflow_index)
@@ -84,8 +89,8 @@ def detect_pitch_keypoints(frame_bgr, api_key, confidence_threshold=0.5, max_poi
         suggestions.append({
             "landmark_id": landmark["id"],
             "label": landmark["label"],
-            "pixel_x": kp["x"],
-            "pixel_y": kp["y"],
+            "pixel_x": kx,
+            "pixel_y": ky,
             "pitch_x": landmark["x"],
             "pitch_y": landmark["y"],
             "confidence": confidence,

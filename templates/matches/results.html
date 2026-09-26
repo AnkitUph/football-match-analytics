@@ -1383,6 +1383,7 @@
                     <tbody>
                         <!-- Attacking & Shooting -->
                         <tr class="category-header"><td colspan="4">Attacking &amp; Finishing</td></tr>
+                        <tr><td class="stat-label">Goals</td><td class="home-val">{{ team_stats.home.goals|default:0 }}</td><td></td><td class="away-val">{{ team_stats.away.goals|default:0 }}</td></tr>
                         <tr><td class="stat-label">Expected Goals (xG)</td><td class="home-val">{{ team_stats.home.xg }}</td><td></td><td class="away-val">{{ team_stats.away.xg }}</td></tr>
                         <tr><td class="stat-label">Total Shots</td><td class="home-val">{{ team_stats.home.shots }}</td><td></td><td class="away-val">{{ team_stats.away.shots }}</td></tr>
                         <tr><td class="stat-label">Shots on Target</td><td class="home-val">{{ team_stats.home.shots_on_target }}</td><td></td><td class="away-val">{{ team_stats.away.shots_on_target }}</td></tr>

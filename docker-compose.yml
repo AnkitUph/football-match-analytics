@@ -25,7 +25,7 @@ services:
   celery_worker:
     build: .
     container_name: football_celery_worker
-    command: celery -A config worker --loglevel=info
+    command: celery -A config worker --loglevel=info --concurrency=2
 
     volumes:
       - .:/app

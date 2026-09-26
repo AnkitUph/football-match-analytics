@@ -113,13 +113,19 @@ class ReidEmbedder:
             return results
 
         try:
-            inputs = processor(images=valid_pil_crops, return_tensors="pt").to(device)
-            with torch.no_grad():
-                outputs = model(**inputs)
-                # Take CLS token embedding
-                cls_tokens = outputs.last_hidden_state[:, 0, :]
-                norm_tokens = torch.nn.functional.normalize(cls_tokens, p=2, dim=1)
-                feats = norm_tokens.cpu().numpy().astype(np.float32)
+            batch_size = 64
+            all_feats = []
+            for b_start in range(0, len(valid_pil_crops), batch_size):
+                chunk = valid_pil_crops[b_start : b_start + batch_size]
+                inputs = processor(images=chunk, return_tensors="pt").to(device)
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                    cls_tokens = outputs.last_hidden_state[:, 0, :]
+                    norm_tokens = torch.nn.functional.normalize(cls_tokens, p=2, dim=1)
+                    all_feats.append(norm_tokens.cpu().numpy().astype(np.float32))
+                del inputs, outputs, cls_tokens, norm_tokens
+
+            feats = np.concatenate(all_feats, axis=0) if all_feats else np.empty((0, self.embedding_dim), dtype=np.float32)
 
             for i, idx in enumerate(valid_indices):
                 results[idx] = feats[i]

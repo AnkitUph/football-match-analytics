@@ -41,7 +41,7 @@ class DetectionConfig:
     ball_conf_thresh: float = 0.15
     iou_thresh: float = 0.5
     device: str = "intel:gpu"  # OpenVINO device string — "intel:gpu", "intel:cpu", "intel:npu"
-    target_fps: int = 25       # full 25fps tracking for continuous, non-flickering video overlays
+    target_fps: int = 25       # full native 25fps tracking for maximum tracking precision
 
 
 # ---------------------------------------------------------------------------

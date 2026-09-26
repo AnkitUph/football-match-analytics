@@ -298,6 +298,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
     os.makedirs(annotated_dir, exist_ok=True)
     out_filename = f"match_{match.id}_annotated.mp4"
     out_filepath = os.path.join(annotated_dir, out_filename)
+    tmp_filepath = os.path.join(annotated_dir, f"tmp_{match.id}_{os.getpid()}_{out_filename}")
 
     # 5. Launch ffmpeg process for H.264 encoding with +faststart
     ffmpeg_cmd = [
@@ -311,10 +312,10 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
         "-i", "-",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
-        "-preset", "fast",
-        "-crf", "22",
+        "-preset", "ultrafast",
+        "-crf", "23",
         "-movflags", "+faststart",
-        out_filepath,
+        tmp_filepath,
     ]
 
     try:
@@ -471,7 +472,19 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
 
     if proc.returncode != 0:
         logger.error("ffmpeg failed with code %d: %s", proc.returncode, stderr_output)
+        if os.path.exists(tmp_filepath):
+            try:
+                os.remove(tmp_filepath)
+            except OSError:
+                pass
         return None
+
+    # Atomically move the completed video into place
+    try:
+        os.replace(tmp_filepath, out_filepath)
+    except OSError:
+        import shutil
+        shutil.move(tmp_filepath, out_filepath)
 
     # Update MatchVideo field
     rel_path = f"matches/annotated/{out_filename}"

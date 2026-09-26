@@ -255,57 +255,89 @@ def match_tracklets_across_cut(
          cap must never be exceeded.
     """
     assignments: dict[int, int] = {}
+    player_tracklets = [t for t in new_shot_tracklets if t.team != Team.REFEREE]
 
-    for tracklet in new_shot_tracklets:
-        same_team_identities = [
-            identity for identity in gallery.identities if identity.team == tracklet.team
-        ]
-
-        # Strong override: confident jersey number match.
-        if tracklet.jersey_number is not None:
-            number_match = next(
-                (
-                    identity
-                    for identity in same_team_identities
-                    if identity.jersey_number == tracklet.jersey_number
-                ),
-                None,
-            )
-            if number_match:
-                assignments[tracklet.track_id] = number_match.master_id
-                continue
-
-        # TODO: replace this per-tracklet loop with a proper batched
-        # Hungarian assignment (build the full similarity matrix across
-        # ALL of new_shot_tracklets vs. same-team gallery identities at
-        # once, then linear_sum_assignment on the whole matrix) — matching
-        # one at a time greedily can produce suboptimal/conflicting
-        # assignments when two tracklets both best-match the same identity.
-        if not same_team_identities or tracklet.reid_embedding is None:
-            if gallery.can_add(tracklet.team):
-                new_identity = gallery.add(tracklet)
-                assignments[tracklet.track_id] = new_identity.master_id
-            # else: no signal to match on AND gallery full — this tracklet
-            # is unassigned; log it for manual review rather than guessing.
+    for team in (Team.TEAM_A, Team.TEAM_B):
+        team_tracklets = [t for t in player_tracklets if t.team == team]
+        team_identities = [i for i in gallery.identities if i.team == team]
+        if not team_tracklets:
             continue
 
-        similarities = [
-            cosine_similarity(
-                np.array(tracklet.reid_embedding), np.array(identity.reid_embedding)
-            )
-            for identity in same_team_identities
-        ]
-        best_idx = int(np.argmax(similarities))
-        best_score = similarities[best_idx]
+        unassigned_tracklets = []
+        available_identities = list(team_identities)
 
-        if best_score >= similarity_threshold or not gallery.can_add(tracklet.team):
-            best_identity = same_team_identities[best_idx]
-            assignments[tracklet.track_id] = best_identity.master_id
-            gallery.update_embedding(
-                best_identity.master_id, np.array(tracklet.reid_embedding)
-            )
-        else:
-            new_identity = gallery.add(tracklet)
-            assignments[tracklet.track_id] = new_identity.master_id
+        # 1. High-confidence Jersey Number matching
+        for t in team_tracklets:
+            matched_id = None
+            if t.jersey_number is not None:
+                matched_id = next(
+                    (ident for ident in available_identities if ident.jersey_number == t.jersey_number),
+                    None
+                )
+            if matched_id is not None:
+                assignments[t.track_id] = matched_id.master_id
+                available_identities.remove(matched_id)
+                if t.reid_embedding:
+                    gallery.update_embedding(matched_id.master_id, np.array(t.reid_embedding))
+            else:
+                unassigned_tracklets.append(t)
+
+        if not unassigned_tracklets:
+            continue
+
+        # 2. Batched Hungarian Matching on Re-ID Embeddings
+        valid_tracklets = [t for t in unassigned_tracklets if t.reid_embedding is not None]
+        no_emb_tracklets = [t for t in unassigned_tracklets if t.reid_embedding is None]
+
+        if valid_tracklets and available_identities:
+            cost_matrix = np.zeros((len(valid_tracklets), len(available_identities)), dtype=np.float32)
+            for i, t in enumerate(valid_tracklets):
+                t_emb = np.array(t.reid_embedding)
+                for j, ident in enumerate(available_identities):
+                    i_emb = np.array(ident.reid_embedding) if ident.reid_embedding else None
+                    if i_emb is not None:
+                        sim = cosine_similarity(t_emb, i_emb)
+                        cost_matrix[i, j] = 1.0 - sim
+                    else:
+                        cost_matrix[i, j] = 1.0
+
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            matched_t_indices = set()
+            matched_ident_indices = set()
+
+            for r, c in zip(row_ind, col_ind):
+                sim = 1.0 - cost_matrix[r, c]
+                t = valid_tracklets[r]
+                ident = available_identities[c]
+
+                if sim >= similarity_threshold or not gallery.can_add(team):
+                    assignments[t.track_id] = ident.master_id
+                    gallery.update_embedding(ident.master_id, np.array(t.reid_embedding))
+                    matched_t_indices.add(r)
+                    matched_ident_indices.add(c)
+                elif gallery.can_add(team):
+                    new_id = gallery.add(t)
+                    assignments[t.track_id] = new_id.master_id
+                    matched_t_indices.add(r)
+
+            # Remaining tracklets that weren't assigned
+            for r, t in enumerate(valid_tracklets):
+                if r not in matched_t_indices:
+                    if gallery.can_add(team):
+                        new_id = gallery.add(t)
+                        assignments[t.track_id] = new_id.master_id
+                    elif available_identities:
+                        unmatched_c = [c for c in range(len(available_identities)) if c not in matched_ident_indices]
+                        if unmatched_c:
+                            best_c = min(unmatched_c, key=lambda c: cost_matrix[r, c])
+                            ident = available_identities[best_c]
+                            assignments[t.track_id] = ident.master_id
+                            matched_ident_indices.add(best_c)
+
+        # For tracklets with no embedding:
+        for t in no_emb_tracklets:
+            if gallery.can_add(team):
+                new_id = gallery.add(t)
+                assignments[t.track_id] = new_id.master_id
 
     return assignments

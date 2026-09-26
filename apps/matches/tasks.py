@@ -106,7 +106,6 @@ def process_match(self, match_id):
         survivors = [t for t in tracklets.values() if t.duration_frames >= min_duration_frames]
 
         # --- Stage 3: Team Re-ID, Stitching & Classification (DINOv2 + Color Fallback) ---
-        cap2 = cv2.VideoCapture(video_path)
         colors, valid = {}, []
         track_embeddings = {}
         referees = []
@@ -114,45 +113,94 @@ def process_match(self, match_id):
         from ai_engine.stage3_team_reid.reid import ReidEmbedder
         embedder = ReidEmbedder(DEFAULT_CONFIG.team_reid)
 
-        MAX_COLOR_SAMPLES_PER_TRACK = 5
+        # High-impact optimization:
+        # Instead of 15 samples per tracklet and thousands of random seeking operations,
+        # sample up to 3 high-quality crops per tracklet (start, middle, end) and read
+        # video frames in a single monotonic forward pass.
+        MAX_COLOR_SAMPLES_PER_TRACK = 3
+        crops_needed_by_frame = defaultdict(list)
         for t in survivors:
             n = len(t.detections)
             sample_count = min(MAX_COLOR_SAMPLES_PER_TRACK, n)
             sample_indices = sorted(set(
                 round(i * (n - 1) / max(sample_count - 1, 1)) for i in range(sample_count)
             ))
-
-            sampled_colors = []
-            sampled_crops = []
             for idx in sample_indices:
                 det = t.detections[idx]
-                cap2.set(cv2.CAP_PROP_POS_FRAMES, det.frame_idx)
-                ok, frame = cap2.read()
-                if not ok:
-                    continue
-                x1, y1, x2, y2 = map(int, det.bbox)
-                crop = frame[max(0, y1):y2, max(0, x1):x2]
+                crops_needed_by_frame[det.frame_idx].append((t.track_id, det.bbox))
+
+        # Single monotonic forward pass through video
+        cap2 = cv2.VideoCapture(video_path)
+        track_crops = defaultdict(list)
+        track_colors = defaultdict(list)
+        sorted_frames = sorted(crops_needed_by_frame.keys())
+        curr_pos = 0
+
+        for target_f in sorted_frames:
+            if target_f != curr_pos:
+                if 0 < (target_f - curr_pos) <= 8:
+                    while curr_pos < target_f:
+                        cap2.grab()
+                        curr_pos += 1
+                else:
+                    cap2.set(cv2.CAP_PROP_POS_FRAMES, target_f)
+                    curr_pos = target_f
+
+            ok, frame = cap2.read()
+            curr_pos += 1
+            if not ok:
+                continue
+
+            for tid, bbox in crops_needed_by_frame[target_f]:
+                x1, y1, x2, y2 = map(int, bbox)
+                # CRITICAL: .copy() creates an isolated small array (~15 KB)
+                # instead of retaining a view on the entire 6.2 MB 1080p frame!
+                crop = frame[max(0, y1):y2, max(0, x1):x2].copy()
                 if crop.size > 0 and crop.shape[0] >= 15 and crop.shape[1] >= 8:
-                    sampled_crops.append(crop)
+                    track_crops[tid].append(crop)
                 color = sample_torso_color(crop)
                 if color is not None:
-                    sampled_colors.append(color)
+                    track_colors[tid].append(color)
 
-            if sampled_colors:
-                colors[t.track_id] = np.median(np.array(sampled_colors), axis=0)
+        cap2.release()
+        del crops_needed_by_frame
 
-            if sampled_crops:
-                feats = embedder.embed_batch(sampled_crops)
-                valid_feats = [f for f in feats if f is not None]
+        # Compute median colors per tracklet
+        for tid, col_list in track_colors.items():
+            if col_list:
+                colors[tid] = np.median(np.array(col_list), axis=0)
+        del track_colors
+
+        # Batch embed crops through DINOv2 (flattened into one batched forward pass)
+        all_flat_crops = []
+        crop_slices = {}
+        for t in survivors:
+            crops = track_crops.get(t.track_id, [])
+            # Embed tracklets with duration >= 12 frames (or all if very few tracks)
+            if crops and (t.duration_frames >= 12 or len(survivors) <= 40):
+                start = len(all_flat_crops)
+                all_flat_crops.extend(crops)
+                crop_slices[t.track_id] = (start, start + len(crops))
+
+        del track_crops
+
+        if all_flat_crops and getattr(DEFAULT_CONFIG.team_reid, "use_hf_dinov2", True):
+            logger.info("Stage 3: Embedding %d crops across %d tracks in batch mode...", len(all_flat_crops), len(crop_slices))
+            all_feats = embedder.embed_batch(all_flat_crops)
+            for tid, (start, end) in crop_slices.items():
+                valid_feats = [f for f in all_feats[start:end] if f is not None]
                 if valid_feats:
                     mean_feat = np.mean(np.array(valid_feats), axis=0)
                     norm = np.linalg.norm(mean_feat)
-                    track_embeddings[t.track_id] = (mean_feat / norm) if norm > 1e-6 else mean_feat
+                    track_embeddings[tid] = (mean_feat / norm) if norm > 1e-6 else mean_feat
 
+        del all_flat_crops, crop_slices
+        import gc
+        gc.collect()
+
+        for t in survivors:
             if t.track_id in colors or t.track_id in track_embeddings:
                 valid.append(t)
-
-        cap2.release()
 
         # Tracklet Stitching across brief occlusions using DINOv2 Re-ID similarity
         if getattr(DEFAULT_CONFIG.tracking, "enable_stitching", True) and track_embeddings:
@@ -190,18 +238,24 @@ def process_match(self, match_id):
 
         home_bgr = _hex_to_bgr(match.home_kit_color) if match.home_kit_color else None
         away_bgr = _hex_to_bgr(match.away_kit_color) if match.away_kit_color else None
+        home_gk_bgr = _hex_to_bgr(match.home_gk_kit_color) if match.home_gk_kit_color else None
+        away_gk_bgr = _hex_to_bgr(match.away_gk_kit_color) if match.away_gk_kit_color else None
+        cls_by_track = {t.track_id: (t.cls.value if t.cls else None) for t in valid}
 
-        from ai_engine.stage3_team_reid.team_classifier import classify_teams_with_dinov2, classify_teams_with_fallback
+        from ai_engine.stage3_team_reid.team_classifier import classify_teams_with_dinov2, classify_teams_with_fallback, perceptual_kit_distance
         if getattr(DEFAULT_CONFIG.team_reid, "use_hf_dinov2", True) and len(track_embeddings) >= 4:
             team_by_track_id = classify_teams_with_dinov2(
-                track_embeddings, colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid
+                track_embeddings, colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
+                home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
             )
         else:
-            team_by_track_id = classify_teams_with_fallback(colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid)
+            team_by_track_id = classify_teams_with_fallback(
+                colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
+                home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
+            )
 
         from ai_engine.utils.types import Team
 
-        # Referee Disambiguation:
         # Referee Disambiguation:
         # Identify true on-pitch referee track(s) using referee detection counts,
         # distinct kit color (outlier from both team kits), and single-referee exclusivity.
@@ -211,8 +265,8 @@ def process_match(self, match_id):
             tot_detections = len(t.detections)
             if ref_detections >= 10 or (t.cls and t.cls.value == "referee") or (ref_detections >= 5 and ref_detections / max(tot_detections, 1) >= 0.15):
                 col = colors.get(t.track_id)
-                matches_home = home_bgr is not None and col is not None and np.linalg.norm(col - home_bgr) < 50.0
-                matches_away = away_bgr is not None and col is not None and np.linalg.norm(col - away_bgr) < 50.0
+                matches_home = home_bgr is not None and col is not None and perceptual_kit_distance(col, home_bgr) < 45.0
+                matches_away = away_bgr is not None and col is not None and perceptual_kit_distance(col, away_bgr) < 45.0
                 if not (matches_home or matches_away):
                     score = tot_detections * (ref_detections / max(tot_detections, 1))
                     ref_candidates.append((t, score))
@@ -328,11 +382,10 @@ def process_match(self, match_id):
             except Exception:
                 logger.exception("compute_pitch_mapping failed for match=%s, continuing", match.id)
 
-        match.status = Match.MatchStatus.COMPLETED
-        match.processing_progress = 100
-        match.save(update_fields=["status", "processing_progress", "updated_at"])
-
         # Generate annotated tracking video with CV bounding boxes and ball trail
+        # Rendered BEFORE status=COMPLETED so results page loads with Tracked (AI) immediately ready
+        match.processing_progress = 92
+        match.save(update_fields=["processing_progress", "updated_at"])
         try:
             from ai_engine.stage7_visualization.annotated_video import render_annotated_match_video
             render_annotated_match_video(match)
@@ -345,6 +398,10 @@ def process_match(self, match_id):
             generate_match_report(match)
         except Exception:
             pass
+
+        match.status = Match.MatchStatus.COMPLETED
+        match.processing_progress = 100
+        match.save(update_fields=["status", "processing_progress", "updated_at"])
 
     except Exception:
         match.status = Match.MatchStatus.FAILED
@@ -438,9 +495,35 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
     pattern as PDF report generation above. The caller still wraps this
     in try/except as a second layer of safety.
     """
+    import os
     from django.conf import settings
     from apps.matches.models import MatchCalibration
     from ai_engine.stage5_pitch_mapping.smart_assist import detect_pitch_keypoints
+
+    # 0. Check if a previously calibrated match used the same video file (by file size).
+    # If so, inherit the existing verified calibration anchors (including multi-view behind-the-goal anchors).
+    try:
+        from apps.matches.models import MatchVideo
+        curr_size = os.path.getsize(video_path) if os.path.exists(video_path) else None
+        if curr_size:
+            for mv in MatchVideo.objects.exclude(match=match).select_related("match"):
+                if mv.original_video and os.path.exists(mv.original_video.path):
+                    if os.path.getsize(mv.original_video.path) == curr_size:
+                        prev_cals = MatchCalibration.objects.filter(match=mv.match)
+                        if prev_cals.exists():
+                            for pc in prev_cals:
+                                MatchCalibration.objects.update_or_create(
+                                    match=match,
+                                    calibration_frame=pc.calibration_frame,
+                                    defaults={"points": pc.points},
+                                )
+                            logger.info(
+                                "match=%s: inherited %d calibration anchors from matching video in match=%s",
+                                match.id, prev_cals.count(), mv.match_id,
+                            )
+                            return
+    except Exception:
+        logger.exception("Failed to check for matching video calibrations for match=%s", match.id)
 
     if not settings.ROBOFLOW_API_KEY:
         logger.info("match=%s: ROBOFLOW_API_KEY not configured, skipping auto-calibration", match.id)
@@ -578,7 +661,7 @@ def compute_pitch_mapping(self, match_id):
 
     from ai_engine.config import DEFAULT_CONFIG
     from ai_engine.stage5_pitch_mapping.homography_tracker import HomographyTracker
-    from ai_engine.stage5_pitch_mapping.homography import image_point_to_pitch
+    from ai_engine.stage5_pitch_mapping.homography import compute_homography_from_points, image_point_to_pitch
     from ai_engine.stage5_pitch_mapping.identity_association import match_tracklets_within_shot
     from ai_engine.stage6_event_detection.events import (
         detect_possession,
@@ -659,15 +742,65 @@ def compute_pitch_mapping(self, match_id):
             # segments still get real pitch mapping.
             continue
 
-        homography_by_frame[calibration.calibration_frame] = homography_tracker.current_H.copy()
+        seg_frames = [calibration.calibration_frame]
+        seg_H = [homography_tracker.current_H.copy()]
         cap.set(cv2.CAP_PROP_POS_FRAMES, calibration.calibration_frame + 1)
+        was_cut_paused = False
+        anchor_H = homography_tracker.current_H.copy()
         for frame_idx in range(calibration.calibration_frame + 1, segment_end_frame):
             ok, frame = cap.read()
             if not ok:
                 break
             H = homography_tracker.update(frame)
             if H is not None:
-                homography_by_frame[frame_idx] = H.copy()
+                if was_cut_paused:
+                    # Resumed from cut: re-anchor optical flow on the fresh frame
+                    homography_tracker.resume_after_cut(frame, H_target=anchor_H)
+                    was_cut_paused = False
+                seg_frames.append(frame_idx)
+                seg_H.append(H.copy())
+            else:
+                was_cut_paused = True
+
+        # If next anchor has valid bootstrap homography, apply smooth boundary drift correction
+        next_calib = calibrations[i + 1] if i + 1 < len(calibrations) else None
+        next_H = None
+        if next_calib is not None:
+            n_img = [(p["pixel_x"], p["pixel_y"]) for p in next_calib.points]
+            n_pitch = [(p["pitch_x"], p["pitch_y"]) for p in next_calib.points]
+            H_cand = compute_homography_from_points(n_img, n_pitch, DEFAULT_CONFIG.pitch_mapping)
+            if H_cand is not None:
+                next_H = H_cand / H_cand[2, 2]
+
+        has_intervening_cut = was_cut_paused or (
+            next_calib is not None
+            and len(seg_frames) > 0
+            and seg_frames[-1] < next_calib.calibration_frame - 5
+        )
+        if next_H is not None and len(seg_H) > 1 and not has_intervening_cut:
+            try:
+                Delta = next_H @ np.linalg.inv(seg_H[-1])
+                det_delta = np.linalg.det(Delta)
+                # Only apply Delta blend if Delta has positive determinant and is well-conditioned
+                if 0.05 < det_delta < 20.0:
+                    N = len(seg_H) - 1
+                    for k, f_idx in enumerate(seg_frames):
+                        alpha = k / N
+                        H_corr = ((1.0 - alpha) * np.eye(3) + alpha * Delta) @ seg_H[k]
+                        det_corr = abs(np.linalg.det(H_corr))
+                        if det_corr > 0.005 and abs(H_corr[2, 2]) > 1e-4 and np.isfinite(H_corr).all():
+                            homography_by_frame[f_idx] = H_corr / H_corr[2, 2]
+                        else:
+                            homography_by_frame[f_idx] = seg_H[k]
+                else:
+                    for f_idx, H_val in zip(seg_frames, seg_H):
+                        homography_by_frame[f_idx] = H_val
+            except Exception:
+                for f_idx, H_val in zip(seg_frames, seg_H):
+                    homography_by_frame[f_idx] = H_val
+        else:
+            for f_idx, H_val in zip(seg_frames, seg_H):
+                homography_by_frame[f_idx] = H_val
 
     cap.release()
 
@@ -796,10 +929,11 @@ def compute_pitch_mapping(self, match_id):
         px, py = "", ""
         if p.x_m is not None and p.frame_idx in homography_by_frame:
             pt = image_point_to_pitch(p.x_m, p.y_m, homography_by_frame[p.frame_idx])
-            ball_pitch_trajectory.append(
-                BallTrajectoryPoint(frame_idx=p.frame_idx, x_m=pt.x_m, y_m=pt.y_m, interpolated=p.interpolated)
-            )
-            px, py = round(pt.x_m, 2), round(pt.y_m, 2)
+            if abs(pt.x_m) <= 55.0 and abs(pt.y_m) <= 37.0:
+                ball_pitch_trajectory.append(
+                    BallTrajectoryPoint(frame_idx=p.frame_idx, x_m=pt.x_m, y_m=pt.y_m, interpolated=p.interpolated)
+                )
+                px, py = round(pt.x_m, 2), round(pt.y_m, 2)
         ball_writer.writerow([p.frame_idx, p.x_m, p.y_m, p.interpolated, px, py])
     files.ball_tracking_csv.save(f"match_{match.id}_ball.csv", ContentFile(ball_csv.getvalue()), save=True)
 
@@ -831,7 +965,8 @@ def compute_pitch_mapping(self, match_id):
                 continue
             fx, fy = (det.x1 + det.x2) / 2, det.y2
             pt = image_point_to_pitch(fx, fy, homography_by_frame[det.frame_idx])
-            traj[det.frame_idx] = PitchPoint(x_m=pt.x_m, y_m=pt.y_m)
+            if abs(pt.x_m) <= 55.0 and abs(pt.y_m) <= 37.0:
+                traj[det.frame_idx] = PitchPoint(x_m=pt.x_m, y_m=pt.y_m)
         if traj:
             identities.append(MasterIdentity(
                 master_id=t.track_id, team=t.team, reid_embedding=[],
@@ -926,11 +1061,8 @@ def compute_pitch_mapping(self, match_id):
 
         closest_identity, closest_dist = None, float("inf")
         # Search strike window [e.frame_idx - 4, e.frame_idx + 1]
-        # Shooter must be a genuine player/goalkeeper from target_attacking_team
         for identity in identities:
             if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
-                continue
-            if target_attacking_team and identity.team != target_attacking_team:
                 continue
             if identity.team not in shots_by_team:
                 continue
@@ -944,9 +1076,9 @@ def compute_pitch_mapping(self, match_id):
                     closest_dist = dist
                     closest_identity = identity
 
-        # If no attacker within proximity, fall back to closest attacker overall or skip if none
-        if closest_identity is None or closest_dist > 5.5:
-            closest_dist = float("inf")
+        # If no striker within close physical proximity (<= 2.2m), fall back to closest attacking team player
+        if closest_identity is None or closest_dist > 2.2:
+            attacker_id, attacker_dist = None, float("inf")
             for identity in identities:
                 if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
                     continue
@@ -960,13 +1092,37 @@ def compute_pitch_mapping(self, match_id):
                     if pos is None or b_pt is None:
                         continue
                     dist = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
-                    if dist < closest_dist:
-                        closest_dist = dist
-                        closest_identity = identity
+                    if dist < attacker_dist:
+                        attacker_dist = dist
+                        attacker_id = identity
+            if attacker_id is not None:
+                closest_identity = attacker_id
+                closest_dist = attacker_dist
 
+        # Determine shot team:
+        # A shot directed towards target_goal is an offensive attack on that goal by target_attacking_team.
         shot_team = target_attacking_team if target_attacking_team else (closest_identity.team if closest_identity else None)
         if shot_team is None or shot_team not in shots_by_team:
             continue
+
+        # If closest_identity is from the defending team, attribute to closest striker from shot_team
+        if closest_identity and closest_identity.team != shot_team:
+            best_striker = None
+            best_striker_dist = float("inf")
+            for identity in identities:
+                if identity.team != shot_team or getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL):
+                    continue
+                for f in range(max(0, e.frame_idx - 6), e.frame_idx + 3):
+                    pos = identity.trajectory.get(f)
+                    b_pt = ball_pitch_by_frame.get(f)
+                    if pos and b_pt:
+                        d = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
+                        if d < best_striker_dist:
+                            best_striker_dist = d
+                            best_striker = identity
+            if best_striker and best_striker_dist <= 4.0:
+                closest_identity = best_striker
+                closest_dist = best_striker_dist
 
         shot_xg = estimate_shot_xg(e.metadata["origin_distance_m"], e.metadata["alignment"])
         is_on_target = bool(e.metadata.get("is_on_target", False))
@@ -1066,10 +1222,13 @@ def compute_pitch_mapping(self, match_id):
         if sot_count > s_count:
             sot_count = s_count
 
+        team_goals = sum(1 for s in recorded_shots if s.get("is_goal") and s["team"] == team_enum.value)
+
         TeamStatistics.objects.update_or_create(
             match=match,
             team=team_obj,
             defaults={
+                "goals": team_goals,
                 "total_distance": team_distance_m(team_enum),
                 "possession": possession_pct,
                 "shots": s_count,
@@ -1090,6 +1249,8 @@ def compute_pitch_mapping(self, match_id):
     track_to_lineup = dict(TrackPlayerIdentification.objects.filter(match=match).values_list("track_id", "lineup_entry_id"))
 
     # Auto-sync confirmed goals to MatchGoal and update scoreboard
+    # Clear stale auto-synced goals for this match to ensure clean sync
+    MatchGoal.objects.filter(match=match).delete()
     for s in recorded_shots:
         if s.get("is_goal"):
             goal_team = match.home_team if s["team"] == "team_a" else match.away_team
@@ -1323,12 +1484,12 @@ def compute_pitch_mapping(self, match_id):
     except Exception:
         pass
 
-    # Ensure annotated replay video is generated/updated with latest identification
-    try:
-        from ai_engine.stage7_visualization.annotated_video import render_annotated_match_video
-        render_annotated_match_video(match)
-    except Exception:
-        logger.exception("Failed to render annotated video in compute_pitch_mapping for match=%s", match.id)
+    # Ensure annotated replay video is refreshed asynchronously if this was a post-match recalibration
+    if match.status == Match.MatchStatus.COMPLETED:
+        try:
+            render_match_video.delay(match.id)
+        except Exception:
+            logger.exception("Failed to dispatch render_match_video for match=%s", match.id)
 
 
 @shared_task

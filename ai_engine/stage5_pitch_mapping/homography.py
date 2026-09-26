@@ -86,7 +86,10 @@ def detect_halfway_line(frame: np.ndarray) -> tuple[float, float, float, float] 
     best_line = None
     best_length = 0
     for line in lines:
-        x1, y1, x2, y2 = line[0]
+        pts = np.asarray(line).reshape(-1)
+        if len(pts) < 4:
+            continue
+        x1, y1, x2, y2 = pts[:4]
         length = np.hypot(x2 - x1, y2 - y1)
         angle = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
         # Halfway line is roughly vertical in this broadcast angle —

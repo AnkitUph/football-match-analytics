@@ -2072,6 +2072,7 @@ def build_match_report_context(match):
             def_info = def_info or {"tackles": 0, "interceptions": 0, "clearances": 0}
             if ts is None:
                 return {
+                    "goals": 0,
                     "shots": 0, "shots_on_target": 0, "shot_accuracy": 0.0,
                     "passes": 0, "passes_completed": 0, "passes_attempted": 0, "pass_accuracy": 0.0,
                     "corners": 0, "fouls": 0, "yellow_cards": 0, "red_cards": 0,
@@ -2082,6 +2083,7 @@ def build_match_report_context(match):
             sot_count = ts.shots_on_target
             shot_acc = round(100.0 * sot_count / s_count, 1) if s_count > 0 else 0.0
             return {
+                "goals": ts.goals,
                 "shots": s_count,
                 "shots_on_target": sot_count,
                 "shot_accuracy": shot_acc,

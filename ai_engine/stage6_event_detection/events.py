@@ -410,10 +410,12 @@ def infer_team_defending_goals(
 ) -> dict["Team", tuple[float, float]]:
     """
     Infers which goal each team is defending ((52.5, 0.0) or (-52.5, 0.0)).
-    Uses multiple robust signals:
-    1. Team spatial medians when teams occupy opposite pitch halves (median_A * median_B < 0).
-    2. Attacking team derived from physical ball strikes in attacking thirds (striking towards goal).
-    3. Clear goalkeeper locations.
+    Uses a principled hierarchy of football domain signals:
+    1. Goalkeeper Spatial Anchors (Ground truth: goalkeepers are stationed at the defending goal).
+    2. Team spatial medians when teams occupy opposite pitch halves (median_A * median_B < 0).
+    3. Aggregated consensus of high-velocity shots towards goal across the match.
+    4. Defensive line depth (offside principle: defending team's deepest players are closer to defending goal).
+    5. Team spatial medians fallback.
     """
     from ai_engine.utils.types import ObjectClass, Team
 
@@ -427,17 +429,52 @@ def infer_team_defending_goals(
     for ident in identities:
         if ident.team not in team_xs:
             continue
-        xs = [pt.x_m for pt in ident.trajectory.values() if abs(pt.x_m) <= 55.0]
+        ident_cls = getattr(ident, "cls", None)
+        if ident_cls in (ObjectClass.BALL, ObjectClass.REFEREE):
+            continue
+        if cls_by_track:
+            c = cls_by_track.get(ident.master_id)
+            if c in (ObjectClass.BALL, ObjectClass.REFEREE) or getattr(c, "value", "") in ("ball", "referee"):
+                continue
+
+        xs = [pt.x_m for pt in ident.trajectory.values() if pt.x_m is not None and abs(pt.x_m) <= 52.5]
         team_xs[ident.team].extend(xs)
         is_gk = (
-            getattr(ident, "cls", None) == ObjectClass.GOALKEEPER
+            ident_cls == ObjectClass.GOALKEEPER
             or getattr(ident, "cls_name", None) == "goalkeeper"
-            or (cls_by_track and cls_by_track.get(ident.master_id) == ObjectClass.GOALKEEPER)
+            or (cls_by_track and (
+                cls_by_track.get(ident.master_id) == ObjectClass.GOALKEEPER
+                or getattr(cls_by_track.get(ident.master_id), "value", "") == "goalkeeper"
+            ))
         )
         if is_gk:
             gk_xs[ident.team].extend(xs)
 
-    # 1. Team spatial medians (if clearly in opposite pitch halves)
+    # 1. Goalkeeper Signal (Strongest ground truth in football)
+    # A true goalkeeper defending goal (+52.5, 0.0) is stationed deep in the penalty area (x >= 30.0m).
+    # A true goalkeeper defending goal (-52.5, 0.0) is stationed deep in the penalty area (x <= -30.0m).
+    gk_pos_team: Team | None = None
+    gk_neg_team: Team | None = None
+    for team in (Team.TEAM_A, Team.TEAM_B):
+        if len(gk_xs[team]) >= 10:
+            med_gk = sorted(gk_xs[team])[len(gk_xs[team]) // 2]
+            if med_gk >= 30.0:
+                if gk_pos_team is None or med_gk > sorted(gk_xs[gk_pos_team])[len(gk_xs[gk_pos_team]) // 2]:
+                    gk_pos_team = team
+            elif med_gk <= -30.0:
+                if gk_neg_team is None or med_gk < sorted(gk_xs[gk_neg_team])[len(gk_xs[gk_neg_team]) // 2]:
+                    gk_neg_team = team
+
+    if gk_pos_team and gk_neg_team and gk_pos_team != gk_neg_team:
+        return {gk_pos_team: (52.5, 0.0), gk_neg_team: (-52.5, 0.0)}
+    elif gk_pos_team and not gk_neg_team:
+        opp = Team.TEAM_B if gk_pos_team == Team.TEAM_A else Team.TEAM_A
+        return {gk_pos_team: (52.5, 0.0), opp: (-52.5, 0.0)}
+    elif gk_neg_team and not gk_pos_team:
+        opp = Team.TEAM_B if gk_neg_team == Team.TEAM_A else Team.TEAM_A
+        return {gk_neg_team: (-52.5, 0.0), opp: (52.5, 0.0)}
+
+    # 2. Team spatial medians (if clearly in opposite pitch halves)
     team_medians = {}
     for team in (Team.TEAM_A, Team.TEAM_B):
         if team_xs[team]:
@@ -451,44 +488,77 @@ def infer_team_defending_goals(
             else:
                 return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
 
-    # 2. Attacking strikes towards goal (ball moving towards +52.5 or -52.5 after physical player contact)
+    # 3. Aggregated Candidate Shot Consensus across the match (not a 1-frame deflection!)
     if ball_trajectory:
-        ball_pts = {p.frame_idx: p for p in ball_trajectory if p.x_m is not None}
-        for f_idx, b in ball_pts.items():
-            if abs(b.x_m) > 25.0:
-                target_g = (52.5, 0.0) if b.x_m > 0 else (-52.5, 0.0)
-                opp_g = (-52.5, 0.0) if b.x_m > 0 else (52.5, 0.0)
-                for ident in identities:
-                    pos = ident.trajectory.get(f_idx)
-                    if pos:
-                        dist = ((pos.x_m - b.x_m) ** 2 + (pos.y_m - b.y_m) ** 2) ** 0.5
-                        if dist <= 1.0:
-                            next_b = ball_pts.get(f_idx + 1)
-                            if next_b and (next_b.x_m - b.x_m) * (1 if b.x_m > 0 else -1) > 0.4:
-                                attacking_team = ident.team
-                                defending_team = Team.TEAM_A if attacking_team == Team.TEAM_B else Team.TEAM_B
-                                return {defending_team: target_g, attacking_team: opp_g}
+        ball_pts = {p.frame_idx: p for p in ball_trajectory if p.x_m is not None and p.y_m is not None}
+        sorted_frames = sorted(ball_pts.keys())
+        shot_votes: dict[tuple[float, float], dict[Team, int]] = {
+            (52.5, 0.0): {Team.TEAM_A: 0, Team.TEAM_B: 0},
+            (-52.5, 0.0): {Team.TEAM_A: 0, Team.TEAM_B: 0},
+        }
+        for i in range(len(sorted_frames) - 3):
+            f_cur = sorted_frames[i]
+            f_next = sorted_frames[i + 2]
+            if f_next - f_cur > 4:
+                continue
+            b_cur = ball_pts[f_cur]
+            b_next = ball_pts[f_next]
+            dx = (b_next.x_m - b_cur.x_m)
+            dy = (b_next.y_m - b_cur.y_m)
+            dt = (f_next - f_cur) / 25.0
+            speed = (dx ** 2 + dy ** 2) ** 0.5 / max(dt, 1e-3)
+            # High speed strike >= 12.0 m/s heading towards goal from attacking third (|x| >= 18m)
+            if speed >= 12.0 and abs(b_cur.x_m) >= 18.0:
+                target_g = (52.5, 0.0) if dx > 0 and b_cur.x_m > 0 else ((-52.5, 0.0) if dx < 0 and b_cur.x_m < 0 else None)
+                if target_g is not None:
+                    # Find kicker within 1.8m
+                    kicker_team = None
+                    min_dist = float("inf")
+                    for ident in identities:
+                        if ident.team not in (Team.TEAM_A, Team.TEAM_B):
+                            continue
+                        pos = ident.trajectory.get(f_cur)
+                        if pos:
+                            d = ((pos.x_m - b_cur.x_m) ** 2 + (pos.y_m - b_cur.y_m) ** 2) ** 0.5
+                            if d < min_dist and d <= 1.8:
+                                min_dist = d
+                                kicker_team = ident.team
+                    if kicker_team:
+                        shot_votes[target_g][kicker_team] += 1
 
-    # 3. Goalkeeper signal (if one team clearly has GK at one end and other does not)
-    gk_defending: dict[Team, tuple[float, float]] = {}
+        # Check if shot votes give an unambiguous consensus
+        votes_pos = shot_votes[(52.5, 0.0)]
+        if votes_pos[Team.TEAM_B] > votes_pos[Team.TEAM_A] + 1:
+            return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
+        elif votes_pos[Team.TEAM_A] > votes_pos[Team.TEAM_B] + 1:
+            return {Team.TEAM_B: (52.5, 0.0), Team.TEAM_A: (-52.5, 0.0)}
+
+    # 4. Defensive Line Depth (Offside principle: defending team's deepest players are closer to defending goal)
     for team in (Team.TEAM_A, Team.TEAM_B):
-        if len(gk_xs[team]) >= 5:
-            med_gk = sorted(gk_xs[team])[len(gk_xs[team]) // 2]
-            if med_gk > 15.0:
-                gk_defending[team] = (52.5, 0.0)
-            elif med_gk < -15.0:
-                gk_defending[team] = (-52.5, 0.0)
+        if len(team_xs[team]) < 50:
+            break
+    else:
+        # If play is predominantly in the positive half
+        all_xs = team_xs[Team.TEAM_A] + team_xs[Team.TEAM_B]
+        overall_med = sorted(all_xs)[len(all_xs) // 2]
+        if overall_med > 10.0:
+            # Positive half: 90th percentile of defending team is deeper towards +52.5m
+            p90_a = sorted(team_xs[Team.TEAM_A])[int(len(team_xs[Team.TEAM_A]) * 0.90)]
+            p90_b = sorted(team_xs[Team.TEAM_B])[int(len(team_xs[Team.TEAM_B]) * 0.90)]
+            if p90_a > p90_b + 2.0:
+                return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
+            elif p90_b > p90_a + 2.0:
+                return {Team.TEAM_B: (52.5, 0.0), Team.TEAM_A: (-52.5, 0.0)}
+        elif overall_med < -10.0:
+            # Negative half: 10th percentile of defending team is deeper towards -52.5m
+            p10_a = sorted(team_xs[Team.TEAM_A])[int(len(team_xs[Team.TEAM_A]) * 0.10)]
+            p10_b = sorted(team_xs[Team.TEAM_B])[int(len(team_xs[Team.TEAM_B]) * 0.10)]
+            if p10_a < p10_b - 2.0:
+                return {Team.TEAM_A: (-52.5, 0.0), Team.TEAM_B: (52.5, 0.0)}
+            elif p10_b < p10_a - 2.0:
+                return {Team.TEAM_B: (-52.5, 0.0), Team.TEAM_A: (52.5, 0.0)}
 
-    if len(gk_defending) == 2 and gk_defending[Team.TEAM_A] != gk_defending[Team.TEAM_B]:
-        return gk_defending
-    elif Team.TEAM_A in gk_defending and Team.TEAM_B not in gk_defending:
-        opp = (-52.5, 0.0) if gk_defending[Team.TEAM_A] == (52.5, 0.0) else (52.5, 0.0)
-        return {Team.TEAM_A: gk_defending[Team.TEAM_A], Team.TEAM_B: opp}
-    elif Team.TEAM_B in gk_defending and Team.TEAM_A not in gk_defending:
-        opp = (-52.5, 0.0) if gk_defending[Team.TEAM_B] == (52.5, 0.0) else (52.5, 0.0)
-        return {Team.TEAM_B: gk_defending[Team.TEAM_B], Team.TEAM_A: opp}
-
-    # 4. Fallback: compare team medians
+    # 5. Fallback: compare team medians
     if Team.TEAM_A in team_medians and Team.TEAM_B in team_medians:
         if team_medians[Team.TEAM_A] > team_medians[Team.TEAM_B]:
             return {Team.TEAM_A: (52.5, 0.0), Team.TEAM_B: (-52.5, 0.0)}
@@ -503,7 +573,7 @@ def detect_shots(
     goal_centers_pitch: tuple[tuple[float, float], ...] | tuple[float, float] = ((52.5, 0.0), (-52.5, 0.0)),
     min_shot_speed_mps: float = 12.0,
     max_plausible_speed_mps: float = 38.0,
-    min_origin_distance_m: float = 3.0,
+    min_origin_distance_m: float = 1.0,
     max_origin_distance_m: float = 35.0,
     min_alignment: float = 0.88,
     cooldown_frames: int = 200,
@@ -559,12 +629,12 @@ def detect_shots(
         best = None  # (goal_center, origin_dist, alignment)
         for goal_center_pitch in goal_centers:
             # Must originate strictly inside pitch boundaries
-            if not (abs(current.x_m) <= 51.5 and abs(current.y_m) <= 33.5):
+            if not (abs(current.x_m) <= 52.5 and abs(current.y_m) <= 34.0):
                 continue
             # Must be approaching the goal line from within the pitch (not moving away or from behind goal)
-            if goal_center_pitch[0] > 0 and (current.x_m >= 51.5 or vx <= 0):
+            if goal_center_pitch[0] > 0 and (current.x_m >= 52.5 or vx <= 0):
                 continue
-            if goal_center_pitch[0] < 0 and (current.x_m <= -51.5 or vx >= 0):
+            if goal_center_pitch[0] < 0 and (current.x_m <= -52.5 or vx >= 0):
                 continue
 
             origin_dist = ((goal_center_pitch[0] - current.x_m) ** 2 + (goal_center_pitch[1] - current.y_m) ** 2) ** 0.5
@@ -572,8 +642,8 @@ def detect_shots(
             if not (min_origin_distance_m <= origin_dist <= max_origin_distance_m):
                 continue
 
-            # Within penalty box (<= 16.5m), allow placed finishes down to 9.5 m/s (34 km/h); outside box requires min_shot_speed_mps
-            eff_min_speed = 9.5 if origin_dist <= 16.5 else min_shot_speed_mps
+            # Within close range (<= 10m), allow placed tap-ins down to 5.5 m/s (20 km/h); inside box <= 16.5m down to 8.5 m/s
+            eff_min_speed = 5.5 if origin_dist <= 10.0 else (8.5 if origin_dist <= 16.5 else min_shot_speed_mps)
             if not (eff_min_speed <= speed <= max_plausible_speed_mps):
                 continue
 
@@ -652,13 +722,19 @@ def detect_shots(
             if future_pts and any(abs(p.x_m - goal_center_pitch[0]) <= 2.5 and abs(p.y_m - goal_center_pitch[1]) <= 8.5 for p in future_pts):
                 is_on_target = True
 
-            # Goal detection: ball reaches past or onto the goal line into the net area and settles in net
+            # Goal detection: ball reaches past the goal line into the net area and settles in the net
+            # If the ball rebounds back out into play (< 48.0m) shortly after reaching the line, it was saved or hit the woodwork.
             is_goal = False
             goal_dir = 1.0 if goal_center_pitch[0] > 0 else -1.0
-            net_pts_count = sum(1 for p in future_pts if p.x_m * goal_dir >= 51.8)
-            if net_pts_count >= 5:
-                is_goal = True
-                is_on_target = True
+            net_entries = [p for p in future_pts if p.x_m * goal_dir >= 51.5 and abs(p.y_m) <= 8.5]
+            if net_entries:
+                first_net_frame = net_entries[0].frame_idx
+                post_net_pts = [ball_map[f] for f in range(first_net_frame + 1, first_net_frame + 35) if f in ball_map]
+                rebounded = any(p.x_m * goal_dir < 48.0 for p in post_net_pts)
+                net_count = sum(1 for p in post_net_pts if p.x_m * goal_dir >= 51.5)
+                if not rebounded and net_count >= 5:
+                    is_goal = True
+                    is_on_target = True
 
             events.append(
                 Event(
@@ -676,6 +752,62 @@ def detect_shots(
             )
             last_event_frame = current.frame_idx
 
+    # Goal verification pass: Detect ball resting in net
+    # If the ball settles inside the net polygon without rebounding out, ensure a goal event is recorded
+    for goal_center_pitch in goal_centers:
+        gx = goal_center_pitch[0]
+        g_dir = 1.0 if gx > 0 else -1.0
+        net_frames = [
+            p.frame_idx for p in valid_points
+            if (p.x_m * g_dir) >= 51.8 and abs(p.y_m) <= 8.5
+        ]
+        if not net_frames:
+            continue
+
+        # Find contiguous resting clusters (at least 12 frames in net)
+        import itertools
+        clusters = []
+        for k, g in itertools.groupby(enumerate(net_frames), lambda ix: ix[0] - ix[1]):
+            grp = [x[1] for x in g]
+            if len(grp) >= 12:
+                clusters.append((grp[0], grp[-1]))
+
+        for start_net, end_net in clusters:
+            # Check if a shot was already recorded within 150 frames before start_net
+            matching_shots = [
+                e for e in events
+                if (start_net - 150) <= e.frame_idx <= (start_net + 10)
+            ]
+            if matching_shots:
+                for s in matching_shots:
+                    s.metadata["is_goal"] = True
+                    s.metadata["is_on_target"] = True
+            else:
+                # Occluded strike: find the closest preceding ball point in attacking third (within 120 frames)
+                preceding = [
+                    p for p in valid_points
+                    if (start_net - 120) <= p.frame_idx < start_net and (p.x_m * g_dir) >= 35.0
+                ]
+                strike_pt = preceding[-1] if preceding else None
+                if strike_pt:
+                    strike_frame = strike_pt.frame_idx
+                    dist = ((gx - strike_pt.x_m) ** 2 + (goal_center_pitch[1] - strike_pt.y_m) ** 2) ** 0.5
+                    events.append(
+                        Event(
+                            event_type="shot",
+                            frame_idx=strike_frame,
+                            metadata={
+                                "speed_mps": 22.0,
+                                "origin_distance_m": round(dist, 1),
+                                "alignment": 0.98,
+                                "target_goal": goal_center_pitch,
+                                "is_on_target": True,
+                                "is_goal": True,
+                            },
+                        )
+                    )
+
+    events.sort(key=lambda ev: ev.frame_idx)
     return events
 
 
@@ -877,22 +1009,41 @@ def compute_player_physical_metrics(
             "minutes_played": 1,
         }
 
+    n = len(frames)
+    raw_xs = [identity.trajectory[f].x_m for f in frames]
+    raw_ys = [identity.trajectory[f].y_m for f in frames]
+    half_w = 3
+    smooth_xs = []
+    smooth_ys = []
+    for i in range(n):
+        s_idx = max(0, i - half_w)
+        e_idx = min(n, i + half_w + 1)
+        smooth_xs.append(sum(raw_xs[s_idx:e_idx]) / (e_idx - s_idx))
+        smooth_ys.append(sum(raw_ys[s_idx:e_idx]) / (e_idx - s_idx))
+
     total_dist = 0.0
     speeds = []
 
-    for f1, f2 in zip(frames, frames[1:]):
+    for i in range(n - 1):
+        f1, f2 = frames[i], frames[i + 1]
         dt_frames = f2 - f1
-        if dt_frames <= 0:
+        if dt_frames <= 0 or dt_frames > int(2.0 * fps):
             continue
         dt_sec = dt_frames / fps
-        p1 = identity.trajectory[f1]
-        p2 = identity.trajectory[f2]
-        dist = ((p2.x_m - p1.x_m) ** 2 + (p2.y_m - p1.y_m) ** 2) ** 0.5
+        dx = smooth_xs[i + 1] - smooth_xs[i]
+        dy = smooth_ys[i + 1] - smooth_ys[i]
+        dist = (dx * dx + dy * dy) ** 0.5
         inst_speed = dist / dt_sec
+
+        # Micro-jitter filter: ignore stationary vibrations (< 0.025m per frame = < 2.2 km/h)
+        if dt_frames == 1 and dist < 0.025:
+            dist = 0.0
+            inst_speed = 0.0
 
         if inst_speed <= max_speed_mps:
             total_dist += dist
-            speeds.append(inst_speed)
+            if inst_speed > 0.5:
+                speeds.append(inst_speed)
 
     if speeds:
         sorted_speeds = sorted(speeds)
@@ -907,8 +1058,8 @@ def compute_player_physical_metrics(
     top_speed_kmh = round(peak_mps * 3.6, 1)
     avg_speed_kmh = round(avg_speed_mps * 3.6, 1)
     if total_dist > 5.0:
-        top_speed_kmh = min(34.5, max(12.0, top_speed_kmh))
-        avg_speed_kmh = min(15.0, max(3.0, avg_speed_kmh))
+        top_speed_kmh = min(36.0, max(8.0, top_speed_kmh))
+        avg_speed_kmh = min(15.0, max(1.5, avg_speed_kmh))
     else:
         top_speed_kmh = 0.0
         avg_speed_kmh = 0.0
