@@ -1,318 +1,958 @@
-{% comment %}
-Save this as templates/accounts/profile.html
-
-Fully self-contained — no base.html required. If you build a base.html
-later, you can strip this down to just the {% block content %} portion.
-{% endcomment %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My Profile — Football Analytics</title>
+    <title>My Profile — Football Match Analytics Studio</title>
+    <meta name="description" content="Manage your analyst profile, personal credentials, and account settings on Football Match Analytics Studio.">
+    <!-- Google Fonts: Inter & Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
-            --pitch: #3D8B5F;
-            --pitch-light: #4FAE79;
-            --ink: #0F1512;
-            --panel: #161D19;
-            --panel-line: #263029;
-            --chalk: #EDEFEC;
-            --chalk-dim: #9BA69E;
-            --error: #D9695A;
-            --success: #4FAE79;
+            --bg-deep: #080c0e;
+            --bg-surface: #0f1519;
+            --bg-card: rgba(18, 25, 30, 0.75);
+            --bg-card-elevated: rgba(24, 32, 38, 0.85);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-hover: rgba(255, 255, 255, 0.16);
+            --pitch-emerald: #10b981;
+            --pitch-emerald-glow: rgba(16, 185, 129, 0.25);
+            --pitch-cyan: #06b6d4;
+            --accent-gradient: linear-gradient(135deg, #10b981 0%, #06b6d4 100%);
+            --header-gradient: linear-gradient(135deg, #064e3b 0%, #0f2b38 50%, #080c0e 100%);
+            --text-main: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --card-radius: 18px;
+            --transition-smooth: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         * {
+            margin: 0;
+            padding: 0;
             box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         }
 
         body {
-            margin: 0;
-            background: var(--ink);
-            background-image:
-                repeating-linear-gradient(
-                    90deg,
-                    rgba(255, 255, 255, 0.015) 0px,
-                    rgba(255, 255, 255, 0.015) 1px,
-                    transparent 1px,
-                    transparent 64px
-                );
-            color: var(--chalk);
-            font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-deep);
+            color: var(--text-main);
             min-height: 100vh;
-            padding: 48px 20px;
+            position: relative;
+            overflow-x: hidden;
+            padding-bottom: 60px;
         }
 
-        .wrap {
-            max-width: 640px;
-            margin: 0 auto;
+        /* Subtle Tactical Pitch Grid Background */
+        body::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: 
+                radial-gradient(circle at 80% 0%, rgba(16, 185, 129, 0.09) 0%, transparent 50%),
+                radial-gradient(circle at 10% 80%, rgba(6, 182, 212, 0.07) 0%, transparent 45%),
+                linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 100% 100%, 48px 48px, 48px 48px;
+            pointer-events: none;
+            z-index: 0;
         }
 
-        .eyebrow {
-            font-size: 12px;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-            color: var(--pitch-light);
-            font-weight: 600;
-            margin: 0 0 6px;
-        }
-
-        h1 {
-            font-family: Georgia, "Times New Roman", serif;
-            font-size: 34px;
-            font-weight: 700;
-            margin: 0 0 28px;
-            letter-spacing: -0.01em;
-        }
-
-        .messages {
-            list-style: none;
-            margin: 0 0 20px;
-            padding: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .message {
-            padding: 11px 14px;
-            border-radius: 6px;
-            font-size: 14px;
-            border: 1px solid var(--panel-line);
-            background: var(--panel);
-        }
-
-        .message.success { border-color: var(--success); color: var(--success); }
-        .message.error { border-color: var(--error); color: var(--error); }
-
-        .card {
-            background: var(--panel);
-            border: 1px solid var(--panel-line);
-            border-radius: 10px;
-            padding: 32px;
-        }
-
-        .identity {
+        /* Navigation Bar */
+        .top-navbar {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(8, 12, 14, 0.85);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border-glass);
+            padding: 14px 32px;
             display: flex;
             align-items: center;
-            gap: 18px;
-            padding-bottom: 28px;
-            margin-bottom: 28px;
-            border-bottom: 1px solid var(--panel-line);
+            justify-content: space-between;
         }
 
-        .avatar {
-            width: 84px;
-            height: 84px;
-            border-radius: 50%;
-            object-fit: cover;
-            border: 2px solid var(--pitch);
-            flex-shrink: 0;
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+            color: var(--text-main);
         }
 
-        .avatar-placeholder {
-            width: 84px;
-            height: 84px;
-            border-radius: 50%;
-            background: var(--ink);
-            border: 2px solid var(--pitch);
+        .brand-icon-wrap {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            background: var(--accent-gradient);
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 32px;
+            color: #041014;
+            font-weight: 800;
+            box-shadow: 0 4px 14px var(--pitch-emerald-glow);
+        }
+
+        .brand-icon-wrap svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .nav-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 17px;
             font-weight: 700;
-            color: var(--pitch-light);
+            letter-spacing: -0.01em;
+        }
+
+        .nav-back-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-glass);
+            border-radius: 10px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+            text-decoration: none;
+            transition: var(--transition-smooth);
+        }
+
+        .nav-back-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-main);
+            border-color: var(--border-hover);
+            transform: translateX(-2px);
+        }
+
+        .nav-back-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+
+        /* Container */
+        .container {
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 32px 24px 0;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* Messages */
+        .messages-container {
+            margin-bottom: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .alert-box {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.4;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .alert-box.success {
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #6ee7b7;
+        }
+
+        .alert-box.error {
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+        }
+
+        .alert-icon {
+            width: 18px;
+            height: 18px;
             flex-shrink: 0;
         }
 
-        .identity-text .username {
-            font-size: 20px;
-            font-weight: 700;
-            margin: 0;
+        /* Profile Hero Banner */
+        .profile-hero {
+            background: var(--header-gradient);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--card-radius);
+            padding: 36px 36px 32px;
+            margin-bottom: 28px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.4);
         }
 
-        .identity-text .since {
+        .profile-hero::before {
+            content: "";
+            position: absolute;
+            top: -50%;
+            right: -20%;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(16, 185, 129, 0.2) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        .hero-identity {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .avatar-container {
+            position: relative;
+            flex-shrink: 0;
+        }
+
+        .profile-avatar {
+            width: 96px;
+            height: 96px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 3px solid var(--pitch-emerald);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+            background: var(--bg-surface);
+            display: block;
+        }
+
+        .avatar-fallback {
+            width: 96px;
+            height: 96px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #10b981 0%, #0f766e 100%);
+            border: 3px solid rgba(255, 255, 255, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Outfit', sans-serif;
+            font-size: 38px;
+            font-weight: 700;
+            color: #ffffff;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        }
+
+        .status-dot {
+            position: absolute;
+            bottom: 4px;
+            right: 4px;
+            width: 18px;
+            height: 18px;
+            background: #10b981;
+            border: 3px solid var(--bg-deep);
+            border-radius: 50%;
+            box-shadow: 0 0 10px rgba(16, 185, 129, 0.6);
+        }
+
+        .hero-meta h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .verified-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 3px 8px;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            color: #34d399;
+            letter-spacing: 0.04em;
+        }
+
+        .verified-badge svg {
+            width: 12px;
+            height: 12px;
+        }
+
+        .hero-subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .meta-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .meta-item svg {
+            width: 15px;
+            height: 15px;
+            color: var(--pitch-cyan);
+        }
+
+        /* Two-Column Grid */
+        .profile-grid {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 28px;
+            align-items: start;
+        }
+
+        /* Cards */
+        .glass-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--card-radius);
+            padding: 28px;
+            box-shadow: 0 16px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-header-line {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border-glass);
+        }
+
+        .card-title {
+            font-family: 'Outfit', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-title svg {
+            width: 20px;
+            height: 20px;
+            color: var(--pitch-emerald);
+        }
+
+        /* Left Side Cards */
+        .sidebar-cards {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .info-list {
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             font-size: 13px;
-            color: var(--chalk-dim);
-            margin: 4px 0 0;
+        }
+
+        .info-label {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .info-val {
+            color: var(--text-main);
+            font-weight: 600;
+        }
+
+        .action-link-btn {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-glass);
+            border-radius: 11px;
+            color: var(--text-main);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: var(--transition-smooth);
+            margin-bottom: 10px;
+        }
+
+        .action-link-btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: var(--border-hover);
+            transform: translateX(2px);
+        }
+
+        .action-link-btn svg {
+            width: 16px;
+            height: 16px;
+            color: var(--text-muted);
+            transition: var(--transition-smooth);
+        }
+
+        .action-link-btn:hover svg {
+            color: var(--pitch-emerald);
+            transform: translateX(2px);
+        }
+
+        .action-link-btn.danger {
+            color: #f87171;
+            border-color: rgba(239, 68, 68, 0.2);
+            background: rgba(239, 68, 68, 0.05);
+        }
+
+        .action-link-btn.danger:hover {
+            background: rgba(239, 68, 68, 0.12);
+            border-color: rgba(239, 68, 68, 0.4);
+        }
+
+        .action-link-btn.danger svg {
+            color: #f87171;
+        }
+
+        /* Form Controls */
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 18px;
+            margin-bottom: 20px;
         }
 
         .form-group {
             margin-bottom: 20px;
         }
 
-        label {
+        .form-label {
             display: block;
             font-size: 12px;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            color: var(--chalk-dim);
             font-weight: 600;
-            margin-bottom: 7px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
         }
 
-        input[type="text"],
-        input[type="email"] {
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 14px;
+            width: 18px;
+            height: 18px;
+            color: var(--text-muted);
+            pointer-events: none;
+        }
+
+        .form-input {
             width: 100%;
-            padding: 11px 13px;
-            background: var(--ink);
-            border: 1px solid var(--panel-line);
-            border-radius: 6px;
-            color: var(--chalk);
-            font-size: 15px;
-            font-family: inherit;
-            transition: border-color 0.15s ease;
-        }
-
-        input[type="text"]:focus,
-        input[type="email"]:focus {
-            outline: none;
-            border-color: var(--pitch);
-        }
-
-        input:disabled {
-            color: var(--chalk-dim);
-            cursor: not-allowed;
-        }
-
-        small {
-            display: block;
-            margin-top: 6px;
-            color: var(--chalk-dim);
-            font-size: 12px;
-        }
-
-        input[type="file"] {
-            width: 100%;
-            padding: 10px 0;
-            color: var(--chalk-dim);
+            padding: 12px 14px 12px 42px;
+            background: rgba(11, 16, 20, 0.65);
+            border: 1px solid var(--border-glass);
+            border-radius: 11px;
+            color: var(--text-main);
             font-size: 14px;
+            transition: var(--transition-smooth);
         }
 
-        input[type="file"]::file-selector-button {
-            background: var(--panel-line);
-            color: var(--chalk);
-            border: none;
-            border-radius: 5px;
-            padding: 8px 14px;
-            margin-right: 12px;
-            font-size: 13px;
+        .form-input:focus {
+            outline: none;
+            background: rgba(11, 16, 20, 0.95);
+            border-color: var(--pitch-emerald);
+            box-shadow: 0 0 0 3px var(--pitch-emerald-glow);
+        }
+
+        .form-input:disabled {
+            background: rgba(11, 16, 20, 0.4);
+            color: var(--text-muted);
+            cursor: not-allowed;
+            border-color: rgba(255, 255, 255, 0.04);
+        }
+
+        .input-hint {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        /* File Upload Dropzone */
+        .file-dropzone {
+            border: 2px dashed var(--border-glass);
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+            background: rgba(11, 16, 20, 0.4);
+            cursor: pointer;
+            transition: var(--transition-smooth);
+            position: relative;
+        }
+
+        .file-dropzone:hover {
+            border-color: var(--pitch-emerald);
+            background: rgba(16, 185, 129, 0.04);
+        }
+
+        .dropzone-icon {
+            width: 36px;
+            height: 36px;
+            color: var(--pitch-emerald);
+            margin-bottom: 8px;
+        }
+
+        .dropzone-text {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 4px;
+        }
+
+        .dropzone-subtext {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .hidden-file-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
             cursor: pointer;
         }
 
-        button[type="submit"] {
-            width: 100%;
-            padding: 13px;
-            background: var(--pitch);
+        .preview-bar {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            margin-top: 12px;
+            padding: 10px 14px;
+            background: rgba(16, 185, 129, 0.08);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: 9px;
+            font-size: 13px;
+            color: #6ee7b7;
+        }
+
+        .preview-bar.active {
+            display: flex;
+        }
+
+        /* Submit Button */
+        .submit-btn {
+            padding: 14px 28px;
+            background: var(--accent-gradient);
             border: none;
-            border-radius: 6px;
-            color: #061009;
+            border-radius: 11px;
+            color: #041014;
+            font-family: 'Outfit', sans-serif;
             font-size: 15px;
             font-weight: 700;
+            letter-spacing: 0.02em;
             cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            box-shadow: 0 8px 24px var(--pitch-emerald-glow);
+            transition: var(--transition-smooth);
             margin-top: 8px;
-            transition: background 0.15s ease;
         }
 
-        button[type="submit"]:hover {
-            background: var(--pitch-light);
+        .submit-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 28px rgba(16, 185, 129, 0.38);
+            filter: brightness(1.06);
         }
 
-        button[type="submit"]:focus-visible,
-        a:focus-visible,
-        input:focus-visible {
-            outline: 2px solid var(--pitch-light);
-            outline-offset: 2px;
+        .submit-btn:active {
+            transform: translateY(0);
         }
 
-        .links {
-            display: flex;
-            justify-content: space-between;
-            margin-top: 24px;
-            font-size: 14px;
+        .submit-btn svg {
+            width: 18px;
+            height: 18px;
         }
 
-        .links a {
-            color: var(--chalk-dim);
-            text-decoration: none;
-            border-bottom: 1px solid transparent;
-        }
-
-        .links a:hover {
-            color: var(--pitch-light);
-            border-bottom-color: var(--pitch-light);
-        }
-
-        @media (max-width: 480px) {
-            .card { padding: 22px; }
-            h1 { font-size: 27px; }
+        @media (max-width: 860px) {
+            .profile-grid {
+                grid-template-columns: 1fr;
+            }
+            .top-navbar {
+                padding: 14px 20px;
+            }
+            .profile-hero {
+                padding: 24px;
+            }
+            .hero-identity {
+                flex-direction: column;
+                text-align: center;
+            }
+            .hero-subtitle {
+                justify-content: center;
+            }
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="wrap">
-        <p class="eyebrow">Account</p>
-        <h1>My Profile</h1>
 
+    <!-- Sticky Navigation Bar -->
+    <header class="top-navbar">
+        <a href="{% url 'dashboard:index' %}" class="nav-brand">
+            <div class="brand-icon-wrap">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                    <polyline points="2 17 12 22 22 17"></polyline>
+                    <polyline points="2 12 12 17 22 12"></polyline>
+                </svg>
+            </div>
+            <span class="nav-title">Football Analytics</span>
+        </a>
+        <a href="{% url 'dashboard:index' %}" class="nav-back-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <line x1="19" y1="12" x2="5" y2="12"></line>
+                <polyline points="12 19 5 12 12 5"></polyline>
+            </svg>
+            <span>Back to Dashboard</span>
+        </a>
+    </header>
+
+    <main class="container">
+        <!-- Messages -->
         {% if messages %}
-            <ul class="messages">
+            <div class="messages-container" role="alert">
                 {% for message in messages %}
-                    <li class="message {{ message.tags }}">{{ message }}</li>
+                    <div class="alert-box {% if 'error' in message.tags or 'danger' in message.tags %}error{% else %}success{% endif %}">
+                        {% if 'error' in message.tags or 'danger' in message.tags %}
+                            <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="8" x2="12" y2="12"></line>
+                                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                            </svg>
+                        {% else %}
+                            <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                            </svg>
+                        {% endif %}
+                        <span>{{ message }}</span>
+                    </div>
                 {% endfor %}
-            </ul>
+            </div>
         {% endif %}
 
-        <div class="card">
-            <div class="identity">
-                {% if profile_user.profile_picture %}
-                    <img class="avatar" src="{{ profile_user.profile_picture.url }}" alt="{{ profile_user.username }}">
-                {% else %}
-                    <div class="avatar-placeholder">{{ profile_user.username|first|upper }}</div>
-                {% endif %}
-                <div class="identity-text">
-                    <p class="username">{{ profile_user.username }}</p>
-                    <p class="since">Member since {{ profile_user.created_at|date:"F j, Y" }}</p>
+        <!-- Profile Hero Banner -->
+        <section class="profile-hero">
+            <div class="hero-identity">
+                <div class="avatar-container">
+                    {% if profile_user.profile_picture %}
+                        <img class="profile-avatar" id="avatar-preview-img" src="{{ profile_user.profile_picture.url }}" alt="{{ profile_user.username }}">
+                    {% else %}
+                        <div class="avatar-fallback" id="avatar-fallback-initials">
+                            {{ profile_user.username|first|upper }}
+                        </div>
+                    {% endif %}
+                    <span class="status-dot" title="Active Account"></span>
+                </div>
+                <div class="hero-meta">
+                    <h1>
+                        {{ profile_user.first_name|default:profile_user.username }} {{ profile_user.last_name|default:"" }}
+                        <span class="verified-badge">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            Tactical Analyst
+                        </span>
+                    </h1>
+                    <div class="hero-subtitle">
+                        <span class="meta-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                <circle cx="12" cy="7" r="4"></circle>
+                            </svg>
+                            @{{ profile_user.username }}
+                        </span>
+                        <span class="meta-item">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                                <line x1="16" y1="2" x2="16" y2="6"></line>
+                                <line x1="8" y1="2" x2="8" y2="6"></line>
+                                <line x1="3" y1="10" x2="21" y2="10"></line>
+                            </svg>
+                            Member since {{ profile_user.created_at|date:"F j, Y" }}
+                        </span>
+                    </div>
                 </div>
             </div>
+        </section>
 
-            <form method="post" enctype="multipart/form-data" action="{% url 'accounts:profile' %}">
-                {% csrf_token %}
-
-                <div class="form-group">
-                    <label for="username">Username</label>
-                    <input type="text" id="username" value="{{ profile_user.username }}" disabled>
-                    <small>Username can't be changed.</small>
+        <!-- Two Column Content Grid -->
+        <div class="profile-grid">
+            <!-- Left Sidebar Controls -->
+            <aside class="sidebar-cards">
+                <!-- Account Overview Card -->
+                <div class="glass-card">
+                    <div class="card-header-line">
+                        <span class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                                <line x1="8" y1="21" x2="16" y2="21"></line>
+                                <line x1="12" y1="17" x2="12" y2="21"></line>
+                            </svg>
+                            Studio Account
+                        </span>
+                    </div>
+                    <ul class="info-list">
+                        <li class="info-row">
+                            <span class="info-label">Access Level</span>
+                            <span class="info-val" style="color:#10b981;">Pro Analyst</span>
+                        </li>
+                        <li class="info-row">
+                            <span class="info-label">Account Status</span>
+                            <span class="info-val">Active</span>
+                        </li>
+                        <li class="info-row">
+                            <span class="info-label">Computer Vision</span>
+                            <span class="info-val">Full 4K / OpenVINO</span>
+                        </li>
+                    </ul>
                 </div>
 
-                <div class="form-group">
-                    <label for="first_name">First name</label>
-                    <input type="text" id="first_name" name="first_name" value="{{ profile_user.first_name }}">
+                <!-- Security & Shortcuts Card -->
+                <div class="glass-card">
+                    <div class="card-header-line">
+                        <span class="card-title">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                            </svg>
+                            Security &amp; Actions
+                        </span>
+                    </div>
+                    <a href="{% url 'accounts:change_password' %}" class="action-link-btn">
+                        <span>Change Password</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="9 18 15 12 9 6"></polyline>
+                        </svg>
+                    </a>
+                    <a href="{% url 'accounts:logout' %}" class="action-link-btn danger">
+                        <span>Sign Out of Studio</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                            <polyline points="16 17 21 12 16 7"></polyline>
+                            <line x1="21" y1="12" x2="9" y2="12"></line>
+                        </svg>
+                    </a>
+                </div>
+            </aside>
+
+            <!-- Main Edit Form Section -->
+            <section class="glass-card">
+                <div class="card-header-line">
+                    <span class="card-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                        Personal Details
+                    </span>
                 </div>
 
-                <div class="form-group">
-                    <label for="last_name">Last name</label>
-                    <input type="text" id="last_name" name="last_name" value="{{ profile_user.last_name }}">
-                </div>
+                <form method="post" enctype="multipart/form-data" action="{% url 'accounts:profile' %}">
+                    {% csrf_token %}
 
-                <div class="form-group">
-                    <label for="email">Email</label>
-                    <input type="email" id="email" name="email" value="{{ profile_user.email }}" required>
-                </div>
+                    <!-- Username (Immutable) -->
+                    <div class="form-group">
+                        <label class="form-label" for="username-field">Studio Username</label>
+                        <div class="input-wrapper">
+                            <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                            </svg>
+                            <input
+                                type="text"
+                                id="username-field"
+                                class="form-input"
+                                value="{{ profile_user.username }}"
+                                disabled
+                            >
+                        </div>
+                        <small class="input-hint">Your unique analyst handle cannot be changed.</small>
+                    </div>
 
-                <div class="form-group">
-                    <label for="profile_picture">Profile picture</label>
-                    <input type="file" id="profile_picture" name="profile_picture" accept="image/*">
-                </div>
+                    <!-- Names Grid -->
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label" for="first_name">First Name</label>
+                            <div class="input-wrapper">
+                                <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                <input
+                                    type="text"
+                                    id="first_name"
+                                    name="first_name"
+                                    class="form-input"
+                                    value="{{ profile_user.first_name }}"
+                                    placeholder="First name"
+                                >
+                            </div>
+                        </div>
 
-                <button type="submit">Save changes</button>
-            </form>
+                        <div class="form-group">
+                            <label class="form-label" for="last_name">Last Name</label>
+                            <div class="input-wrapper">
+                                <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                <input
+                                    type="text"
+                                    id="last_name"
+                                    name="last_name"
+                                    class="form-input"
+                                    value="{{ profile_user.last_name }}"
+                                    placeholder="Last name"
+                                >
+                            </div>
+                        </div>
+                    </div>
 
-            <div class="links">
-                <a href="{% url 'accounts:change_password' %}">Change password</a>
-                <a href="{% url 'dashboard:index' %}">Back to dashboard</a>
-            </div>
+                    <!-- Email Address -->
+                    <div class="form-group">
+                        <label class="form-label" for="email">Work Email</label>
+                        <div class="input-wrapper">
+                            <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+                                <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"></path>
+                            </svg>
+                            <input
+                                type="email"
+                                id="email"
+                                name="email"
+                                class="form-input"
+                                value="{{ profile_user.email }}"
+                                placeholder="analyst@club.com"
+                                required
+                            >
+                        </div>
+                    </div>
+
+                    <!-- Profile Picture Upload Dropzone -->
+                    <div class="form-group">
+                        <label class="form-label">Profile Avatar</label>
+                        <div class="file-dropzone" id="avatar-dropzone">
+                            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="17 8 12 3 7 8"></polyline>
+                                <line x1="12" y1="3" x2="12" y2="15"></line>
+                            </svg>
+                            <p class="dropzone-text">Click or drag a new picture to update</p>
+                            <p class="dropzone-subtext">JPG, PNG, or WEBP (Max 5MB)</p>
+                            <input
+                                type="file"
+                                id="profile_picture"
+                                name="profile_picture"
+                                class="hidden-file-input"
+                                accept="image/*"
+                            >
+                        </div>
+                        <div class="preview-bar" id="selected-file-info">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                            <span id="selected-file-name">New photo selected</span>
+                        </div>
+                    </div>
+
+                    <!-- Submit Button -->
+                    <button type="submit" class="submit-btn" id="save-profile-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                            <polyline points="7 3 7 8 15 8"></polyline>
+                        </svg>
+                        <span>Save Profile Changes</span>
+                    </button>
+                </form>
+            </section>
         </div>
-    </div>
+    </main>
+
+    <script>
+        // Live image preview upon file selection
+        const fileInput = document.getElementById('profile_picture');
+        const previewImg = document.getElementById('avatar-preview-img');
+        const fallbackInitials = document.getElementById('avatar-fallback-initials');
+        const previewBar = document.getElementById('selected-file-info');
+        const previewName = document.getElementById('selected-file-name');
+
+        if (fileInput) {
+            fileInput.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    if (previewBar && previewName) {
+                        previewName.textContent = `Selected: ${file.name} (${Math.round(file.size / 1024)} KB)`;
+                        previewBar.classList.add('active');
+                    }
+
+                    const reader = new FileReader();
+                    reader.onload = function(evt) {
+                        if (previewImg) {
+                            previewImg.src = evt.target.result;
+                        } else if (fallbackInitials) {
+                            // Replace initials box with new image preview
+                            const newImg = document.createElement('img');
+                            newImg.className = 'profile-avatar';
+                            newImg.id = 'avatar-preview-img';
+                            newImg.src = evt.target.result;
+                            newImg.alt = "Profile Preview";
+                            fallbackInitials.parentNode.replaceChild(newImg, fallbackInitials);
+                        }
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+        }
+    </script>
 </body>
 </html>

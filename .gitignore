@@ -5,9 +5,10 @@ __pycache__/
 *.pyd
 *.so
 
-# Virtual Environment
-venv/
-.env.local
+# Environment & Secrets
+.env
+.env.*
+!.env.example
 
 # Django
 db.sqlite3
@@ -45,9 +46,16 @@ mysql_data/
 # Redis
 redis_data/
 
+# Virtual Environments
+venv/
+.venv/
+*_venv/
+*_test/
+
 # AI Models
 *.pt
 *.onnx
+*.pkl
 
 # Temporary
 tmp/
