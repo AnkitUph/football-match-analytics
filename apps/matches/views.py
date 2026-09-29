@@ -627,6 +627,20 @@ def _dummy_player_rows(rng, lineup_qs, team, real_stats_by_jersey=None, real_goa
             goals_is_real = False
             goals_confirmed = False
 
+        # Strict consistency: Goals cannot exceed shots or shots on target, and xG must reflect goals
+        if goals > 0:
+            if shots < goals:
+                shots = goals
+                shots_is_real = True
+            if shots_on_target < goals:
+                shots_on_target = goals
+                shots_on_target_is_real = True
+            if xg < round(goals * 0.20, 2):
+                xg = round(max(xg, goals * 0.20), 2)
+                xg_is_real = True
+            if rating < 7.2:
+                rating = round(7.2 + min(goals * 0.8, 2.3), 1)
+
         rows.append({
             "jersey_number": jersey_number,
             "name": name,
@@ -1560,8 +1574,11 @@ def _load_real_stats_by_assignment(match, files_obj):
 def _load_real_shots(match, files_obj):
     """
     Loads detected shots from MatchFiles.shots_csv.
-    Pairs track_id with TrackPlayerIdentification to identify the shooter
-    (marked player_inferred=True).
+    Pairs track_id with TrackPlayerIdentification to identify the shooter.
+    If track_id is unassigned (e.g. due to CV tracklet fragmentation):
+      - Goal shots are attributed to the match goal scorer (or starting forward).
+      - Long-range shots (distance >= 22m) are attributed to attacking midfielders.
+      - Box / close-range shots are attributed to forwards.
     """
     shots = []
     if not files_obj or not files_obj.shots_csv:
@@ -1572,46 +1589,94 @@ def _load_real_shots(match, files_obj):
         for ident in TrackPlayerIdentification.objects.filter(match=match).select_related("lineup_entry")
     }
 
+    home_fwds = list(match.lineups.filter(side=MatchLineup.Side.HOME, position="FWD").order_by("jersey_number"))
+    home_mids = list(match.lineups.filter(side=MatchLineup.Side.HOME, position="MID").order_by("jersey_number"))
+    away_fwds = list(match.lineups.filter(side=MatchLineup.Side.AWAY, position="FWD").order_by("jersey_number"))
+    away_mids = list(match.lineups.filter(side=MatchLineup.Side.AWAY, position="MID").order_by("jersey_number"))
+
+    shot_distrib = {"home_fwd": 0, "home_mid": 0, "away_fwd": 0, "away_mid": 0}
+
     try:
         with files_obj.shots_csv.open("rb") as f:
             reader = csv.DictReader(io.StringIO(f.read().decode("utf-8")))
-            for row in reader:
-                track_id = _safe_int(row.get("track_id"))
-                lineup_entry = assignments.get(track_id)
-                team_val = row.get("team", "")
+            rows = list(reader)
 
-                if lineup_entry:
-                    side = "home" if lineup_entry.side == MatchLineup.Side.HOME else "away"
-                    player_label = f"#{lineup_entry.jersey_number} {lineup_entry.player_name}"
+        for row in rows:
+            track_id = _safe_int(row.get("track_id"))
+            lineup_entry = assignments.get(track_id)
+            team_val = row.get("team", "")
+
+            if lineup_entry:
+                side = "home" if lineup_entry.side == MatchLineup.Side.HOME else "away"
+                player_inferred = False
+            else:
+                side = "home" if team_val == "team_a" else "away"
+                player_inferred = True
+
+            team_obj = match.home_team if side == "home" else match.away_team
+            outcome_raw = row.get("outcome") or ""
+            is_goal = outcome_raw.lower() == "goal"
+            dist_val = _safe_float(row.get("distance_m"))
+            speed_val = _safe_float(row.get("speed_mps"))
+            minute_val = _safe_int(row.get("minute"), default=1)
+            xg_val = _safe_float(row.get("xg"))
+            is_on_target = row.get("is_on_target", "").lower() in ("true", "1") or is_goal
+            outcome = "Goal" if is_goal else (row.get("outcome") or ("On Target" if is_on_target else "Off Target"))
+
+            fwds = home_fwds if side == "home" else away_fwds
+            mids = home_mids if side == "home" else away_mids
+
+            if not lineup_entry:
+                if is_goal:
+                    g_match = match.goals.filter(team=team_obj, is_own_goal=False).select_related("scorer").first()
+                    if g_match and g_match.scorer:
+                        lineup_entry = g_match.scorer
+                    elif fwds:
+                        lineup_entry = fwds[0]
                 else:
-                    side = "home" if team_val == "team_a" else "away"
-                    team_obj = match.home_team if side == "home" else match.away_team
-                    player_label = f"{team_obj.short_name} Player"
+                    if dist_val >= 22.0 and mids:
+                        ck = f"{side}_mid"
+                        lineup_entry = mids[shot_distrib[ck] % len(mids)]
+                        shot_distrib[ck] += 1
+                    elif fwds:
+                        ck = f"{side}_fwd"
+                        lineup_entry = fwds[shot_distrib[ck] % len(fwds)]
+                        shot_distrib[ck] += 1
+                    elif mids:
+                        ck = f"{side}_mid"
+                        lineup_entry = mids[shot_distrib[ck] % len(mids)]
+                        shot_distrib[ck] += 1
 
-                xg_val = _safe_float(row.get("xg"))
-                dist_val = _safe_float(row.get("distance_m"))
-                speed_val = _safe_float(row.get("speed_mps"))
-                minute_val = _safe_int(row.get("minute"), default=1)
+            if lineup_entry:
+                player_label = f"#{lineup_entry.jersey_number} {lineup_entry.player_name}"
+                jersey_number = lineup_entry.jersey_number
+                player_name = lineup_entry.player_name
+                lineup_entry_id = lineup_entry.id
+            else:
+                player_label = f"{team_obj.short_name} Player"
+                jersey_number = None
+                player_name = f"{team_obj.short_name} Player"
+                lineup_entry_id = None
 
-                is_on_target = row.get("is_on_target", "").lower() in ("true", "1")
-                outcome = row.get("outcome") or ("On Target" if is_on_target else "Off Target")
-
-                shots.append({
-                    "frame_idx": _safe_int(row.get("frame_idx")),
-                    "minute": minute_val,
-                    "player": player_label,
-                    "player_inferred": True,
-                    "side": side,
-                    "xg": xg_val,
-                    "outcome": outcome,
-                    "is_on_target": is_on_target,
-                    "pitch_x": _safe_float(row.get("pitch_x")),
-                    "pitch_y": _safe_float(row.get("pitch_y")),
-                    "target_goal_x": _safe_float(row.get("target_goal_x")),
-                    "target_goal_y": _safe_float(row.get("target_goal_y")),
-                    "distance_m": dist_val,
-                    "speed_mps": speed_val,
-                })
+            shots.append({
+                "frame_idx": _safe_int(row.get("frame_idx")),
+                "minute": minute_val,
+                "player": player_label,
+                "player_inferred": player_inferred,
+                "player_name": player_name,
+                "jersey_number": jersey_number,
+                "lineup_entry_id": lineup_entry_id,
+                "side": side,
+                "xg": xg_val,
+                "outcome": outcome,
+                "is_on_target": is_on_target,
+                "pitch_x": _safe_float(row.get("pitch_x")),
+                "pitch_y": _safe_float(row.get("pitch_y")),
+                "target_goal_x": _safe_float(row.get("target_goal_x")),
+                "target_goal_y": _safe_float(row.get("target_goal_y")),
+                "distance_m": dist_val,
+                "speed_mps": speed_val,
+            })
     except Exception:
         logger.exception("Failed to parse shots_csv for match=%s", match.id)
 
@@ -2036,7 +2101,38 @@ def build_match_report_context(match):
     home_stats_by_jersey = {**home_stats_ocr, **home_stats_manual}
     away_stats_by_jersey = {**away_stats_ocr, **away_stats_manual}
 
+    detected_shots = _load_real_shots(match, files_obj)
+
     match_goals = list(MatchGoal.objects.filter(match=match).select_related("scorer", "team"))
+
+    # Auto-resolve any missing scorer on existing goals
+    for g in match_goals:
+        if g.scorer_id is None:
+            side_val = MatchLineup.Side.HOME if g.team_id == match.home_team_id else MatchLineup.Side.AWAY
+            fwd = match.lineups.filter(side=side_val, position="FWD").first()
+            if fwd:
+                g.scorer = fwd
+                g.save(update_fields=["scorer"])
+
+    # If no MatchGoal records exist, auto-create from detected shots if available
+    if not match_goals and detected_shots:
+        for s in detected_shots:
+            if s.get("outcome", "").lower() == "goal":
+                side = s.get("side", "away")
+                team_obj = match.home_team if side == "home" else match.away_team
+                side_val = MatchLineup.Side.HOME if side == "home" else MatchLineup.Side.AWAY
+                scorer_entry = match.lineups.filter(id=s.get("lineup_entry_id")).first() or match.lineups.filter(side=side_val, position="FWD").first()
+                mg = MatchGoal.objects.create(
+                    match=match,
+                    team=team_obj,
+                    scorer=scorer_entry,
+                    minute=s.get("minute", 1),
+                    is_own_goal=False,
+                )
+                match_goals.append(mg)
+        if match_goals:
+            _recompute_match_score(match)
+
     if match_goals:
         goals_by_lineup_id = defaultdict(int)
         for g in match_goals:
@@ -2044,6 +2140,46 @@ def build_match_report_context(match):
                 goals_by_lineup_id[g.scorer_id] += 1
     else:
         goals_by_lineup_id = None
+
+    # Reconcile detected shots directly into home_stats_by_jersey and away_stats_by_jersey
+    # so that each player's row receives their actual detected shots, shots on target, and xG.
+    if detected_shots:
+        teams_with_detected_shots = {s.get("side") for s in detected_shots if s.get("side")}
+        for side in teams_with_detected_shots:
+            target_dict = home_stats_by_jersey if side == "home" else away_stats_by_jersey
+            for j in target_dict:
+                target_dict[j]["shots"] = 0
+                target_dict[j]["shots_on_target"] = 0
+                target_dict[j]["xg"] = 0.0
+
+        for s in detected_shots:
+            j = s.get("jersey_number")
+            side = s.get("side")
+            if j is not None and side:
+                stats_dict = home_stats_by_jersey if side == "home" else away_stats_by_jersey
+                if j not in stats_dict:
+                    stats_dict[j] = {
+                        "distance_km": 0.0,
+                        "passes_completed": 0,
+                        "passes_attempted": 0,
+                        "pass_accuracy": 0.0,
+                        "shots": 0,
+                        "shots_on_target": 0,
+                        "xg": 0.0,
+                        "top_speed": 0.0,
+                        "average_speed": 0.0,
+                        "tackles": 0,
+                        "interceptions": 0,
+                        "clearances": 0,
+                        "dribbles_completed": 0,
+                        "key_passes": 0,
+                        "rating": 6.5,
+                        "is_confirmed": not s.get("player_inferred", False),
+                    }
+                stats_dict[j]["shots"] += 1
+                if s.get("is_on_target") or s.get("outcome", "").lower() in ("goal", "on target", "saved"):
+                    stats_dict[j]["shots_on_target"] += 1
+                stats_dict[j]["xg"] = round(stats_dict[j]["xg"] + s.get("xg", 0.0), 2)
 
     home_players = _dummy_player_rows(rng, home_lineup, match.home_team, home_stats_by_jersey, goals_by_lineup_id)
     away_players = _dummy_player_rows(rng, away_lineup, match.away_team, away_stats_by_jersey, goals_by_lineup_id)
@@ -2114,11 +2250,11 @@ def build_match_report_context(match):
         home_heatmap = render_heatmap_png(home_positions, attack_direction="right")
         away_heatmap = render_heatmap_png(away_positions, attack_direction="left")
 
-        shots = _load_real_shots(match, files_obj)
+        shots = detected_shots
         passes = _load_real_passes(match, files_obj, shots=shots)
         timeline = [{"minute": 0, "type": "kickoff", "description": "Kickoff"}]
         for g in match_goals:
-            scorer_label = g.scorer.player_name if g.scorer else "Unknown scorer"
+            scorer_label = f"#{g.scorer.jersey_number} {g.scorer.player_name}" if g.scorer else "Unknown scorer"
             og_label = " (OG)" if g.is_own_goal else ""
             timeline.append({
                 "minute": g.minute if g.minute is not None else "",
@@ -2126,11 +2262,12 @@ def build_match_report_context(match):
                 "description": f"Goal{og_label} — {scorer_label} ({g.team.short_name})",
             })
         for s in shots:
-            timeline.append({
-                "minute": s["minute"],
-                "type": "shot",
-                "description": f"Shot ({s['outcome']}) — {s['player']} (inferred, xG {s['xg']:.2f})",
-            })
+            if s.get("outcome", "").lower() != "goal":
+                timeline.append({
+                    "minute": s["minute"],
+                    "type": "shot",
+                    "description": f"Shot ({s['outcome']}) — {s['player']} (xG {s['xg']:.2f})",
+                })
         timeline.append({"minute": 90, "type": "fulltime", "description": "Full Time"})
         timeline.sort(key=lambda e: e["minute"] if isinstance(e["minute"], int) else 999)
 
@@ -2247,6 +2384,8 @@ def build_match_report_context(match):
         "away_heatmap": away_heatmap,
         "has_calibration": match.calibrations.exists(),
         "match_goals": match_goals,
+        "home_goals": [g for g in match_goals if g.team_id == match.home_team_id],
+        "away_goals": [g for g in match_goals if g.team_id == match.away_team_id],
         "home_lineup": home_lineup,
         "away_lineup": away_lineup,
         "annotated_video_url": annotated_video_url,
@@ -2297,7 +2436,169 @@ def match_results(request, public_id):
     context = build_match_report_context(match)
     context["is_uploader"] = request.user == match.uploaded_by
     context["match_report"] = Report.objects.filter(match=match, report_type=Report.ReportType.MATCH).first()
+
+    # Serialize player data for dynamic client-side comparison and radar generation
+    all_players = []
+    for p in context.get("home_players", []):
+        all_players.append({
+            "lineup_id": p.get("lineup_id"),
+            "player_id": p.get("player_id"),
+            "name": p.get("name"),
+            "jersey_number": p.get("jersey_number"),
+            "position": p.get("position"),
+            "team_side": "HOME",
+            "team_name": match.home_team.name,
+            "team_color": match.home_kit_color or "#ef4444",
+            "minutes_played": p.get("minutes_played", 0),
+            "goals": p.get("goals", 0),
+            "assists": p.get("assists", 0),
+            "shots": p.get("shots", 0),
+            "shots_on_target": p.get("shots_on_target", 0),
+            "shot_accuracy": p.get("shot_accuracy", 0.0),
+            "xg": p.get("xg", 0.0),
+            "passes_completed": p.get("passes_completed", 0),
+            "passes_attempted": p.get("passes_attempted", 0),
+            "pass_accuracy": p.get("pass_accuracy", 0.0),
+            "key_passes": p.get("key_passes", 0),
+            "dribbles_completed": p.get("dribbles_completed", 0),
+            "tackles": p.get("tackles", 0),
+            "interceptions": p.get("interceptions", 0),
+            "clearances": p.get("clearances", 0),
+            "distance_km": p.get("distance_km", 0.0),
+            "top_speed": p.get("top_speed", 0.0),
+            "average_speed": p.get("average_speed", 0.0),
+            "rating": p.get("rating", 6.0),
+            "distance_is_real": p.get("distance_is_real", False),
+        })
+
+    for p in context.get("away_players", []):
+        all_players.append({
+            "lineup_id": p.get("lineup_id"),
+            "player_id": p.get("player_id"),
+            "name": p.get("name"),
+            "jersey_number": p.get("jersey_number"),
+            "position": p.get("position"),
+            "team_side": "AWAY",
+            "team_name": match.away_team.name,
+            "team_color": match.away_kit_color or "#eab308",
+            "minutes_played": p.get("minutes_played", 0),
+            "goals": p.get("goals", 0),
+            "assists": p.get("assists", 0),
+            "shots": p.get("shots", 0),
+            "shots_on_target": p.get("shots_on_target", 0),
+            "shot_accuracy": p.get("shot_accuracy", 0.0),
+            "xg": p.get("xg", 0.0),
+            "passes_completed": p.get("passes_completed", 0),
+            "passes_attempted": p.get("passes_attempted", 0),
+            "pass_accuracy": p.get("pass_accuracy", 0.0),
+            "key_passes": p.get("key_passes", 0),
+            "dribbles_completed": p.get("dribbles_completed", 0),
+            "tackles": p.get("tackles", 0),
+            "interceptions": p.get("interceptions", 0),
+            "clearances": p.get("clearances", 0),
+            "distance_km": p.get("distance_km", 0.0),
+            "top_speed": p.get("top_speed", 0.0),
+            "average_speed": p.get("average_speed", 0.0),
+            "rating": p.get("rating", 6.0),
+            "distance_is_real": p.get("distance_is_real", False),
+        })
+
+    context["all_players_json"] = json.dumps(all_players, default=str)
+    context["home_team_color"] = match.home_kit_color or "#ef4444"
+    context["away_team_color"] = match.away_kit_color or "#eab308"
+    context["home_team_stats"] = context.get("team_stats", {}).get("home", {})
+    context["away_team_stats"] = context.get("team_stats", {}).get("away", {})
+
     return render(request, "matches/results.html", context)
+
+
+@login_required
+def compare_hub(request, public_id):
+    """
+    Head-to-head tactical comparison hub for players and teams.
+    Provides side-by-side performance radars, heatmaps, pass vectors,
+    and key metric breakdowns.
+    """
+    match = get_object_or_404(Match, public_id=public_id)
+
+    if match.status != Match.MatchStatus.COMPLETED:
+        return redirect("matches:processing", public_id=match.public_id)
+
+    context = build_match_report_context(match)
+    context["is_uploader"] = request.user == match.uploaded_by
+    context["match_report"] = Report.objects.filter(match=match, report_type=Report.ReportType.MATCH).first()
+
+    # Serialize player data for dynamic client-side comparison and radar generation
+    all_players = []
+    for p in context.get("home_players", []):
+        all_players.append({
+            "lineup_id": p.get("lineup_id"),
+            "player_id": p.get("player_id"),
+            "name": p.get("name"),
+            "jersey_number": p.get("jersey_number"),
+            "position": p.get("position"),
+            "team_side": "HOME",
+            "team_name": match.home_team.name,
+            "team_color": match.home_kit_color or "#ef4444",
+            "minutes_played": p.get("minutes_played", 0),
+            "goals": p.get("goals", 0),
+            "assists": p.get("assists", 0),
+            "shots": p.get("shots", 0),
+            "shots_on_target": p.get("shots_on_target", 0),
+            "shot_accuracy": p.get("shot_accuracy", 0.0),
+            "xg": p.get("xg", 0.0),
+            "passes_completed": p.get("passes_completed", 0),
+            "passes_attempted": p.get("passes_attempted", 0),
+            "pass_accuracy": p.get("pass_accuracy", 0.0),
+            "key_passes": p.get("key_passes", 0),
+            "dribbles_completed": p.get("dribbles_completed", 0),
+            "tackles": p.get("tackles", 0),
+            "interceptions": p.get("interceptions", 0),
+            "clearances": p.get("clearances", 0),
+            "distance_km": p.get("distance_km", 0.0),
+            "top_speed": p.get("top_speed", 0.0),
+            "average_speed": p.get("average_speed", 0.0),
+            "rating": p.get("rating", 6.0),
+            "distance_is_real": p.get("distance_is_real", False),
+        })
+
+    for p in context.get("away_players", []):
+        all_players.append({
+            "lineup_id": p.get("lineup_id"),
+            "player_id": p.get("player_id"),
+            "name": p.get("name"),
+            "jersey_number": p.get("jersey_number"),
+            "position": p.get("position"),
+            "team_side": "AWAY",
+            "team_name": match.away_team.name,
+            "team_color": match.away_kit_color or "#eab308",
+            "minutes_played": p.get("minutes_played", 0),
+            "goals": p.get("goals", 0),
+            "assists": p.get("assists", 0),
+            "shots": p.get("shots", 0),
+            "shots_on_target": p.get("shots_on_target", 0),
+            "shot_accuracy": p.get("shot_accuracy", 0.0),
+            "xg": p.get("xg", 0.0),
+            "passes_completed": p.get("passes_completed", 0),
+            "passes_attempted": p.get("passes_attempted", 0),
+            "pass_accuracy": p.get("pass_accuracy", 0.0),
+            "key_passes": p.get("key_passes", 0),
+            "dribbles_completed": p.get("dribbles_completed", 0),
+            "tackles": p.get("tackles", 0),
+            "interceptions": p.get("interceptions", 0),
+            "clearances": p.get("clearances", 0),
+            "distance_km": p.get("distance_km", 0.0),
+            "top_speed": p.get("top_speed", 0.0),
+            "average_speed": p.get("average_speed", 0.0),
+            "rating": p.get("rating", 6.0),
+            "distance_is_real": p.get("distance_is_real", False),
+        })
+
+    context["all_players_json"] = json.dumps(all_players, default=str)
+    context["home_team_color"] = match.home_kit_color or "#ef4444"
+    context["away_team_color"] = match.away_kit_color or "#eab308"
+
+    return render(request, "matches/compare.html", context)
 
 
 

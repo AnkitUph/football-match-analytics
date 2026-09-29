@@ -14,40 +14,84 @@ place. A second copy would risk silently drifting out of sync if either
 path were fixed without the other.
 """
 import base64
+import logging
+from pathlib import Path
 
 import cv2
 import requests
 
 from apps.matches.pitch_landmarks_32 import ROBOFLOW_KEYPOINTS_32
 
+_logger = logging.getLogger(__name__)
 ROBOFLOW_MODEL_ID = "football-field-detection-f07vi/14"
+_LOCAL_PITCH_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "pitch_keypoints_best.pt"
+_LOCAL_PITCH_MODEL = None
 
 
-def detect_pitch_keypoints(frame_bgr, api_key, confidence_threshold=0.5, max_points=12):
+def _get_local_pitch_model():
+    global _LOCAL_PITCH_MODEL
+    if _LOCAL_PITCH_MODEL is None and _LOCAL_PITCH_MODEL_PATH.exists():
+        try:
+            from ultralytics import YOLO
+            _LOCAL_PITCH_MODEL = YOLO(str(_LOCAL_PITCH_MODEL_PATH))
+            _logger.info("Loaded local pitch keypoint model: %s", _LOCAL_PITCH_MODEL_PATH)
+        except Exception as e:
+            _logger.warning("Could not load local pitch keypoint model: %s", e)
+    return _LOCAL_PITCH_MODEL
+
+
+def detect_pitch_keypoints(frame_bgr, api_key=None, confidence_threshold=0.35, max_points=12):
     """
-    Runs the hosted Roboflow keypoint model on one BGR frame (as read by
-    cv2.VideoCapture) and returns up to max_points suggested pixel<->pitch
-    correspondences, highest-confidence first.
+    Detects up to max_points suggested pixel<->pitch correspondences,
+    highest-confidence first.
 
-    Returns a list of dicts: {landmark_id, label, pixel_x, pixel_y,
-    pitch_x, pitch_y, confidence}. Empty list on any failure (network
-    error, no pitch detected, nothing above threshold) — callers treat
-    that as "no suggestion available" and must never raise on it, since
-    both call sites (automatic calibration and the manual smart-assist
-    button) need to degrade gracefully rather than fail the caller's
-    whole operation over a Roboflow/network hiccup.
-
-    IMPORTANT: roboflow_index = class_id + 1. Confirmed via live
-    inference AND homography reprojection testing (halfway line, center
-    circle, and touchlines landed correctly on real pitch markings
-    across two independent clips — test_11.mp4 and test_1.mp4/Mainz)
-    that this model's array position (class_id, 0-indexed) is the
-    correct index into ROBOFLOW_KEYPOINTS_32 — matching the documented
-    usage pattern in sports.common.view.ViewTransformer examples. The
-    "class" string field (e.g. "14") must NOT be used — it silently
-    produces a badly wrong homography (a tiny, misplaced center circle;
-    a halfway line running diagonally across the frame).
+    Tries local offline pitch keypoint model (pitch_keypoints_best.pt) first.
+    Falls back to hosted Roboflow keypoint model if local model is unavailable
+    or returns fewer than 4 keypoints.
     """
+    landmarks_by_index = {l["roboflow_index"]: l for l in ROBOFLOW_KEYPOINTS_32}
+    h_frame, w_frame = frame_bgr.shape[:2]
+
+    # --- Mode 1: Local YOLOv8-Pose Pitch Keypoint Model (Zero API latency) ---
+    local_model = _get_local_pitch_model()
+    if local_model is not None:
+        try:
+            results = local_model.predict(
+                frame_bgr,
+                conf=min(0.20, confidence_threshold),
+                verbose=False
+            )[0]
+            if results.keypoints is not None and len(results.keypoints.data) > 0:
+                kpts = results.keypoints.data[0].cpu().numpy()
+                suggestions = []
+                for idx, (kx, ky, conf) in enumerate(kpts):
+                    if conf < confidence_threshold:
+                        continue
+                    if kx < 0 or kx >= w_frame or ky < 0 or ky >= h_frame:
+                        continue
+                    roboflow_index = idx + 1
+                    landmark = landmarks_by_index.get(roboflow_index)
+                    if landmark is None:
+                        continue
+                    suggestions.append({
+                        "landmark_id": landmark["id"],
+                        "label": landmark["label"],
+                        "pixel_x": float(kx),
+                        "pixel_y": float(ky),
+                        "pitch_x": landmark["x"],
+                        "pitch_y": landmark["y"],
+                        "confidence": float(conf),
+                    })
+                if len(suggestions) >= 4:
+                    suggestions.sort(key=lambda s: -s["confidence"])
+                    return suggestions[:max_points]
+        except Exception as e:
+            _logger.debug("Local pitch keypoint prediction error (%s), attempting fallback", e)
+
+    # --- Mode 2: Roboflow Cloud API Fallback ---
+    if not api_key:
+        return []
+
     ok, buf = cv2.imencode(".jpg", frame_bgr)
     if not ok:
         return []

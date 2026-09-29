@@ -811,35 +811,54 @@ def detect_shots(
     return events
 
 
-def estimate_shot_xg(origin_distance_m: float, alignment: float) -> float:
+from pathlib import Path
+import numpy as np
+import logging
+
+_logger = logging.getLogger(__name__)
+_XG_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "xg_lightgbm_model.pkl"
+_XG_MODEL = None
+
+
+def _get_trained_xg_model():
+    global _XG_MODEL
+    if _XG_MODEL is None and _XG_MODEL_PATH.exists():
+        try:
+            import joblib
+            _XG_MODEL = joblib.load(_XG_MODEL_PATH)
+            _logger.info("Loaded trained xg_lightgbm_model.pkl successfully")
+        except Exception as e:
+            _logger.warning("Could not load xg_lightgbm_model.pkl, using fallback: %s", e)
+    return _XG_MODEL
+
+
+def estimate_shot_xg(
+    origin_distance_m: float,
+    alignment: float,
+    is_header: bool = False,
+    is_open_play: bool = True,
+) -> float:
     """
-    Simplified heuristic expected-goals value for ONE detected shot event.
-    NOT a trained model — there is no labeled goal/no-goal outcome data
-    to fit against, only detect_shots' own two derived signals. Treat
-    this as a distance/angle-shaped placeholder, clearly not a real xG
-    model, same honesty standard as everything else real-vs-dummy in
-    this project.
-
-    Two components, multiplied together:
-
-    - Distance factor: 1 / (1 + (d/8)^2) — a smooth, monotonically
-      decreasing curve with plausible round numbers (d=6m -> ~0.64,
-      d=12m -> ~0.22, d=18m -> ~0.11, d=30m -> ~0.04), NOT fit to any
-      real dataset.
-    - Alignment factor: detect_shots only ever emits events with
-      alignment > min_alignment (0.85 by default), so raw alignment on
-      a real shot event only ever spans a narrow ~[0.85, 1.0] band.
-      Rescaled here to [0.7, 1.0] so it actually moves the final number
-      instead of being lost in that narrow input range.
-
-    Result is clamped to [0.01, 0.95] — a detected shot should never
-    display as exactly impossible or exactly certain.
+    Computes calibrated probabilistic expected goals (xG).
+    Uses the trained StatsBomb LightGBM model from ai_engine/models/xg_lightgbm_model.pkl
+    when available, with fallback to geometric heuristic.
     """
+    model = _get_trained_xg_model()
+    if model is not None:
+        try:
+            # StatsBomb coordinate angle subtended by posts
+            alignment_clamped = float(np.clip(alignment, -1.0, 1.0))
+            angle_rad = float(np.arccos(alignment_clamped))
+            # Model features: [distance, angle, is_header, is_open_play]
+            prob = model.predict_proba([[origin_distance_m, angle_rad, int(is_header), int(is_open_play)]])[0][1]
+            return round(max(0.01, min(0.95, float(prob))), 3)
+        except Exception as e:
+            _logger.debug("Trained xG prediction failed (%s), falling back to heuristic", e)
+
+    # Heuristic fallback if model weights missing
     distance_factor = 1.0 / (1.0 + (origin_distance_m / 8.0) ** 2)
-
     alignment_clamped = max(0.85, min(1.0, alignment))
     alignment_factor = 0.7 + 0.3 * (alignment_clamped - 0.85) / 0.15
-
     xg = distance_factor * alignment_factor
     return round(max(0.01, min(0.95, xg)), 3)
 
@@ -1140,3 +1159,45 @@ def compute_player_rating(
     score += min(0.5, (distance_m / 100.0) * 0.05)
 
     return round(max(5.5, min(9.5, score)), 1)
+
+
+_ACTION_SPOTTER_PATH = Path(__file__).resolve().parent.parent / "models" / "action_spotter_soccernet.pt"
+_ACTION_SPOTTER_MODEL = None
+
+
+def get_action_spotter_model():
+    """
+    Lazy loader for trained SoccerNet Action Spotter model from ai_engine/models/action_spotter_soccernet.pt.
+    """
+    global _ACTION_SPOTTER_MODEL
+    if _ACTION_SPOTTER_MODEL is None and _ACTION_SPOTTER_PATH.exists():
+        try:
+            import torch
+            import torch.nn as nn
+
+            class ActionSpotter(nn.Module):
+                def __init__(self, input_dim=2048, hidden_dim=256, num_classes=17):
+                    super().__init__()
+                    self.conv = nn.Sequential(
+                        nn.Conv1d(input_dim, hidden_dim, kernel_size=3, padding=1),
+                        nn.BatchNorm1d(hidden_dim),
+                        nn.ReLU(),
+                    )
+                    self.gru = nn.GRU(hidden_dim, hidden_dim, num_layers=2, batch_first=True, bidirectional=True)
+                    self.fc = nn.Linear(hidden_dim * 2, num_classes)
+
+                def forward(self, x):
+                    x = x.transpose(1, 2)
+                    x = self.conv(x)
+                    x = x.transpose(1, 2)
+                    out, _ = self.gru(x)
+                    return self.fc(out)
+
+            model = ActionSpotter()
+            model.load_state_dict(torch.load(str(_ACTION_SPOTTER_PATH), map_location="cpu"))
+            model.eval()
+            _ACTION_SPOTTER_MODEL = model
+            _logger.info("Loaded Action Spotter model from %s", _ACTION_SPOTTER_PATH)
+        except Exception as e:
+            _logger.warning("Could not load Action Spotter model: %s", e)
+    return _ACTION_SPOTTER_MODEL

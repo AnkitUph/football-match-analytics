@@ -136,3 +136,60 @@ def interpolate_gaps(
                 )
 
     return trajectory
+
+
+from pathlib import Path
+import logging
+
+_logger = logging.getLogger(__name__)
+_TRACKNET_WEIGHTS_PATH = Path(__file__).resolve().parent.parent / "models" / "tracknetv3_ball_best.pt"
+_TRACKNET_MODEL = None
+
+
+def get_tracknet_model():
+    """
+    Lazy loader for trained TrackNetV2 ball model from ai_engine/models/tracknetv3_ball_best.pt.
+    """
+    global _TRACKNET_MODEL
+    if _TRACKNET_MODEL is None and _TRACKNET_WEIGHTS_PATH.exists():
+        try:
+            import torch
+            import torch.nn as nn
+
+            class TrackNetV2(nn.Module):
+                def __init__(self, in_channels=9):
+                    super().__init__()
+                    self.conv1 = nn.Sequential(nn.Conv2d(in_channels, 64, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(64))
+                    self.pool1 = nn.MaxPool2d(2, 2)
+                    self.conv2 = nn.Sequential(nn.Conv2d(64, 128, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(128))
+                    self.pool2 = nn.MaxPool2d(2, 2)
+                    self.conv3 = nn.Sequential(nn.Conv2d(128, 256, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(256))
+                    self.pool3 = nn.MaxPool2d(2, 2)
+                    self.bottleneck = nn.Sequential(nn.Conv2d(256, 512, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(512))
+                    self.up3 = nn.Upsample(scale_factor=2, mode='nearest')
+                    self.conv_up3 = nn.Sequential(nn.Conv2d(512, 256, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(256))
+                    self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
+                    self.conv_up2 = nn.Sequential(nn.Conv2d(256, 128, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(128))
+                    self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
+                    self.conv_up1 = nn.Sequential(nn.Conv2d(128, 64, 3, padding=1), nn.ReLU(), nn.BatchNorm2d(64))
+                    self.out_conv = nn.Conv2d(64, 1, 1)
+                    self.sigmoid = nn.Sigmoid()
+
+                def forward(self, x):
+                    c1 = self.conv1(x)
+                    c2 = self.conv2(self.pool1(c1))
+                    c3 = self.conv3(self.pool2(c2))
+                    b = self.bottleneck(self.pool3(c3))
+                    u3 = self.conv_up3(self.up3(b))
+                    u2 = self.conv_up2(self.up2(u3))
+                    u1 = self.conv_up1(self.up1(u2))
+                    return self.sigmoid(self.out_conv(u1))
+
+            model = TrackNetV2()
+            model.load_state_dict(torch.load(str(_TRACKNET_WEIGHTS_PATH), map_location="cpu"))
+            model.eval()
+            _TRACKNET_MODEL = model
+            _logger.info("Loaded trained TrackNet ball model from %s", _TRACKNET_WEIGHTS_PATH)
+        except Exception as e:
+            _logger.warning("Could not load TrackNet ball model: %s", e)
+    return _TRACKNET_MODEL

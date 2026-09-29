@@ -9,6 +9,7 @@ urlpatterns = [
     path("<uuid:public_id>/processing/", views.match_processing, name="processing"),
     path("<uuid:public_id>/status/", views.match_status_api, name="status_api"),
     path("<uuid:public_id>/results/", views.match_results, name="results"),
+    path("<uuid:public_id>/compare/", views.compare_hub, name="compare_hub"),
     path("<uuid:public_id>/calibrate/", views.calibrate_match, name="calibrate"),
     path("<uuid:public_id>/calibrate/frame/", views.calibrate_frame, name="calibrate_frame"),
     path("<uuid:public_id>/calibrate/suggest/", views.calibrate_suggest, name="calibrate_suggest"),

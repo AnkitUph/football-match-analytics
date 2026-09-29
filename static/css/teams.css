@@ -1,0 +1,214 @@
+/* ==========================================================================
+   Teams & Players Directory Stylesheet (teams.css)
+   ========================================================================== */
+
+.teams-container {
+    position: relative;
+    z-index: 1;
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px;
+}
+
+/* Messages */
+.messages {
+    list-style: none;
+    margin-bottom: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.messages li {
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.messages li.success {
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    color: #6ee7b7;
+}
+
+.messages li.error {
+    background: rgba(244, 63, 94, 0.08);
+    border: 1px solid rgba(244, 63, 94, 0.3);
+    color: #fca5a5;
+}
+
+/* Grid Layout */
+.cards-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+}
+
+@media (max-width: 760px) {
+    .cards-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.card-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-main);
+    margin-bottom: 22px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border-glass);
+}
+
+.btn-submit {
+    width: 100%;
+    padding: 12px;
+    background: var(--accent-gradient);
+    border: none;
+    border-radius: 11px;
+    color: #041210;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: var(--transition-smooth);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.25);
+    margin-top: 8px;
+}
+
+.btn-submit:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+/* Team List */
+.team-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.team-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    transition: var(--transition-smooth);
+}
+
+.team-item:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.swatch {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+}
+
+.team-name {
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.team-short {
+    color: var(--pitch-emerald);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.team-meta {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-left: auto;
+}
+
+/* Table Card */
+.table-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--card-radius);
+    overflow: hidden;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.player-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.player-table thead tr {
+    background: rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--border-glass);
+}
+
+.player-table th {
+    text-align: left;
+    padding: 14px 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+}
+
+.player-table tbody tr {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    transition: var(--transition-smooth);
+}
+
+.player-table tbody tr:last-child {
+    border-bottom: none;
+}
+
+.player-table tbody tr:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.player-table td {
+    padding: 14px 20px;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.player-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    color: var(--pitch-emerald);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.player-name {
+    color: var(--text-main);
+    font-weight: 600;
+}
+
+.position-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid rgba(6, 182, 212, 0.2);
+    color: var(--pitch-cyan);
+}
