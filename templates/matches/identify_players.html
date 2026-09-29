@@ -10,31 +10,25 @@
     <link rel="stylesheet" href="{% static 'css/identify.css' %}">
 </head>
 <body>
-    <nav class="top-nav">
-        <a class="nav-brand" href="{% url 'dashboard:index' %}">
-            <div class="nav-brand-icon">⚽</div>
-            Analytics Studio
-        </a>
-        <a class="nav-back" href="{% url 'matches:results' match.public_id %}">← Back to Results</a>
-    </nav>
+    {% url 'matches:results' match.public_id as results_url %}
+    {% include "includes/top_nav.html" with back_url=results_url back_label="Back to Results" %}
 
     <div class="identify-content" id="identify-workbench" data-save-url="{% url 'matches:identify_players_save' match.public_id %}">
         <p class="page-eyebrow">Player Identification</p>
         <h1 class="page-title">{{ match.home_team.short_name }} vs {{ match.away_team.short_name }}</h1>
         <p class="page-subtitle">
-            Each card is one tracked player from the video. Cards marked
-            <span class="badge badge-guess">Guess</span> were randomly assigned — check the crop against the dropdown and correct if wrong.
-            Cards you've confirmed show <span class="badge badge-confirmed">Confirmed</span>. Only the distance in the Lineup tab is affected.
+            All tracked players are automatically identified and mapped to squad lineup profiles by our deep neural vision pipeline.
+            Review the automated assignments below and customize any player mapping if desired.
         </p>
 
         <div class="legend">
             <div class="legend-item">
-                <span class="badge badge-confirmed">Confirmed</span>
-                <span>Manually verified assignment</span>
+                <span class="badge badge-confirmed">Verified</span>
+                <span>Manually confirmed assignment</span>
             </div>
             <div class="legend-item">
-                <span class="badge badge-guess">Guess</span>
-                <span>Auto-assigned placeholder</span>
+                <span class="badge badge-guess">AI Auto</span>
+                <span>Automated model identification</span>
             </div>
         </div>
 

@@ -24,4 +24,5 @@ urlpatterns = [
     path("<uuid:public_id>/report/pdf/", views.download_match_report_pdf, name="download_report_pdf"),
     path("<uuid:public_id>/export/json/", views.export_match_json, name="export_json"),
     path("<uuid:public_id>/export/csv/<str:file_type>/", views.export_match_csv, name="export_csv"),
+    path("<uuid:public_id>/export/clip/", views.export_match_clip, name="export_clip"),
 ]

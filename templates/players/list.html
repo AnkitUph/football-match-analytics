@@ -10,13 +10,7 @@
     <link rel="stylesheet" href="{% static 'css/teams.css' %}">
 </head>
 <body>
-    <nav class="top-nav">
-        <a class="nav-brand" href="{% url 'dashboard:index' %}">
-            <div class="nav-brand-icon">⚽</div>
-            Analytics Studio
-        </a>
-        <a class="nav-back" href="{% url 'dashboard:index' %}">← Dashboard</a>
-    </nav>
+    {% include "includes/top_nav.html" with active_nav="players" %}
 
     <div class="teams-container">
         <p class="page-eyebrow">Roster</p>
@@ -33,13 +27,18 @@
                         <th>Team</th>
                         <th>Position</th>
                         <th>Status</th>
+                        <th style="text-align:right;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for player in players %}
                     <tr>
                         <td><span class="player-num">{{ player.jersey_number }}</span></td>
-                        <td><span class="player-name">{{ player.name }}</span></td>
+                        <td>
+                            <a href="{% url 'players:profile' player.id %}" class="player-name" style="text-decoration:none; color:inherit; font-weight:700;">
+                                {{ player.name }}
+                            </a>
+                        </td>
                         <td>{{ player.team.name }}</td>
                         <td><span class="position-badge">{{ player.get_position_display }}</span></td>
                         <td>
@@ -48,6 +47,11 @@
                             {% else %}
                                 <span class="badge" style="background:rgba(100,116,139,0.12); color:var(--text-muted);">Inactive</span>
                             {% endif %}
+                        </td>
+                        <td style="text-align:right;">
+                            <a href="{% url 'players:profile' player.id %}" class="btn-profile-link" style="background:rgba(16,185,129,0.12); color:#10b981; border:1px solid rgba(16,185,129,0.3); padding:4px 10px; border-radius:6px; font-size:12px; font-weight:600; text-decoration:none; display:inline-flex; align-items:center; gap:4px; transition:all 0.15s ease;">
+                                👤 Profile
+                            </a>
                         </td>
                     </tr>
                     {% endfor %}

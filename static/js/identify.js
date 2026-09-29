@@ -49,8 +49,8 @@
 
                 const badgeHtml = track.assigned_lineup_entry_id
                     ? (track.is_auto_assigned
-                        ? '<span class="badge badge-guess">Guess</span>'
-                        : '<span class="badge badge-confirmed">Confirmed</span>')
+                        ? '<span class="badge badge-guess">AI Auto</span>'
+                        : '<span class="badge badge-confirmed">Verified</span>')
                     : '';
 
                 card.innerHTML = `

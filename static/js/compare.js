@@ -230,11 +230,93 @@
             svg.innerHTML = svgHtml;
         }
 
+        function calcSpatialMetrics(player) {
+            const pos = (player.position || 'MID').toUpperCase();
+            let att = 35, mid = 45, def = 20;
+            let left = 25, center = 50, right = 25;
+            let channel = "Center Channel";
+
+            if (pos.includes('FWD') || pos.includes('ATT') || pos.includes('ST') || pos.includes('LW') || pos.includes('RW')) {
+                att = Math.min(75, 52 + Math.round((player.shots || 0) * 3 + (player.xg || 0) * 8));
+                def = Math.max(5, 12 - Math.round((player.tackles || 0)));
+                mid = Math.max(15, 100 - att - def);
+                if (pos.includes('LW')) { left = 55; center = 30; right = 15; channel = "Left Flank / Half-space"; }
+                else if (pos.includes('RW')) { right = 55; center = 30; left = 15; channel = "Right Flank / Half-space"; }
+                else { center = 60; left = 20; right = 20; channel = "Central Penalty Box"; }
+            } else if (pos.includes('DEF') || pos.includes('CB') || pos.includes('LB') || pos.includes('RB')) {
+                def = Math.min(70, 48 + Math.round((player.clearances || 0) * 2 + (player.tackles || 0)));
+                att = Math.max(5, 12 + Math.round((player.key_passes || 0) * 2));
+                mid = Math.max(20, 100 - def - att);
+                if (pos.includes('LB')) { left = 60; center = 28; right = 12; channel = "Left Defensive Flank"; }
+                else if (pos.includes('RB')) { right = 60; center = 28; left = 12; channel = "Right Defensive Flank"; }
+                else { center = 65; left = 18; right = 17; channel = "Central Defensive Third"; }
+            } else if (pos.includes('GK')) {
+                def = 92; mid = 8; att = 0;
+                center = 80; left = 10; right = 10;
+                channel = "Goal Box";
+            } else {
+                // Midfield
+                mid = Math.min(65, 48 + Math.round((player.passes_completed || 20) * 0.2));
+                att = Math.max(15, 28 + Math.round((player.key_passes || 0) * 3));
+                def = Math.max(12, 100 - mid - att);
+                center = 50; left = 25; right = 25;
+                channel = "Engine Room / Middle Third";
+            }
+
+            return { att, mid, def, left, center, right, channel };
+        }
+
         function updateHeatmaps() {
             if (!selectedP1 || !selectedP2) return;
 
-            document.getElementById('hm-p1-title').textContent = `${selectedP1.name} (#${selectedP1.jersey_number})`;
-            document.getElementById('hm-p2-title').textContent = `${selectedP2.name} (#${selectedP2.jersey_number})`;
+            document.getElementById('hm-p1-title').textContent = `${selectedP1.name}`;
+            document.getElementById('hm-p2-title').textContent = `${selectedP2.name}`;
+            document.getElementById('hm-p1-jersey').textContent = `#${selectedP1.jersey_number}`;
+            document.getElementById('hm-p2-jersey').textContent = `#${selectedP2.jersey_number}`;
+
+            // Direction metadata
+            const dir1 = selectedP1.team_side === 'HOME' ? "Attack direction: Left to Right →" : "Attack direction: Right to Left ←";
+            const dir2 = selectedP2.team_side === 'HOME' ? "Attack direction: Left to Right →" : "Attack direction: Right to Left ←";
+            document.getElementById('hm-p1-meta').textContent = dir1;
+            document.getElementById('hm-p2-meta').textContent = dir2;
+
+            // Compute Spatial Zone Metrics
+            const m1 = calcSpatialMetrics(selectedP1);
+            const m2 = calcSpatialMetrics(selectedP2);
+
+            // Attacking Third presence
+            document.getElementById('p1-att-third').textContent = `${m1.att}%`;
+            document.getElementById('p2-att-third').textContent = `${m2.att}%`;
+            const totalAtt = (m1.att + m2.att) || 1;
+            document.getElementById('p1-att-bar').style.width = `${Math.round((m1.att / totalAtt) * 100)}%`;
+            document.getElementById('p2-att-bar').style.width = `${Math.round((m2.att / totalAtt) * 100)}%`;
+
+            // Middle Third control
+            document.getElementById('p1-mid-third').textContent = `${m1.mid}%`;
+            document.getElementById('p2-mid-third').textContent = `${m2.mid}%`;
+            const totalMid = (m1.mid + m2.mid) || 1;
+            document.getElementById('p1-mid-bar').style.width = `${Math.round((m1.mid / totalMid) * 100)}%`;
+            document.getElementById('p2-mid-bar').style.width = `${Math.round((m2.mid / totalMid) * 100)}%`;
+
+            // Defensive Third coverage
+            document.getElementById('p1-def-third').textContent = `${m1.def}%`;
+            document.getElementById('p2-def-third').textContent = `${m2.def}%`;
+            const totalDef = (m1.def + m2.def) || 1;
+            document.getElementById('p1-def-bar').style.width = `${Math.round((m1.def / totalDef) * 100)}%`;
+            document.getElementById('p2-def-bar').style.width = `${Math.round((m2.def / totalDef) * 100)}%`;
+
+            // Channels
+            document.getElementById('p1-channel-val').textContent = m1.channel;
+            document.getElementById('p2-channel-val').textContent = m2.channel;
+
+            // Zone pills
+            document.getElementById('p1-zone-left').textContent = `Left: ${m1.left}%`;
+            document.getElementById('p1-zone-center').textContent = `Center: ${m1.center}%`;
+            document.getElementById('p1-zone-right').textContent = `Right: ${m1.right}%`;
+
+            document.getElementById('p2-zone-left').textContent = `Left: ${m2.left}%`;
+            document.getElementById('p2-zone-center').textContent = `Center: ${m2.center}%`;
+            document.getElementById('p2-zone-right').textContent = `Right: ${m2.right}%`;
 
             // Load Heatmap 1
             const img1 = document.getElementById('p1-heatmap-img');

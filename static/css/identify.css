@@ -167,18 +167,28 @@
 /* Select */
 .player-card select {
     width: 100%;
-    padding: 8px 10px;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--text-main);
-    border: 1px solid var(--border-glass);
+    padding: 9px 12px;
+    background: #0f172a !important;
+    color: #f8fafc !important;
+    border: 1px solid rgba(255, 255, 255, 0.20) !important;
     border-radius: 8px;
     font-size: 12px;
+    font-weight: 600;
     outline: none;
+    cursor: pointer;
     transition: var(--transition-smooth);
 }
 
+.player-card select option {
+    background-color: #0f172a !important;
+    color: #f8fafc !important;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
 .player-card select:focus {
-    border-color: var(--pitch-emerald);
+    border-color: #10b981 !important;
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
 }
 
 /* Actions */

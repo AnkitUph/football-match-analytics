@@ -641,11 +641,14 @@ def _dummy_player_rows(rng, lineup_qs, team, real_stats_by_jersey=None, real_goa
             if rating < 7.2:
                 rating = round(7.2 + min(goals * 0.8, 2.3), 1)
 
+        is_starting = entry.get("is_starting", True) if is_dict else getattr(entry, "is_starting", True)
+
         rows.append({
             "jersey_number": jersey_number,
             "name": name,
             "lineup_entry_id": lineup_entry_id,
             "position": position,
+            "is_starting": is_starting,
             "minutes_played": rng.choice([90, 90, 90, rng.randint(60, 89)]),
             "goals": goals,
             "goals_is_real": goals_is_real,
@@ -2748,3 +2751,102 @@ def export_match_csv(request, public_id, file_type):
         filename=filename,
         content_type="text/csv",
     )
+
+
+@login_required
+def export_match_clip(request, public_id):
+    """
+    Sub-clip extractor: cuts a high-definition MP4 clip from the match video
+    between `start` and `end` seconds using FFmpeg.
+    """
+    import subprocess
+    import re
+
+    match = get_object_or_404(Match, public_id=public_id)
+    video_obj = getattr(match, "video", None)
+    if not video_obj:
+        return JsonResponse({"error": "No video associated with this match."}, status=404)
+
+    mode = request.GET.get("mode", "annotated").strip().lower()
+    start_val = request.GET.get("start", "0")
+    end_val = request.GET.get("end", "10")
+    title = request.GET.get("title", "Match_Highlight").strip()
+
+    try:
+        start_sec = max(0.0, float(start_val))
+        end_sec = max(start_sec + 0.5, float(end_val))
+    except (ValueError, TypeError):
+        start_sec = 0.0
+        end_sec = 10.0
+
+    # Limit maximum clip length to 90 seconds
+    duration = min(90.0, end_sec - start_sec)
+    end_sec = start_sec + duration
+
+    # Resolve video source file
+    video_file = None
+    if mode == "annotated" and video_obj.annotated_video:
+        video_file = video_obj.annotated_video
+    elif video_obj.original_video:
+        video_file = video_obj.original_video
+    elif video_obj.annotated_video:
+        video_file = video_obj.annotated_video
+
+    if not video_file:
+        return JsonResponse({"error": "Video footage file is missing on storage."}, status=404)
+
+    input_path = video_file.path
+    if not os.path.exists(input_path):
+        return JsonResponse({"error": f"Video source file not found on disk at {input_path}"}, status=404)
+
+    clean_title = re.sub(r"[^\w\-.]", "_", title).strip("_")
+    if not clean_title:
+        clean_title = "Clip"
+    filename = f"{match.home_team.short_name}_vs_{match.away_team.short_name}_{clean_title}_{int(start_sec)}s-{int(end_sec)}s.mp4"
+
+    tmp_dir = tempfile.gettempdir()
+    out_file = os.path.join(tmp_dir, f"subclip_{match.public_id}_{int(start_sec * 10)}_{int(end_sec * 10)}.mp4")
+
+    # Run FFmpeg to cut the clip cleanly
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start_sec),
+        "-t", str(duration),
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "22",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        out_file
+    ]
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=45)
+        if res.returncode != 0 or not os.path.exists(out_file) or os.path.getsize(out_file) == 0:
+            # Fallback to copy stream without re-encode if ultrafast fails
+            cmd_copy = [
+                "ffmpeg", "-y",
+                "-ss", str(start_sec),
+                "-t", str(duration),
+                "-i", input_path,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                out_file
+            ]
+            subprocess.run(cmd_copy, capture_output=True, timeout=30)
+
+        if not os.path.exists(out_file) or os.path.getsize(out_file) == 0:
+            return JsonResponse({"error": "Failed to generate video sub-clip with FFmpeg."}, status=500)
+
+        return FileResponse(
+            open(out_file, "rb"),
+            as_attachment=True,
+            filename=filename,
+            content_type="video/mp4"
+        )
+    except subprocess.TimeoutExpired:
+        return JsonResponse({"error": "Video clip generation timed out."}, status=504)
+    except Exception as exc:
+        return JsonResponse({"error": f"Clip generation error: {str(exc)}"}, status=500)

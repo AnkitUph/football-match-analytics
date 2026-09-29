@@ -1,0 +1,512 @@
+/* ==========================================================================
+   Player Career Profile & Performance History Stylesheet (player_profile.css)
+   ========================================================================== */
+
+.player-profile-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+/* Hero Header Card */
+.player-hero-card {
+    background: var(--bg-surface, #1e293b);
+    border: 1px solid var(--border-glass, rgba(255, 255, 255, 0.08));
+    border-radius: var(--radius-xl, 16px);
+    padding: 28px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 24px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+}
+
+.player-hero-left {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+}
+
+.player-avatar-badge {
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid rgba(255, 255, 255, 0.15);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.player-jersey-hero {
+    font-size: 32px;
+    font-weight: 800;
+    color: #ffffff;
+    font-family: 'Outfit', sans-serif;
+    letter-spacing: -1px;
+}
+
+.player-hero-info {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.player-meta-tags {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.position-badge-lg {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.team-pill-badge {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary, #cbd5e1);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.player-hero-name {
+    font-family: 'Outfit', sans-serif;
+    font-size: 30px;
+    font-weight: 800;
+    color: var(--text-primary, #ffffff);
+    margin: 0;
+    line-height: 1.15;
+}
+
+.player-physical-specs {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text-muted, #94a3b8);
+    flex-wrap: wrap;
+}
+
+.player-physical-specs strong {
+    color: var(--text-secondary, #cbd5e1);
+}
+
+/* Rating Card on Right */
+.player-hero-right {
+    display: flex;
+    align-items: center;
+}
+
+.rating-hero-card {
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-radius: 12px;
+    padding: 16px 24px;
+    text-align: center;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.rating-hero-val {
+    font-size: 36px;
+    font-weight: 800;
+    color: #10b981;
+    font-family: 'Outfit', sans-serif;
+    line-height: 1;
+}
+
+.rating-hero-lbl {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-secondary, #cbd5e1);
+    margin-top: 4px;
+    letter-spacing: 0.5px;
+}
+
+.rating-hero-sub {
+    font-size: 10px;
+    color: var(--text-muted, #94a3b8);
+    margin-top: 2px;
+}
+
+/* 4-KPI Grid */
+.player-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+}
+
+.kpi-card {
+    background: var(--bg-surface, #1e293b);
+    border: 1px solid var(--border-glass, rgba(255, 255, 255, 0.08));
+    border-radius: var(--radius-lg, 12px);
+    padding: 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.kpi-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(16, 185, 129, 0.4);
+}
+
+.kpi-icon {
+    font-size: 28px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.kpi-body {
+    display: flex;
+    flex-direction: column;
+}
+
+.kpi-val {
+    font-family: 'Outfit', sans-serif;
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--text-primary, #ffffff);
+    line-height: 1.2;
+}
+
+.kpi-unit {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted, #94a3b8);
+}
+
+.kpi-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: #10b981;
+    margin-top: 2px;
+}
+
+.kpi-sub {
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+    margin-top: 4px;
+}
+
+/* Tactical Profile & Attributes */
+.tactical-profile-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+@media (max-width: 900px) {
+    .tactical-profile-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.tactical-card {
+    background: var(--bg-surface, #1e293b);
+    border: 1px solid var(--border-glass, rgba(255, 255, 255, 0.08));
+    border-radius: var(--radius-xl, 16px);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+}
+
+.card-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.card-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text-primary, #ffffff);
+    margin: 0 0 4px;
+}
+
+.card-subtitle {
+    font-size: 12px;
+    color: var(--text-muted, #94a3b8);
+    margin: 0;
+}
+
+.radar-ai-pill {
+    background: rgba(6, 182, 212, 0.15);
+    color: #22d3ee;
+    border: 1px solid rgba(6, 182, 212, 0.3);
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 6px;
+}
+
+.radar-chart-wrap {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 10px 0;
+}
+
+.player-radar-svg {
+    max-width: 360px;
+    width: 100%;
+    height: auto;
+}
+
+/* Breakdown list */
+.breakdown-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.breakdown-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.breakdown-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.breakdown-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary, #cbd5e1);
+}
+
+.breakdown-val {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary, #ffffff);
+}
+
+.progress-track {
+    width: 100%;
+    height: 7px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.6s ease;
+}
+
+.player-info-banner {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.2);
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 12px;
+    color: #cbd5e1;
+    line-height: 1.5;
+    margin-top: auto;
+}
+
+/* Match History Card */
+.match-history-card {
+    background: var(--bg-surface, #1e293b);
+    border: 1px solid var(--border-glass, rgba(255, 255, 255, 0.08));
+    border-radius: var(--radius-xl, 16px);
+    padding: 24px;
+}
+
+.match-count-badge {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary, #cbd5e1);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.table-responsive {
+    overflow-x: auto;
+}
+
+.history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.history-table th {
+    text-align: left;
+    padding: 12px 14px;
+    color: var(--text-muted, #94a3b8);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.history-table td {
+    padding: 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    vertical-align: middle;
+}
+
+.history-table tr:hover td {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.match-cell {
+    display: flex;
+    flex-direction: column;
+}
+
+.match-date {
+    font-size: 11px;
+    color: var(--text-muted, #94a3b8);
+}
+
+.match-opp {
+    font-weight: 600;
+    color: var(--text-primary, #ffffff);
+}
+
+.score-pill {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 4px;
+    display: inline-block;
+    font-family: monospace;
+}
+
+.score-pill.score-W {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.score-pill.score-D {
+    background: rgba(234, 179, 8, 0.15);
+    color: #eab308;
+    border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+.score-pill.score-L {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.badge-role {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.badge-role.start {
+    background: rgba(59, 130, 246, 0.15);
+    color: #60a5fa;
+}
+
+.badge-role.sub {
+    background: rgba(100, 116, 139, 0.15);
+    color: #94a3b8;
+}
+
+.stat-highlight {
+    font-weight: 700;
+}
+
+.stat-highlight.goal {
+    color: #10b981;
+}
+
+.stat-highlight.ast {
+    color: #06b6d4;
+}
+
+.rating-badge {
+    font-size: 12px;
+    font-weight: 700;
+    padding: 3px 7px;
+    border-radius: 4px;
+}
+
+.rating-badge.high {
+    background: rgba(16, 185, 129, 0.2);
+    color: #10b981;
+}
+
+.rating-badge.mid {
+    background: rgba(234, 179, 8, 0.2);
+    color: #eab308;
+}
+
+.rating-badge.low {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+
+.action-btn-group {
+    display: flex;
+    gap: 6px;
+}
+
+.btn-table-action {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-secondary, #cbd5e1);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 4px 8px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.btn-table-action:hover {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border-color: #10b981;
+}
+
+.btn-table-action.compare:hover {
+    background: rgba(6, 182, 212, 0.15);
+    color: #22d3ee;
+    border-color: #06b6d4;
+}
+
+.empty-history {
+    text-align: center;
+    padding: 40px 20px;
+}

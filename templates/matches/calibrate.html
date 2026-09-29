@@ -10,13 +10,8 @@
     <link rel="stylesheet" href="{% static 'css/calibrate.css' %}">
 </head>
 <body>
-    <nav class="top-nav">
-        <a class="nav-brand" href="{% url 'dashboard:index' %}">
-            <div class="nav-brand-icon">⚽</div>
-            Analytics Studio
-        </a>
-        <a class="nav-back" href="{% url 'matches:results' match.public_id %}">← Back to Results</a>
-    </nav>
+    {% url 'matches:results' match.public_id as results_url %}
+    {% include "includes/top_nav.html" with back_url=results_url back_label="Back to Results" %}
 
     <div class="calibration-content" id="calibration-workbench"
         data-frame-url="{% url 'matches:calibrate_frame' match.public_id %}"

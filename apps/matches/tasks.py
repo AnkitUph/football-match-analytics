@@ -898,29 +898,7 @@ def compute_pitch_mapping(self, match_id):
                 interpolated=row["interpolated"].strip().lower() == "true",
             ))
 
-    # --- Rewrite player_tracking_csv with pitch_x/pitch_y from the NEW calibration ---
-    # jersey_number/jersey_conf are carried through unchanged — this task
-    # never re-runs OCR, only re-runs the pitch mapping.
-    player_csv = io.StringIO()
-    writer = csv.writer(player_csv)
-    writer.writerow(["track_id", "frame_idx", "team", "class", "x1", "y1", "x2", "y2", "conf", "jersey_number", "jersey_conf", "pitch_x", "pitch_y"])
-    for t in valid:
-        jersey_number = t.jersey_number if t.jersey_number is not None else ""
-        jersey_conf = round(t.jersey_number_conf, 3) if t.jersey_number is not None else ""
-        for det in t.detections:
-            pitch_x = pitch_y = ""
-            H = homography_by_frame.get(det.frame_idx)
-            if H is not None:
-                fx, fy = (det.x1 + det.x2) / 2, det.y2
-                pt = image_point_to_pitch(fx, fy, H)
-                pitch_x, pitch_y = pt.x_m, pt.y_m
-            writer.writerow([t.track_id, det.frame_idx, t.team.value, det.cls.value, det.x1, det.y1, det.x2, det.y2, det.conf, jersey_number, jersey_conf, pitch_x, pitch_y])
-    files.player_tracking_csv.save(f"match_{match.id}_players.csv", ContentFile(player_csv.getvalue()), save=True)
-
     # --- Stage 5-6: possession/pass/shot detection + TeamStatistics ---
-    # (Same logic as the old inline block that used to live in
-    # process_match — just fed from the reconstructed valid/
-    # ball_trajectory above instead of a live detection run.)
     ball_pitch_trajectory = []
     ball_csv = io.StringIO()
     ball_writer = csv.writer(ball_csv)
@@ -938,22 +916,24 @@ def compute_pitch_mapping(self, match_id):
     files.ball_tracking_csv.save(f"match_{match.id}_ball.csv", ContentFile(ball_csv.getvalue()), save=True)
 
     # --- Merge fragmented raw tracklets into one-per-real-player first ---
-    # VALIDATED FINDING (see project handoff): raw BoT-SORT tracklets
-    # fragment heavily — ~37 fragments for what should be ~22 real
-    # players/ref on test_11.mp4. Building per-player output (distance,
-    # trajectory, the identify-players crops below) from `valid` directly
-    # would silently split one real player's data across 2-3 rows. Fixed
-    # here by stitching first and using the STITCHED tracklet's own
-    # track_id as the stable per-match player id everywhere downstream.
-    #
-    # Deliberately NOT running assign_tracklets_to_gallery here: that
-    # function's whole job is preserving identity across a camera CUT
-    # (Stage 2.5), which doesn't apply — this whole clip is one
-    # continuous shot (shot_id=0 throughout, Stage 2.5 deferred). Running
-    # it anyway would only add the ≤22/≤11-per-team cap, which
-    # match_tracklets_within_shot's own duration filter already
-    # accomplishes well enough for a single shot.
     stitched = match_tracklets_within_shot(valid, DEFAULT_CONFIG.pitch_mapping, fps=25.0)
+
+    # Rewrite player_tracking_csv using STITCHED tracklets so track IDs, teams, and crop bounding boxes match 100%
+    player_csv = io.StringIO()
+    writer = csv.writer(player_csv)
+    writer.writerow(["track_id", "frame_idx", "team", "class", "x1", "y1", "x2", "y2", "conf", "jersey_number", "jersey_conf", "pitch_x", "pitch_y"])
+    for t in stitched:
+        jersey_number = t.jersey_number if t.jersey_number is not None else ""
+        jersey_conf = round(t.jersey_number_conf, 3) if t.jersey_number is not None else ""
+        for det in t.detections:
+            pitch_x = pitch_y = ""
+            H = homography_by_frame.get(det.frame_idx)
+            if H is not None:
+                fx, fy = (det.x1 + det.x2) / 2, det.y2
+                pt = image_point_to_pitch(fx, fy, H)
+                pitch_x, pitch_y = round(pt.x_m, 2), round(pt.y_m, 2)
+            writer.writerow([t.track_id, det.frame_idx, t.team.value, det.cls.value, det.x1, det.y1, det.x2, det.y2, det.conf, jersey_number, jersey_conf, pitch_x, pitch_y])
+    files.player_tracking_csv.save(f"match_{match.id}_players.csv", ContentFile(player_csv.getvalue()), save=True)
 
     identities = []
     for t in stitched:
@@ -1542,7 +1522,11 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
     for team_enum, side in side_by_team.items():
         team_identities = [
             ident for ident in identities
-            if ident.team == team_enum and ident.master_id not in already_assigned_track_ids
+            if ident.team == team_enum
+            and ident.master_id not in already_assigned_track_ids
+            and getattr(ident, "cls", None) not in (ObjectClass.REFEREE, "referee")
+            and ident.team not in (Team.REFEREE, Team.UNKNOWN)
+            and cls_by_track.get(ident.master_id) not in (ObjectClass.REFEREE, "referee")
         ]
         if not team_identities:
             continue
@@ -1555,7 +1539,7 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
             med_x = float(np.median(x_vals)) if x_vals else 0.0
             med_y = float(np.median(y_vals)) if y_vals else 0.0
             cls_val = cls_by_track.get(ident.master_id)
-            is_gk = (cls_val == ObjectClass.GOALKEEPER) or (abs(med_x) > 38.0)
+            is_gk = (cls_val in (ObjectClass.GOALKEEPER, "goalkeeper")) or (getattr(ident, "cls", None) in (ObjectClass.GOALKEEPER, "goalkeeper")) or (abs(med_x) > 38.0)
             ident_meta[ident.master_id] = {
                 "identity": ident,
                 "duration": len(ident.trajectory),
@@ -1628,7 +1612,11 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
         slots_remaining = max(CAP_PER_SIDE - existing_count_by_side.get(side, 0) - len(assigned_pairs), 0)
         usable_lineups = sorted_lineups[:slots_remaining]
 
-        top_tracks = sorted(unmatched_idents, key=lambda tid: -ident_meta[tid]["duration"])[:len(usable_lineups)]
+        outfield_candidates = [tid for tid in unmatched_idents if not ident_meta[tid]["is_gk"]]
+        if not outfield_candidates:
+            outfield_candidates = list(unmatched_idents)
+
+        top_tracks = sorted(outfield_candidates, key=lambda tid: -ident_meta[tid]["duration"])[:len(usable_lineups)]
         # Order those top tracks from defense to attack
         top_tracks_by_pos = sorted(top_tracks, key=lambda tid: attack_depth(tid))
 
@@ -1644,7 +1632,7 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
                 match=match,
                 track_id=tid,
                 lineup_entry_id=lid,
-                is_auto_assigned=False,
+                is_auto_assigned=True,
             ))
             already_claimed_lineup_ids.add(lid)
             already_assigned_track_ids.add(tid)

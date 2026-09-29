@@ -12,47 +12,7 @@
 <body>
 
     <!-- Tactical Top Nav -->
-    <header class="top-nav">
-        <div class="nav-left">
-            <a href="{% url 'dashboard:index' %}" class="nav-brand">
-                <div class="nav-logo-badge">
-                    <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <circle cx="12" cy="12" r="9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                        <path d="M12 3a9 9 0 0 1 9 9m-9-9a9 9 0 0 0-9 9m9-9v18m9-9a9 9 0 0 1-9 9m9-9H3m9 9a9 9 0 0 1-9-9" stroke-width="1.6" />
-                    </svg>
-                </div>
-                <div class="nav-brand-text">Tactical<span>Studio</span></div>
-            </a>
-
-            <nav class="nav-links">
-                <a href="{% url 'dashboard:index' %}" class="nav-item active">Dashboard</a>
-                <a href="{% url 'matches:upload' %}" class="nav-item">Upload Match</a>
-                <a href="{% url 'teams:create' %}" class="nav-item">Teams</a>
-                <a href="{% url 'players:list' %}" class="nav-item">Players</a>
-            </nav>
-        </div>
-
-        <div class="nav-right">
-            <div class="status-pill">
-                <div class="pulse-dot"></div>
-                CV Engine Online
-            </div>
-
-            <div class="user-dropdown">
-                <a href="{% url 'accounts:profile' %}" class="user-btn">
-                    <div class="user-avatar-mini">
-                        {{ request.user.username|slice:":1"|upper }}
-                    </div>
-                    <span>{{ request.user.username }}</span>
-                </a>
-                <a href="{% url 'accounts:logout' %}" class="nav-logout-btn" title="Sign Out">
-                    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                    </svg>
-                </a>
-            </div>
-        </div>
-    </header>
+    {% include "includes/top_nav.html" with active_nav="dashboard" %}
 
     <!-- Main Content Container -->
     <div class="container">

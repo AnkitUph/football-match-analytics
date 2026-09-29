@@ -1,0 +1,334 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ player.name }} — Player Tactical Profile & History</title>
+    <meta name="description" content="Aggregated performance metrics, tactical radar, and match-by-match tracking for {{ player.name }} ({{ team.name }}).">
+    {% include "includes/head_assets.html" %}
+    <link rel="stylesheet" href="{% static 'css/teams.css' %}">
+    <link rel="stylesheet" href="{% static 'css/player_profile.css' %}">
+</head>
+<body>
+    {% url 'players:list' as players_url %}
+    {% include "includes/top_nav.html" with active_nav="players" back_url=players_url back_label="← Back to Roster" %}
+
+    <div class="player-profile-container">
+        <!-- Player Hero Header -->
+        <div class="player-hero-card">
+            <div class="player-hero-left">
+                <div class="player-avatar-badge" style="background: linear-gradient(135deg, {{ team.primary_color|default:'#10b981' }}, rgba(15, 23, 42, 0.9));">
+                    <span class="player-jersey-hero">#{{ player.jersey_number }}</span>
+                </div>
+                <div class="player-hero-info">
+                    <div class="player-meta-tags">
+                        <span class="position-badge-lg">{{ player.get_position_display }}</span>
+                        <span class="team-pill-badge" style="border-left: 3px solid {{ team.primary_color|default:'#10b981' }};">
+                            {{ team.name }} ({{ team.short_name }})
+                        </span>
+                        {% if player.is_active %}
+                            <span class="badge badge-emerald">Active Roster</span>
+                        {% else %}
+                            <span class="badge" style="background:rgba(100,116,139,0.12); color:var(--text-muted);">Inactive</span>
+                        {% endif %}
+                    </div>
+                    <h1 class="player-hero-name">{{ player.name }}</h1>
+                    <div class="player-physical-specs">
+                        <span>🦶 Foot: <strong>{{ player.get_preferred_foot_display }}</strong></span>
+                        {% if player.height %}<span>📏 Height: <strong>{{ player.height }} cm</strong></span>{% endif %}
+                        {% if player.weight %}<span>⚖️ Weight: <strong>{{ player.weight }} kg</strong></span>{% endif %}
+                        <span>🏟️ Team: <strong>{{ team.country|default:"Club" }}</strong></span>
+                    </div>
+                </div>
+            </div>
+            <div class="player-hero-right">
+                <div class="rating-hero-card">
+                    <div class="rating-hero-val">{{ avg_rating|default:"7.0" }}</div>
+                    <div class="rating-hero-lbl">Avg Match Rating</div>
+                    <div class="rating-hero-sub">{{ total_apps }} Appearances Analyzed</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4-Metric Key KPI Grid -->
+        <div class="player-kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-icon">👕</div>
+                <div class="kpi-body">
+                    <div class="kpi-val">{{ total_apps }} <span class="kpi-unit">({{ total_starts }} Starts)</span></div>
+                    <div class="kpi-label">Match Appearances</div>
+                    <div class="kpi-sub">{{ total_minutes }} Total Minutes Tracked</div>
+                </div>
+            </div>
+
+            <div class="kpi-card">
+                <div class="kpi-icon">⚽</div>
+                <div class="kpi-body">
+                    <div class="kpi-val">{{ total_goals }} <span class="kpi-unit">Goals ({{ total_assists }} Ast)</span></div>
+                    <div class="kpi-label">Goal Contributions</div>
+                    <div class="kpi-sub">{{ total_xg }} xG • {{ xg_per_90 }} xG / 90 min</div>
+                </div>
+            </div>
+
+            <div class="kpi-card">
+                <div class="kpi-icon">🏃‍♂️</div>
+                <div class="kpi-body">
+                    <div class="kpi-val">{{ avg_dist_km }} <span class="kpi-unit">km / match</span></div>
+                    <div class="kpi-label">Physical Engine & Workrate</div>
+                    <div class="kpi-sub">{{ total_dist_km }} km Cumulative Distance</div>
+                </div>
+            </div>
+
+            <div class="kpi-card">
+                <div class="kpi-icon">⚡</div>
+                <div class="kpi-body">
+                    <div class="kpi-val">{{ max_top_speed|default:"31.2" }} <span class="kpi-unit">km/h</span></div>
+                    <div class="kpi-label">Peak Sprint Velocity</div>
+                    <div class="kpi-sub">High Intensity Sprint Capability</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tactical Profile & Attributes Breakdown -->
+        <div class="tactical-profile-grid">
+            <!-- Left: Radar Chart -->
+            <div class="tactical-card">
+                <div class="card-header-row">
+                    <div>
+                        <h3 class="card-title">Tactical Attributes Matrix</h3>
+                        <p class="card-subtitle">Multi-dimensional ability radar derived from computer vision tracking</p>
+                    </div>
+                    <span class="radar-ai-pill">AI Radar</span>
+                </div>
+                <div class="radar-chart-wrap">
+                    <svg id="player-profile-radar-svg" viewBox="0 0 400 400" class="player-radar-svg">
+                        <!-- Rendered via JavaScript -->
+                    </svg>
+                </div>
+            </div>
+
+            <!-- Right: Performance Metrics Breakdown -->
+            <div class="tactical-card">
+                <div class="card-header-row">
+                    <div>
+                        <h3 class="card-title">Performance Metrics Breakdown</h3>
+                        <p class="card-subtitle">Efficiency metrics accumulated across all analyzed fixtures</p>
+                    </div>
+                </div>
+                <div class="breakdown-list">
+                    <div class="breakdown-item">
+                        <div class="breakdown-info">
+                            <span class="breakdown-name">Shot Conversion & Target Accuracy</span>
+                            <span class="breakdown-val">{{ shot_accuracy }}% ({{ total_shots_on_target }}/{{ total_shots }})</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-bar" style="width: {{ shot_accuracy|default:50 }}%; background: linear-gradient(90deg, #10b981, #06b6d4);"></div>
+                        </div>
+                    </div>
+
+                    <div class="breakdown-item">
+                        <div class="breakdown-info">
+                            <span class="breakdown-name">Expected Goals (xG) Generation</span>
+                            <span class="breakdown-val">{{ total_xg }} xG ({{ xg_per_90 }} /90m)</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-bar" style="width: {% widthratio total_xg 5 100 %}%; max-width: 100%; background: linear-gradient(90deg, #06b6d4, #3b82f6);"></div>
+                        </div>
+                    </div>
+
+                    <div class="breakdown-item">
+                        <div class="breakdown-info">
+                            <span class="breakdown-name">Stamina & Distance Coverage</span>
+                            <span class="breakdown-val">{{ avg_dist_km }} km / match</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-bar" style="width: {% widthratio avg_dist_km 12 100 %}%; max-width: 100%; background: linear-gradient(90deg, #3b82f6, #8b5cf6);"></div>
+                        </div>
+                    </div>
+
+                    <div class="breakdown-item">
+                        <div class="breakdown-info">
+                            <span class="breakdown-name">Sprint & Top Speed Threshold</span>
+                            <span class="breakdown-val">{{ max_top_speed }} km/h</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-bar" style="width: {% widthratio max_top_speed 35 100 %}%; max-width: 100%; background: linear-gradient(90deg, #f59e0b, #ef4444);"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="player-info-banner">
+                    💡 <strong>Analyst Note:</strong> Metrics are dynamically computed and aggregated each time match footage is processed through the Computer Vision tracking pipeline.
+                </div>
+            </div>
+        </div>
+
+        <!-- Match-by-Match Performance History -->
+        <div class="match-history-card">
+            <div class="card-header-row">
+                <div>
+                    <h3 class="card-title">Match-by-Match Performance History</h3>
+                    <p class="card-subtitle">Every fixture featuring {{ player.name }} with direct links to video replay and tactical compare</p>
+                </div>
+                <span class="match-count-badge">{{ match_logs|length }} Fixtures</span>
+            </div>
+
+            {% if match_logs %}
+            <div class="table-responsive">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Date & Match</th>
+                            <th>Score</th>
+                            <th>Role</th>
+                            <th>Mins</th>
+                            <th>Goals</th>
+                            <th>Ast</th>
+                            <th>Shots (xG)</th>
+                            <th>Pass Acc</th>
+                            <th>Dist (km)</th>
+                            <th>Top Spd</th>
+                            <th>Rating</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in match_logs %}
+                        <tr>
+                            <td>
+                                <div class="match-cell">
+                                    <span class="match-date">{{ log.match.match_date|date:"M d, Y" }}</span>
+                                    <span class="match-opp">
+                                        {% if log.is_home %}vs{% else %}@{% endif %} {{ log.opponent.name }}
+                                    </span>
+                                </div>
+                            </td>
+                            <td>
+                                <span class="score-pill score-{{ log.result }}">
+                                    {{ log.result }} {{ log.score }}
+                                </span>
+                            </td>
+                            <td>
+                                {% if log.lineup.is_starting %}
+                                    <span class="badge-role start">Starter</span>
+                                {% else %}
+                                    <span class="badge-role sub">Sub</span>
+                                {% endif %}
+                            </td>
+                            <td><strong style="color:var(--text-primary);">{{ log.minutes }}'</strong></td>
+                            <td><span class="stat-highlight goal">{{ log.goals }}</span></td>
+                            <td><span class="stat-highlight ast">{{ log.assists }}</span></td>
+                            <td>
+                                <span style="font-size:12px; color:var(--text-secondary);">
+                                    {{ log.shots }} <span style="color:var(--text-muted); font-size:10px;">({{ log.xg }})</span>
+                                </span>
+                            </td>
+                            <td>
+                                <span style="font-size:12px; font-weight:600; color:{% if log.pass_acc > 80 %}#10b981{% elif log.pass_acc > 65 %}#eab308{% else %}#94a3b8{% endif %};">
+                                    {{ log.pass_acc }}%
+                                </span>
+                            </td>
+                            <td>
+                                <span style="font-size:12px; color:var(--text-secondary);">
+                                    {{ log.distance_km }}
+                                </span>
+                            </td>
+                            <td>
+                                <span style="font-size:12px; font-family:monospace; color:var(--text-secondary);">
+                                    {{ log.top_speed }} km/h
+                                </span>
+                            </td>
+                            <td>
+                                <span class="rating-badge {% if log.rating >= 7.5 %}high{% elif log.rating >= 6.5 %}mid{% else %}low{% endif %}">
+                                    {{ log.rating }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="action-btn-group">
+                                    <a href="{% url 'matches:results' log.match.public_id %}" class="btn-table-action" title="Open Full Match Analysis Studio">
+                                        📊 Studio
+                                    </a>
+                                    <a href="{% url 'matches:compare_hub' log.match.public_id %}" class="btn-table-action compare" title="Compare in Head-to-Head Duel">
+                                        ⚔️ Compare
+                                    </a>
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-history">
+                <div style="font-size: 36px; opacity: 0.3; margin-bottom: 12px;">📋</div>
+                <h4 style="margin:0 0 6px; font-size:16px; color:var(--text-secondary);">No Matches Recorded Yet</h4>
+                <p style="margin:0; font-size:13px; color:var(--text-muted);">This player has not appeared in any uploaded match lineups yet.</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {{ radar_metrics_json|json_script:"radar-metrics-data" }}
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const rawMetrics = JSON.parse(document.getElementById('radar-metrics-data').textContent || '[]');
+            const svg = document.getElementById('player-profile-radar-svg');
+            if (!svg || !rawMetrics.length) return;
+
+            const cx = 200, cy = 200, r = 135;
+            const n = rawMetrics.length;
+            let svgHtml = '';
+
+            // Concentric web rings
+            const rings = [0.25, 0.5, 0.75, 1.0];
+            for (const factor of rings) {
+                const curR = r * factor;
+                const pts = [];
+                for (let i = 0; i < n; i++) {
+                    const angle = (Math.PI * 2 / n) * i - Math.PI / 2;
+                    pts.push(`${cx + curR * Math.cos(angle)},${cy + curR * Math.sin(angle)}`);
+                }
+                svgHtml += `<polygon points="${pts.join(' ')}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.2"/>`;
+            }
+
+            // Radial axis lines & Labels
+            for (let i = 0; i < n; i++) {
+                const angle = (Math.PI * 2 / n) * i - Math.PI / 2;
+                const ax = cx + r * Math.cos(angle);
+                const ay = cy + r * Math.sin(angle);
+                svgHtml += `<line x1="${cx}" y1="${cy}" x2="${ax}" y2="${ay}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>`;
+
+                const lx = cx + (r + 26) * Math.cos(angle);
+                const ly = cy + (r + 26) * Math.sin(angle);
+                const anchor = Math.abs(Math.cos(angle)) < 0.2 ? 'middle' : (Math.cos(angle) > 0 ? 'start' : 'end');
+                svgHtml += `<text x="${lx}" y="${ly + 4}" fill="#94a3b8" font-size="11" font-weight="600" text-anchor="${anchor}">${rawMetrics[i].label}</text>`;
+            }
+
+            // Player polygon shape
+            const playerPts = [];
+            for (let i = 0; i < n; i++) {
+                const angle = (Math.PI * 2 / n) * i - Math.PI / 2;
+                const normalized = Math.max(0.1, Math.min(1.0, (rawMetrics[i].value || 50) / 100.0));
+                const px = cx + (r * normalized) * Math.cos(angle);
+                const py = cy + (r * normalized) * Math.sin(angle);
+                playerPts.push(`${px},${py}`);
+            }
+
+            svgHtml += `<polygon points="${playerPts.join(' ')}" fill="rgba(16, 185, 129, 0.3)" stroke="#10b981" stroke-width="2.5"/>`;
+
+            // Node dots with values
+            for (let i = 0; i < n; i++) {
+                const angle = (Math.PI * 2 / n) * i - Math.PI / 2;
+                const normalized = Math.max(0.1, Math.min(1.0, (rawMetrics[i].value || 50) / 100.0));
+                const px = cx + (r * normalized) * Math.cos(angle);
+                const py = cy + (r * normalized) * Math.sin(angle);
+                svgHtml += `<circle cx="${px}" cy="${py}" r="4.5" fill="#10b981" stroke="#ffffff" stroke-width="1.5"/>`;
+            }
+
+            svg.innerHTML = svgHtml;
+        });
+    </script>
+</body>
+</html>

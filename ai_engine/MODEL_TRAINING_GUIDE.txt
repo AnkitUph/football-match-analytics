@@ -12,7 +12,8 @@ TABLE OF CONTENTS:
 3. Model 2: Real-Time Pitch Keypoint & Homography Model (YOLOv8-Pose)
 4. Model 3: Spatio-Temporal Action Spotting Model (SoccerNet-v2)
 5. Model 4: Small-Object High-Speed Ball Tracker (TrackNetV3)
-6. Step-by-Step Codebase Integration & Deployment
+6. Model 5: Temporal Jersey Number Recognition Model (SoccerNet SN-Jersey-2023)
+7. Step-by-Step Codebase Integration & Deployment
 
 ================================================================================
 1. 30-HOUR KAGGLE GPU BUDGET ALLOCATION
@@ -24,9 +25,10 @@ Model 1: StatsBomb xG (LightGBM)   CPU / T4        ~0.5 Hours       ~29.5 Hours
 Model 2: Pitch Keypoint (YOLOv8m)  Dual T4 GPU     ~3.5 Hours       ~26.0 Hours
 Model 3: SoccerNet Action Spotter  1x T4 GPU       ~2.0 Hours       ~24.0 Hours
 Model 4: TrackNetV3 Ball Model     1x T4 GPU       ~5.0 Hours       ~19.0 Hours
-Evaluation, Tuning & Export        1x T4 GPU       ~3.0 Hours       ~16.0 Hours
+Model 5: Jersey Number (SoccerNet) 1x T4 GPU       ~2.5 Hours       ~16.5 Hours
+Evaluation, Tuning & Export        1x T4 GPU       ~3.0 Hours       ~13.5 Hours
 --------------------------------------------------------------------------------
-TOTAL USED: ~14.0 Hours (Leaves ~16.0 Hours buffer for iterations/retraining)
+TOTAL USED: ~16.5 Hours (Leaves ~13.5 Hours buffer for iterations/retraining)
 
 
 ================================================================================
@@ -260,25 +262,99 @@ KAGGLE NOTEBOOK SCRIPT:
 
 
 ================================================================================
-6. CODEBASE INTEGRATION & DEPLOYMENT INSTRUCTIONS
+5. MODEL 5: TEMPORAL JERSEY NUMBER RECOGNITION (SoccerNet SN-Jersey-2023)
 ================================================================================
+Goal: Accurately recognize player jersey numbers (0-99) from low-resolution
+broadcast tracklet bounding boxes using a spatio-temporal network
+(EfficientNet-B0 backbone + BiLSTM / Transformer temporal head).
 
-Once training completes on Kaggle, download the following model files:
+Datasets:
+  1. SoccerNet SN-Jersey-2023: 2,853 tracked player tracklet sequences
+     (Download via `pip install SoccerNet` or Hugging Face `SoccerNet/SN-Jersey-2023`)
+  2. SJN-210k: 210,000 sports jersey crops on Zenodo
+
+Pretrained Hugging Face Models Available for Direct Use:
+  - `Akashpaul123/jersey-number-recognition-temporal` (5M parameters, EfficientNet-B0 + BiLSTM)
+  - `prxkc/jersey-number-recognition` (Spatio-temporal tracklet classifier)
+
+KAGGLE NOTEBOOK SCRIPT (Kaggle GPU T4 x1, ~2.5 Hours):
+--------------------------------------------------------------------------------
+# Step 1: Install Dependencies & Download SoccerNet Dataset
+!pip install SoccerNet torch torchvision albumentations timm onnx
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import timm
+from SoccerNet.Downloader import SoccerNetDownloader as SNdl
+
+# Download SoccerNet Jersey Challenge dataset
+mySNdl = SNdl(LocalDirectory="./SoccerNet_Data")
+mySNdl.downloadDataTask(task="jersey-2023", split=["train", "test"])
+
+# Step 2: Temporal Architecture (EfficientNet-B0 + BiLSTM + Independent Digit Heads)
+class JerseyNumberTemporalNet(nn.Module):
+    def __init__(self, num_classes=10, hidden_dim=256):
+        super().__init__()
+        # Backbone extracts 512-dim visual features per frame
+        self.backbone = timm.create_model('efficientnet_b0', pretrained=True, num_classes=0)
+        feat_dim = self.backbone.num_features # 1280
+        
+        # Temporal aggregator across tracklet frames
+        self.lstm = nn.LSTM(input_size=feat_dim, hidden_size=hidden_dim, num_layers=2, 
+                            batch_first=True, bidirectional=True, dropout=0.3)
+        
+        # Independent classifiers for Tens digit (0-9 + blank) and Units digit (0-9)
+        self.fc_tens = nn.Sequential(
+            nn.Linear(hidden_dim * 2, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 11) # 0-9 and 10=none (single-digit numbers like #7)
+        )
+        self.fc_units = nn.Sequential(
+            nn.Linear(hidden_dim * 2, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 10) # 0-9
+        )
+        
+    def forward(self, x):
+        # x shape: (B, T, C, H, W) where T = 8 sampled tracklet frames
+        B, T, C, H, W = x.shape
+        x_flat = x.view(B * T, C, H, W)
+        feats = self.backbone(x_flat) # (B*T, 1280)
+        feats = feats.view(B, T, -1)  # (B, T, 1280)
+        
+        lstm_out, _ = self.lstm(feats) # (B, T, hidden_dim*2)
+        pooled = torch.mean(lstm_out, dim=1) # (B, hidden_dim*2)
+        
+        tens_logits = self.fc_tens(pooled)
+        units_logits = self.fc_units(pooled)
+        return tens_logits, units_logits
+
+# Step 3: Train & Export to ONNX / TorchScript for Python Deployment
+model = JerseyNumberTemporalNet()
+print("Model initialized. Ready for training with CrossEntropyLoss on tens & units digits.")
+# After training:
+# torch.save(model.state_dict(), "jersey_number_temporal.pth")
+--------------------------------------------------------------------------------
+
+
+===============================================================================
+6. CODEBASE INTEGRATION & DEPLOYMENT INSTRUCTIONS
+===============================================================================
+
+Once training completes on Kaggle (or when downloading pretrained models from Hugging Face),
+place the models in `ai_engine/models/`:
 1. `xg_lightgbm_model.pkl`
 2. `pitch_keypoints_yolov8m.onnx`
 3. `action_spotter_soccernet.pt`
-
-Copy them to your local project directory:
-$ cp ~/Downloads/xg_lightgbm_model.pkl ai_engine/models/
-$ cp ~/Downloads/pitch_keypoints_yolov8m.onnx ai_engine/models/
-$ cp ~/Downloads/action_spotter_soccernet.pt ai_engine/models/
+4. `jersey_number_temporal.pth` (or HuggingFace model)
 
 ---
 
 INTEGRATION 1: Use Trained xG Model in `ai_engine/stage6_event_detection/events.py`
 --------------------------------------------------------------------------------
-Add this function to compute calibrated probabilistic xG:
-
 import os
 import joblib
 
@@ -299,8 +375,6 @@ def compute_trained_xg(distance_m: float, angle_rad: float, is_header: bool = Fa
 
 INTEGRATION 2: Use Trained Pitch Keypoint ONNX Model in `smart_assist.py`
 --------------------------------------------------------------------------------
-Run zero-latency, local pitch keypoint inference inside Docker without Roboflow API:
-
 import onnxruntime as ort
 import numpy as np
 import cv2
@@ -315,9 +389,19 @@ class LocalPitchKeypointDetector:
         img = cv2.resize(frame, (960, 960))
         img = img.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
         outputs = self.session.run(None, {self.input_name: img})
-        # Parse outputs into 29 FIFA pitch landmark coordinates (x, y, confidence)
         return outputs
+
+---
+
+INTEGRATION 3: Use Jersey Number Model in `ai_engine/jersey_number_ocr/jersey_number_reader.py`
+--------------------------------------------------------------------------------
+Pretrained weights or local ONNX/PyTorch model automatically replaces generic Tesseract/EasyOCR
+with temporal multi-frame inference directly on player bounding boxes:
+
+from transformers import AutoModelForImageClassification
+# or load PyTorch JerseyNumberTemporalNet model weights directly from ai_engine/models/
 
 ================================================================================
 END OF GUIDE
 ================================================================================
+

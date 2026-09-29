@@ -95,6 +95,9 @@ class TemporalVotingTests(SimpleTestCase):
         frames = make_frames(5)
         tracks = make_tracks(5)
         with mock.patch(
+            "ai_engine.jersey_number_ocr.jersey_number_reader._deep_model_available",
+            return_value=False,
+        ), mock.patch(
             "ai_engine.jersey_number_ocr.jersey_number_reader._tesseract_available",
             return_value=False,
         ):

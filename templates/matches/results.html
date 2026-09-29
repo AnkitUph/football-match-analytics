@@ -9,62 +9,17 @@
     {% load static %}
     {% include "includes/head_assets.html" %}
     <link rel="stylesheet" href="{% static "css/results.css" %}">
+    <style>
+        :root {
+            --home-comp-color: {{ home_team_color|default:match.home_team.primary_color|default:'#ef4444' }};
+            --away-comp-color: {{ away_team_color|default:match.away_team.primary_color|default:'#eab308' }};
+        }
+    </style>
 </head>
 
 <body>
-    <header>
-        <h1>⚽ Football Analytics</h1>
-        <div style="display:flex; align-items:center; gap:12px;">
-            <div class="export-dropdown-wrapper">
-                <button type="button" class="btn-export-toggle" id="export-dropdown-btn" onclick="toggleExportMenu(event)">
-                    <span>📥 Export &amp; PDF Report</span>
-                    <span style="font-size:10px;">▼</span>
-                </button>
-                <div class="export-dropdown-menu" id="export-dropdown-menu">
-                    <div class="export-section-header">Generated Report</div>
-                    <a href="{% url 'matches:download_report_pdf' match.public_id %}" target="_blank" class="export-item export-item-highlight">
-                        <span class="export-icon">📄</span>
-                        <div>
-                            <div class="export-label">Match Report (PDF)</div>
-                            <div class="export-desc">Executive summary, shot map, lineups &amp; team stats</div>
-                        </div>
-                    </a>
-
-                    <div class="export-section-header">Raw Match Data</div>
-                    <a href="{% url 'matches:export_json' match.public_id %}?download=1" class="export-item">
-                        <span class="export-icon">📊</span>
-                        <div>
-                            <div class="export-label">Match Analytics (JSON)</div>
-                            <div class="export-desc">Full stats, tactical coordinates, passes &amp; shots</div>
-                        </div>
-                    </a>
-                    <a href="{% url 'matches:export_csv' match.public_id 'tracking' %}" class="export-item">
-                        <span class="export-icon">🏃</span>
-                        <div>
-                            <div class="export-label">Player Tracking (CSV)</div>
-                            <div class="export-desc">Frame-by-frame pitch (x, y) coordinates &amp; speeds</div>
-                        </div>
-                    </a>
-                    <a href="{% url 'matches:export_csv' match.public_id 'passes' %}" class="export-item">
-                        <span class="export-icon">🕸️</span>
-                        <div>
-                            <div class="export-label">Pass Events (CSV)</div>
-                            <div class="export-desc">Detected passer, receiver, vectors &amp; completion</div>
-                        </div>
-                    </a>
-                    <a href="{% url 'matches:export_csv' match.public_id 'shots' %}" class="export-item">
-                        <span class="export-icon">🎯</span>
-                        <div>
-                            <div class="export-label">Shots &amp; xG (CSV)</div>
-                            <div class="export-desc">Shot origins, velocities, outcomes &amp; xG ratings</div>
-                        </div>
-                    </a>
-                </div>
-            </div>
-
-            <a href="{% url 'dashboard:index' %}">Back to Dashboard</a>
-        </div>
-    </header>
+    {% url 'dashboard:index' as dashboard_url %}
+    {% include "includes/top_nav.html" with back_url=dashboard_url back_label="Back to Dashboard" %}
 
     <div class="container">
         {% if not using_real_stats %}
@@ -104,7 +59,7 @@
             <div class="scoreline-scorers">
                 <div class="team-scorers home-scorers-list">
                     {% for g in home_goals %}
-                    <div class="scorer-pill">
+                    <div class="scorer-pill" onclick="seekVideoToGoal({{ g.minute }}, {{ g.frame_idx|default:0 }})" title="Jump video to goal replay ({{ g.minute }}')">
                         <span class="scorer-name">{% if g.scorer.jersey_number %}#{{ g.scorer.jersey_number }} {% endif %}{{ g.scorer.player_name|default:"Scorer" }}</span>
                         <span class="scorer-min">{{ g.minute }}'{% if g.is_own_goal %} (OG){% endif %}</span>
                         <span class="scorer-icon">⚽</span>
@@ -114,7 +69,7 @@
                 <div class="scorers-spacer"></div>
                 <div class="team-scorers away-scorers-list">
                     {% for g in away_goals %}
-                    <div class="scorer-pill">
+                    <div class="scorer-pill" onclick="seekVideoToGoal({{ g.minute }}, {{ g.frame_idx|default:0 }})" title="Jump video to goal replay ({{ g.minute }}')">
                         <span class="scorer-icon">⚽</span>
                         <span class="scorer-name">{% if g.scorer.jersey_number %}#{{ g.scorer.jersey_number }} {% endif %}{{ g.scorer.player_name|default:"Scorer" }}</span>
                         <span class="scorer-min">{{ g.minute }}'{% if g.is_own_goal %} (OG){% endif %}</span>
@@ -126,6 +81,59 @@
 
             <div class="header-actions">
                 <span class="status-pill">{{ match.get_status_display }}</span>
+
+                <a href="{% url 'matches:compare_hub' match.public_id %}" class="recalibrate-btn" style="background: rgba(6, 182, 212, 0.12); border-color: rgba(6, 182, 212, 0.35); color: #22d3ee;">
+                    <span>⚔️</span>
+                    <span>Tactical Compare</span>
+                </a>
+
+                <div class="export-dropdown-wrapper">
+                    <button type="button" class="btn-export-toggle" id="export-dropdown-btn" onclick="toggleExportMenu(event)">
+                        <span>📥 Export &amp; PDF Report</span>
+                        <span style="font-size:10px;">▼</span>
+                    </button>
+                    <div class="export-dropdown-menu" id="export-dropdown-menu">
+                        <div class="export-section-header">Generated Report</div>
+                        <a href="{% url 'matches:download_report_pdf' match.public_id %}" target="_blank" class="export-item export-item-highlight">
+                            <span class="export-icon">📄</span>
+                            <div>
+                                <div class="export-label">Match Report (PDF)</div>
+                                <div class="export-desc">Executive summary, shot map, lineups &amp; team stats</div>
+                            </div>
+                        </a>
+
+                        <div class="export-section-header">Raw Match Data</div>
+                        <a href="{% url 'matches:export_json' match.public_id %}?download=1" class="export-item">
+                            <span class="export-icon">📊</span>
+                            <div>
+                                <div class="export-label">Match Analytics (JSON)</div>
+                                <div class="export-desc">Full stats, tactical coordinates, passes &amp; shots</div>
+                            </div>
+                        </a>
+                        <a href="{% url 'matches:export_csv' match.public_id 'tracking' %}" class="export-item">
+                            <span class="export-icon">🏃</span>
+                            <div>
+                                <div class="export-label">Player Tracking (CSV)</div>
+                                <div class="export-desc">Frame-by-frame pitch (x, y) coordinates &amp; speeds</div>
+                            </div>
+                        </a>
+                        <a href="{% url 'matches:export_csv' match.public_id 'passes' %}" class="export-item">
+                            <span class="export-icon">🕸️</span>
+                            <div>
+                                <div class="export-label">Pass Events (CSV)</div>
+                                <div class="export-desc">Detected passer, receiver, vectors &amp; completion</div>
+                            </div>
+                        </a>
+                        <a href="{% url 'matches:export_csv' match.public_id 'shots' %}" class="export-item">
+                            <span class="export-icon">🎯</span>
+                            <div>
+                                <div class="export-label">Shots &amp; xG (CSV)</div>
+                                <div class="export-desc">Shot origins, velocities, outcomes &amp; xG ratings</div>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+
                 {% if is_uploader %}
                 <a href="{% url 'matches:calibrate' match.public_id %}" class="recalibrate-btn"
                     title="Recalibrate pitch landmarks manually">
@@ -466,19 +474,68 @@
                                 <button type="button" class="mode-btn {% if not annotated_video_url %}active{% endif %}"
                                     id="btn-mode-raw" onclick="switchVideoMode('raw')">Raw Footage</button>
                                 {% endif %}
+                                <button type="button" class="mode-btn tele-toggle-btn" id="btn-telestrator-toggle"
+                                    onclick="toggleTelestrator()" title="Tactical Canvas Drawing Mode (Shortcut: T)">🎨 Telestrator</button>
+                                <button type="button" class="mode-btn clip-studio-toggle-btn" id="btn-clip-studio-toggle"
+                                    onclick="openClipStudioModal()" title="Export Custom Video Clips">✂️ Clip Studio</button>
                             </div>
                         </div>
 
                         {% if has_video %}
-                        <div class="replay-video-wrap">
+                        <div class="replay-video-wrap" id="replay-video-container">
                             <video id="replay-video" playsinline controls preload="metadata"
                                 src="{% if annotated_video_url %}{{ annotated_video_url }}{% else %}{{ original_video_url }}{% endif %}">
                                 Your browser does not support HTML5 video playback.
                             </video>
+                            <canvas id="telestrator-canvas" class="telestrator-canvas"></canvas>
                             <div class="replay-hud">
                                 <span class="hud-tag" id="hud-mode-tag">{% if annotated_video_url %}AI Tracking Active{% else %}Raw Video{% endif %}</span>
+                                <span class="hud-tag" id="hud-tele-tag" style="display:none; background:rgba(6, 182, 212, 0.25); color:#22d3ee; border:1px solid rgba(6, 182, 212, 0.5);">🎨 DRAWING ACTIVE</span>
                                 <span class="hud-tag" id="hud-time">00:00</span>
                                 <span class="hud-tag" id="hud-frame">Frame: 0</span>
+                            </div>
+                        </div>
+
+                        <!-- Telestrator Tactical Toolbar -->
+                        <div class="telestrator-toolbar" id="telestrator-toolbar" style="display: none;">
+                            <div class="tele-bar-row">
+                                <div class="tele-group">
+                                    <span class="tele-lbl">Tool</span>
+                                    <div class="tele-btn-group">
+                                        <button type="button" class="tele-tool-btn active" data-tool="freehand" onclick="setTelestratorTool('freehand')" title="Freehand Pen (P)">✏️ Freehand</button>
+                                        <button type="button" class="tele-tool-btn" data-tool="arrow" onclick="setTelestratorTool('arrow')" title="Pass / Vector Arrow (A)">➡️ Arrow</button>
+                                        <button type="button" class="tele-tool-btn" data-tool="spotlight" onclick="setTelestratorTool('spotlight')" title="Player Spotlight Ring (S)">⭕ Spotlight</button>
+                                        <button type="button" class="tele-tool-btn" data-tool="distance" onclick="setTelestratorTool('distance')" title="Pitch Distance Line (D)">📏 Vector</button>
+                                        <button type="button" class="tele-tool-btn" data-tool="zone" onclick="setTelestratorTool('zone')" title="Tactical Zone / Convex Shape (Z)">🔷 Zone</button>
+                                        <button type="button" class="tele-tool-btn" data-tool="text" onclick="setTelestratorTool('text')" title="Tactical Text Note">📝 Note</button>
+                                    </div>
+                                </div>
+                                <div class="tele-group">
+                                    <span class="tele-lbl">Color</span>
+                                    <div class="tele-color-group">
+                                        <button type="button" class="tele-color-swatch active" data-color="#06b6d4" style="background:#06b6d4;" onclick="setTelestratorColor('#06b6d4')" title="Neon Cyan"></button>
+                                        <button type="button" class="tele-color-swatch" data-color="#10b981" style="background:#10b981;" onclick="setTelestratorColor('#10b981')" title="Emerald Green"></button>
+                                        <button type="button" class="tele-color-swatch" data-color="#facc15" style="background:#facc15;" onclick="setTelestratorColor('#facc15')" title="Radiant Yellow"></button>
+                                        <button type="button" class="tele-color-swatch" data-color="#ef4444" style="background:#ef4444;" onclick="setTelestratorColor('#ef4444')" title="Crimson"></button>
+                                        <button type="button" class="tele-color-swatch" data-color="#ffffff" style="background:#ffffff;" onclick="setTelestratorColor('#ffffff')" title="White"></button>
+                                    </div>
+                                </div>
+                                <div class="tele-group">
+                                    <span class="tele-lbl">Width</span>
+                                    <div class="tele-btn-group">
+                                        <button type="button" class="tele-size-btn" data-size="2" onclick="setTelestratorSize(2)">Thin</button>
+                                        <button type="button" class="tele-size-btn active" data-size="4" onclick="setTelestratorSize(4)">Med</button>
+                                        <button type="button" class="tele-size-btn" data-size="8" onclick="setTelestratorSize(8)">Bold</button>
+                                    </div>
+                                </div>
+                                <div class="tele-group tele-actions">
+                                    <label class="tele-freeze-check" title="Pause video when drawing on canvas">
+                                        <input type="checkbox" id="tele-autopause" checked> <span>Auto-Freeze</span>
+                                    </label>
+                                    <button type="button" class="tele-btn" onclick="undoTelestrator()" title="Undo Last Drawing (Ctrl+Z)">↩️ Undo</button>
+                                    <button type="button" class="tele-btn" onclick="clearTelestrator()" title="Clear Canvas">🗑️ Clear</button>
+                                    <button type="button" class="tele-btn tele-btn-export" onclick="exportTelestratorSnapshot()" title="Export Annotated Frame as High-Res PNG">📸 Snapshot (PNG)</button>
+                                </div>
                             </div>
                         </div>
 
@@ -496,27 +553,37 @@
                                         onclick="setVideoSpeed(2.0)">2x</button>
                                 </div>
                             </div>
-                            <button type="button" class="loop-btn" id="btn-video-loop" onclick="toggleVideoLoop()"
-                                title="Toggle Loop Playback">
-                                🔁 Loop: Off
-                            </button>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <button type="button" class="loop-btn" id="btn-video-loop" onclick="toggleVideoLoop()"
+                                    title="Toggle Loop Playback">
+                                    🔁 Loop: Off
+                                </button>
+                                <button type="button" class="btn-quick-clip" onclick="openClipStudioAtCurrent()" title="Open Clip Studio at current playhead">
+                                    ✂️ Clip Current Moment
+                                </button>
+                            </div>
                         </div>
 
                         <div class="replay-moments-section">
                             <div class="moments-header">
                                 <span>Key Match Moments</span>
-                                <span style="font-size:11px; color:#888;">Tap to seek video</span>
+                                <span style="font-size:11px; color:#888;">Tap to seek • ✂️ to clip</span>
                             </div>
                             <div class="moments-list" id="moments-chips-list">
                                 {% if shots %}
                                 {% for shot in shots %}
-                                <button type="button" class="moment-chip"
-                                    onclick="seekVideoToFrame({{ shot.frame_idx|default:0 }})">
-                                    <span class="moment-dot"
-                                        style="background:{% if shot.side == 'home' %}#2563eb{% else %}#dc2626{% endif %};"></span>
-                                    Shot: {{ shot.player }} ({{ shot.minute }}')
-                                    {% if shot.xg %}<span style="font-size:10px; color:#888; margin-left:4px;">xG {{ shot.xg }}</span>{% endif %}
-                                </button>
+                                <div class="moment-chip-item">
+                                    <button type="button" class="moment-chip"
+                                        onclick="seekVideoToFrame({{ shot.frame_idx|default:0 }})">
+                                        <span class="moment-dot"
+                                            style="background:{% if shot.side == 'home' %}#2563eb{% else %}#dc2626{% endif %};"></span>
+                                        Shot: {{ shot.player }} ({{ shot.minute }}')
+                                        {% if shot.xg %}<span style="font-size:10px; color:#888; margin-left:4px;">xG {{ shot.xg }}</span>{% endif %}
+                                    </button>
+                                    <button type="button" class="moment-clip-quick-btn" onclick="quickExportShotClip({{ shot.frame_idx|default:0 }}, 'Shot_{{ shot.player|slugify }}_{{ shot.minute }}m')" title="Download 10s video clip of this moment">
+                                        ✂️
+                                    </button>
+                                </div>
                                 {% endfor %}
                                 {% else %}
                                 <div style="font-size:12px; color:#999; padding:6px 0;">No individual moments detected.
@@ -526,8 +593,7 @@
                         </div>
 
                         <div class="replay-hint">
-                            💡 <strong>Interactive Pitch Sync:</strong> Click any shot bubble on the 2D Pitch Shot Map
-                            or shot list below to jump the video directly to that play!
+                            💡 <strong>Tactical Pro-Tip:</strong> Press <kbd>T</kbd> to activate the <strong>Tactical Telestrator</strong>, draw pass arrows or spotlight players, and click <strong>Snapshot (PNG)</strong> to export presentation-ready tactical freeze-frames!
                         </div>
                         {% else %}
                         <div class="video-placeholder">
@@ -785,8 +851,9 @@
                     <div style="display:flex; align-items:center; gap:12px;">
                         {% if is_uploader %}
                         <a href="{% url 'matches:identify_players' match.public_id %}"
+                            title="Optional: Review or adjust AI player-to-tracklet assignments"
                             style="font-size:12px; font-weight:600; color:#10b981; text-decoration:none; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); padding:5px 12px; border-radius:6px;">
-                            👤 Identify tracked players
+                            ⚙️ Review Player Mapping (Optional)
                         </a>
                         {% endif %}
 
@@ -934,7 +1001,30 @@
                                 <h3 style="margin-bottom:0;">{{ match.home_team.name }}</h3>
                                 <span class="formation-badge" id="list-formation-badge-home">4-3-3</span>
                             </div>
-                            <div id="lineup-home"></div>
+                            <div id="lineup-home">
+                                {% for player in home_players %}
+                                <div class="lineup-row" data-jersey="{{ player.jersey_number }}" onclick="openPlayerModal('home', {{ forloop.counter0 }})">
+                                    <div class="player-num">{{ player.jersey_number }}</div>
+                                    <div class="player-name">
+                                        <strong>{{ player.name }}</strong>
+                                        <span class="player-pos-tag">{{ player.position }}</span>
+                                    </div>
+                                    <div class="player-dist">
+                                        {% if player.distance_is_real %}
+                                            {% if player.distance_confirmed %}
+                                                <span class="badge-tracked" title="Identified &amp; confirmed tracking data">Tracked</span>
+                                            {% else %}
+                                                <span class="badge-unverified" title="Unconfirmed player assignment">Unverified</span>
+                                            {% endif %}
+                                            <span>{{ player.distance_km }} km</span>
+                                        {% else %}
+                                            <span class="badge-dummy">Est</span>
+                                            <span>{{ player.distance_km }} km</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
                         </div>
                         <div>
                             <div
@@ -942,7 +1032,30 @@
                                 <h3 style="margin-bottom:0;">{{ match.away_team.name }}</h3>
                                 <span class="formation-badge" id="list-formation-badge-away">4-3-3</span>
                             </div>
-                            <div id="lineup-away"></div>
+                            <div id="lineup-away">
+                                {% for player in away_players %}
+                                <div class="lineup-row" data-jersey="{{ player.jersey_number }}" onclick="openPlayerModal('away', {{ forloop.counter0 }})">
+                                    <div class="player-num">{{ player.jersey_number }}</div>
+                                    <div class="player-name">
+                                        <strong>{{ player.name }}</strong>
+                                        <span class="player-pos-tag">{{ player.position }}</span>
+                                    </div>
+                                    <div class="player-dist">
+                                        {% if player.distance_is_real %}
+                                            {% if player.distance_confirmed %}
+                                                <span class="badge-tracked" title="Identified &amp; confirmed tracking data">Tracked</span>
+                                            {% else %}
+                                                <span class="badge-unverified" title="Unconfirmed player assignment">Unverified</span>
+                                            {% endif %}
+                                            <span>{{ player.distance_km }} km</span>
+                                        {% else %}
+                                            <span class="badge-dummy">Est</span>
+                                            <span>{{ player.distance_km }} km</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1371,11 +1484,88 @@
                         <span class="heat-legend-label" style="color:#555;">High Intensity</span>
                     </div>
                 </div>
-                <div style="margin-top:16px; border-top:1px solid #f0f0f0; padding-top:14px; text-align:center;">
+                <div style="display:flex; flex-direction:column; gap:8px; margin-top:16px; border-top:1px solid #f0f0f0; padding-top:14px;">
                     <button type="button" id="modal-compare-btn" onclick="comparePlayerFromModal()"
                         style="width:100%; background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(6, 182, 212, 0.2)); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); padding: 10px 16px; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s;">
                         <span>⚔️ Compare this Player in Head-to-Head</span>
                     </button>
+                    <a href="#" id="modal-player-profile-link" target="_blank"
+                        style="width:100%; box-sizing:border-box; background: rgba(255, 255, 255, 0.05); color: #475569; border: 1px solid rgba(0, 0, 0, 0.1); padding: 9px 16px; border-radius: 8px; font-weight: 600; font-size: 13px; text-decoration:none; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s;">
+                        <span>👤 View Full Player Profile & History</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Clip Studio Modal -->
+    <div class="modal-overlay" id="clip-studio-modal" onclick="if(event.target===this) closeClipStudioModal()">
+        <div class="modal-card clip-studio-modal-card">
+            <div class="modal-header">
+                <button class="modal-close" onclick="closeClipStudioModal()">✕</button>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span style="font-size:22px;">✂️</span>
+                    <div>
+                        <div style="margin:0; font-size:16px; font-weight:700; color:#10b981;">Tactical Clip Studio</div>
+                        <div style="margin:0; font-size:12px; color:#64748b;">Export high-definition MP4 tactical video clips from this match</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-body" style="padding:16px 20px;">
+                <div class="clip-studio-grid">
+                    <div class="clip-preview-col">
+                        <div class="clip-preview-wrap">
+                            <video id="clip-preview-video" playsinline controls preload="metadata"></video>
+                            <div class="clip-preview-badge" id="clip-duration-badge">Duration: 10.0s</div>
+                        </div>
+                        <div style="margin-top:8px; display:flex; justify-content:space-between; align-items:center;">
+                            <button type="button" class="btn-clip-preview-loop" onclick="previewClipLoop()">
+                                🔁 Preview Loop Range
+                            </button>
+                            <span id="clip-range-display" style="font-size:12px; font-family:monospace; color:#64748b; font-weight:600;">00:00.0 → 00:10.0</span>
+                        </div>
+                    </div>
+                    <div class="clip-controls-col">
+                        <div class="clip-form-group">
+                            <label class="clip-form-label">Clip Title / Play Tag</label>
+                            <input type="text" id="clip-title-input" class="clip-text-input" placeholder="e.g. 72' Shot - Counter Attack" value="Match_Moment">
+                        </div>
+                        <div class="clip-form-row">
+                            <div class="clip-form-group" style="flex:1;">
+                                <label class="clip-form-label">Start Time (sec)</label>
+                                <input type="number" id="clip-start-input" class="clip-num-input" step="0.5" min="0" value="0" oninput="updateClipStudioRange()">
+                            </div>
+                            <div class="clip-form-group" style="flex:1;">
+                                <label class="clip-form-label">End Time (sec)</label>
+                                <input type="number" id="clip-end-input" class="clip-num-input" step="0.5" min="0.5" value="10" oninput="updateClipStudioRange()">
+                            </div>
+                        </div>
+                        <div class="clip-quick-presets">
+                            <span style="font-size:11px; color:#64748b; font-weight:600;">Quick Presets:</span>
+                            <div class="clip-preset-pills">
+                                <button type="button" class="clip-preset-pill" onclick="setClipPresetAroundCurrent(5)">±5s Current</button>
+                                <button type="button" class="clip-preset-pill" onclick="setClipPresetAroundCurrent(10)">±10s Current</button>
+                                <button type="button" class="clip-preset-pill" onclick="setClipPresetAroundCurrent(15)">±15s Current</button>
+                            </div>
+                        </div>
+                        <div class="clip-form-group">
+                            <label class="clip-form-label">Footage Source</label>
+                            <div class="clip-mode-selector">
+                                <label class="clip-radio-label">
+                                    <input type="radio" name="clip-mode" value="annotated" checked> <span>AI Tracked Video</span>
+                                </label>
+                                <label class="clip-radio-label">
+                                    <input type="radio" name="clip-mode" value="raw"> <span>Raw Video</span>
+                                </label>
+                            </div>
+                        </div>
+                        <div class="clip-action-bar">
+                            <button type="button" class="btn-clip-download-primary" id="btn-download-clip-primary" onclick="triggerClipDownload()">
+                                📥 Export & Download MP4
+                            </button>
+                        </div>
+                        <div id="clip-export-status" class="clip-export-status" style="display:none;"></div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -21,45 +21,8 @@
     <link rel="stylesheet" href="{% static "css/compare.css" %}">
 </head>
 <body>
-
-    <!-- Tactical Studio Header -->
-    <header class="studio-header">
-        <div class="header-left">
-            <div class="brand-badge">
-                <svg viewBox="0 0 24 24">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
-                    <path d="M2 12h20"/>
-                </svg>
-            </div>
-            <div class="match-title-group">
-                <h1>{{ match.home_team.name }} <span class="vs-tag">vs</span> {{ match.away_team.name }}</h1>
-                <div class="match-meta-info">
-                    <span>⚔️ Head-to-Head Tactical Comparison Studio</span>
-                    <span>•</span>
-                    <span>{{ match.competition|default:"League Match" }}</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="header-actions">
-            <a href="{% url 'matches:results' match.public_id %}" class="nav-link-btn">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <polyline points="15 18 9 12 15 6"></polyline>
-                </svg>
-                <span>Back to Match Results</span>
-            </a>
-            <a href="{% url 'dashboard:index' %}" class="nav-link-btn">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <rect x="3" y="3" width="7" height="7"></rect>
-                    <rect x="14" y="3" width="7" height="7"></rect>
-                    <rect x="14" y="14" width="7" height="7"></rect>
-                    <rect x="3" y="14" width="7" height="7"></rect>
-                </svg>
-                <span>Dashboard</span>
-            </a>
-        </div>
-    </header>
+    {% url 'matches:results' match.public_id as results_url %}
+    {% include "includes/top_nav.html" with back_url=results_url back_label="Back to Results" %}
 
     <!-- Main Container -->
     <main class="app-container">
@@ -216,15 +179,72 @@
                             <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path>
                             <path d="M2 12h20"></path>
                         </svg>
-                        <span>Spatial Territory & Heatmap Comparison</span>
+                        <span>Spatial Territory &amp; Heatmap Comparison</span>
                     </h3>
-                    <span style="font-size: 12px; color: var(--text-muted);">Pitch Coverage Coordinates</span>
+                    <div class="heatmap-header-meta">
+                        <span class="coverage-badge">Computer Vision Homography Pitch Mapping</span>
+                    </div>
+                </div>
+
+                <!-- Territory Zone Analytics Metric Comparison Row -->
+                <div class="territory-analytics-grid">
+                    <div class="zone-card">
+                        <div class="zone-card-title">Attacking Third Presence</div>
+                        <div class="zone-dual-vals">
+                            <span id="p1-att-third" style="color: var(--home-color); font-weight:700;">--%</span>
+                            <span style="font-size:11px; color:var(--text-muted);">vs</span>
+                            <span id="p2-att-third" style="color: var(--away-color); font-weight:700;">--%</span>
+                        </div>
+                        <div class="zone-mini-bar">
+                            <div id="p1-att-bar" class="z-bar-p1" style="width:50%;"></div>
+                            <div id="p2-att-bar" class="z-bar-p2" style="width:50%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="zone-card">
+                        <div class="zone-card-title">Middle Third Control</div>
+                        <div class="zone-dual-vals">
+                            <span id="p1-mid-third" style="color: var(--home-color); font-weight:700;">--%</span>
+                            <span style="font-size:11px; color:var(--text-muted);">vs</span>
+                            <span id="p2-mid-third" style="color: var(--away-color); font-weight:700;">--%</span>
+                        </div>
+                        <div class="zone-mini-bar">
+                            <div id="p1-mid-bar" class="z-bar-p1" style="width:50%;"></div>
+                            <div id="p2-mid-bar" class="z-bar-p2" style="width:50%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="zone-card">
+                        <div class="zone-card-title">Defensive Third Coverage</div>
+                        <div class="zone-dual-vals">
+                            <span id="p1-def-third" style="color: var(--home-color); font-weight:700;">--%</span>
+                            <span style="font-size:11px; color:var(--text-muted);">vs</span>
+                            <span id="p2-def-third" style="color: var(--away-color); font-weight:700;">--%</span>
+                        </div>
+                        <div class="zone-mini-bar">
+                            <div id="p1-def-bar" class="z-bar-p1" style="width:50%;"></div>
+                            <div id="p2-def-bar" class="z-bar-p2" style="width:50%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="zone-card">
+                        <div class="zone-card-title">Primary Flank Channel</div>
+                        <div class="zone-dual-vals">
+                            <span id="p1-channel-val" style="color: var(--home-color); font-weight:700; font-size:12px;">Center</span>
+                            <span style="font-size:11px; color:var(--text-muted);">vs</span>
+                            <span id="p2-channel-val" style="color: var(--away-color); font-weight:700; font-size:12px;">Right Wing</span>
+                        </div>
+                        <div style="font-size:10.5px; color:var(--text-muted); margin-top:4px;" id="zone-flank-desc">Primary Operating Sector</div>
+                    </div>
                 </div>
 
                 <div class="heatmaps-grid">
                     <!-- Player 1 Heatmap -->
                     <div class="heatmap-box">
-                        <h4 id="hm-p1-title">Player 1 Territory</h4>
+                        <div class="hm-player-header">
+                            <span class="hm-jersey-pill" id="hm-p1-jersey" style="background:var(--home-color); color:#041014;">#--</span>
+                            <h4 id="hm-p1-title">Player 1 Territory</h4>
+                        </div>
                         <div class="heatmap-meta" id="hm-p1-meta">Attack direction: Left to Right →</div>
                         <div class="heatmap-img-frame">
                             <img id="p1-heatmap-img" src="" alt="Player 1 Heatmap" style="display:none;" />
@@ -237,11 +257,19 @@
                                 <span>No tracked coordinate positions available</span>
                             </div>
                         </div>
+                        <div class="heatmap-zone-breakdown" id="p1-zone-pills">
+                            <span class="zone-pill" id="p1-zone-left">Left: 25%</span>
+                            <span class="zone-pill" id="p1-zone-center">Center: 50%</span>
+                            <span class="zone-pill" id="p1-zone-right">Right: 25%</span>
+                        </div>
                     </div>
 
                     <!-- Player 2 Heatmap -->
                     <div class="heatmap-box">
-                        <h4 id="hm-p2-title">Player 2 Territory</h4>
+                        <div class="hm-player-header">
+                            <span class="hm-jersey-pill" id="hm-p2-jersey" style="background:var(--away-color); color:#041014;">#--</span>
+                            <h4 id="hm-p2-title">Player 2 Territory</h4>
+                        </div>
                         <div class="heatmap-meta" id="hm-p2-meta">Attack direction: Right to Left ←</div>
                         <div class="heatmap-img-frame">
                             <img id="p2-heatmap-img" src="" alt="Player 2 Heatmap" style="display:none;" />
@@ -254,7 +282,19 @@
                                 <span>No tracked coordinate positions available</span>
                             </div>
                         </div>
+                        <div class="heatmap-zone-breakdown" id="p2-zone-pills">
+                            <span class="zone-pill" id="p2-zone-left">Left: 20%</span>
+                            <span class="zone-pill" id="p2-zone-center">Center: 35%</span>
+                            <span class="zone-pill" id="p2-zone-right">Right: 45%</span>
+                        </div>
                     </div>
+                </div>
+
+                <!-- Heat Intensity Gradient Legend -->
+                <div class="heat-intensity-legend">
+                    <span class="heat-legend-label">Low Activity</span>
+                    <div class="heat-gradient-bar"></div>
+                    <span class="heat-legend-label">High Intensity Peak</span>
                 </div>
             </div>
 
@@ -451,6 +491,78 @@
                     </div>
                 </div>
 
+            </div>
+
+            <!-- Team Spatial Pressing & Territory Duel Section -->
+            <div class="heatmaps-section" style="margin-top: 24px;">
+                <div class="card-panel-header">
+                    <h3>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--pitch-cyan)" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"></path>
+                            <path d="M2 12h20"></path>
+                        </svg>
+                        <span>Team Spatial Territory &amp; Pressing Duel</span>
+                    </h3>
+                    <div class="heatmap-header-meta">
+                        <span class="coverage-badge">Full Squad Spatial Coordinate Density</span>
+                    </div>
+                </div>
+
+                <div class="heatmaps-grid">
+                    <!-- Home Team Heatmap -->
+                    <div class="heatmap-box">
+                        <div class="hm-player-header">
+                            <span class="hm-jersey-pill" style="background:var(--home-color); color:#041014;">{{ match.home_team.short_name|default:"HOM" }}</span>
+                            <h4>{{ match.home_team.name }} Territory</h4>
+                        </div>
+                        <div class="heatmap-meta">Attacking Left to Right → • Full Match Coverage Map</div>
+                        <div class="heatmap-img-frame">
+                            {% if home_heatmap %}
+                            <img src="data:image/png;base64,{{ home_heatmap }}" alt="{{ match.home_team.name }} Territory Heatmap" />
+                            {% else %}
+                            <div class="heatmap-placeholder">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <rect x="2" y="3" width="20" height="18" rx="2"></rect>
+                                    <line x1="12" y1="3" x2="12" y2="21"></line>
+                                    <circle cx="12" cy="12" r="4"></circle>
+                                </svg>
+                                <span>No team tracked coordinate positions available</span>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Away Team Heatmap -->
+                    <div class="heatmap-box">
+                        <div class="hm-player-header">
+                            <span class="hm-jersey-pill" style="background:var(--away-color); color:#041014;">{{ match.away_team.short_name|default:"AWY" }}</span>
+                            <h4>{{ match.away_team.name }} Territory</h4>
+                        </div>
+                        <div class="heatmap-meta">Attacking Right to Left ← • Full Match Coverage Map</div>
+                        <div class="heatmap-img-frame">
+                            {% if away_heatmap %}
+                            <img src="data:image/png;base64,{{ away_heatmap }}" alt="{{ match.away_team.name }} Territory Heatmap" />
+                            {% else %}
+                            <div class="heatmap-placeholder">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <rect x="2" y="3" width="20" height="18" rx="2"></rect>
+                                    <line x1="12" y1="3" x2="12" y2="21"></line>
+                                    <circle cx="12" cy="12" r="4"></circle>
+                                </svg>
+                                <span>No team tracked coordinate positions available</span>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Heat Intensity Gradient Legend -->
+                <div class="heat-intensity-legend">
+                    <span class="heat-legend-label">Low Intensity</span>
+                    <div class="heat-gradient-bar"></div>
+                    <span class="heat-legend-label">High Pressing / Action Concentration</span>
+                </div>
             </div>
 
         </section>

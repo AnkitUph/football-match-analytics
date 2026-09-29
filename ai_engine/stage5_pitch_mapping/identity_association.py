@@ -167,11 +167,25 @@ def match_tracklets_within_shot(
     for root, members in groups.items():
         members.sort(key=lambda m: m.detections[0].frame_idx)
         team_votes = Counter(m.team for m in members)
+
+        # Preserve highest-confidence jersey recognition across merged tracklet fragments
+        best_jersey = None
+        best_conf = 0.0
+        for m in members:
+            j_num = getattr(m, "jersey_number", None)
+            if j_num is not None:
+                j_conf = getattr(m, "jersey_number_conf", 0.0) or 0.5
+                if j_conf >= best_conf:
+                    best_jersey = j_num
+                    best_conf = j_conf
+
         merged = Tracklet(
             track_id=root,
             shot_id=members[0].shot_id,
             team=team_votes.most_common(1)[0][0],
             cls=members[0].cls,
+            jersey_number=best_jersey,
+            jersey_number_conf=best_conf,
         )
         for m in members:
             merged.detections.extend(m.detections)

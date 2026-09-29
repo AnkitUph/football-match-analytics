@@ -1,52 +1,92 @@
 <header class="top-nav">
-    <a href="{% url 'dashboard:index' %}" class="nav-brand">
-        <div class="nav-logo-badge">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-                <path d="M2 12h20" />
-            </svg>
-        </div>
-        <div class="nav-brand-text">
-            <h1 class="title">MATCH STUDIO</h1>
-            <p class="subtitle">TACTICAL AI PLATFORM</p>
-        </div>
-    </a>
-    <nav class="nav-links">
-        <a href="{% url 'dashboard:index' %}" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="7" height="7" rx="1"></rect>
-                <rect x="14" y="3" width="7" height="7" rx="1"></rect>
-                <rect x="14" y="14" width="7" height="7" rx="1"></rect>
-                <rect x="3" y="14" width="7" height="7" rx="1"></rect>
-            </svg>
-            Dashboard
+    <div class="nav-left">
+        <a href="{% url 'dashboard:index' %}" class="nav-brand">
+            <div class="nav-logo-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="9" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M12 3a9 9 0 0 1 9 9m-9-9a9 9 0 0 0-9 9m9-9v18m9-9a9 9 0 0 1-9 9m9-9H3m9 9a9 9 0 0 1-9-9" stroke-width="1.6" />
+                </svg>
+            </div>
+            <div class="nav-brand-text">
+                <span class="brand-title-main">TACTICAL</span><span class="brand-title-sub">STUDIO</span>
+                <span class="brand-eyebrow">AI Match Intelligence</span>
+            </div>
         </a>
-        <a href="{% url 'matches:upload' %}" class="nav-link {% if active_nav == 'upload' %}active{% endif %}">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-            Upload Match
-        </a>
-        <a href="{% url 'players:list' %}" class="nav-link {% if active_nav == 'players' %}active{% endif %}">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-            Players
-        </a>
-        <a href="{% url 'teams:create' %}" class="nav-link {% if active_nav == 'teams' %}active{% endif %}">
-            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-            </svg>
-            Teams
-        </a>
-        {% if user.is_authenticated %}
-            <a href="{% url 'accounts:profile' %}" class="nav-link {% if active_nav == 'profile' %}active{% endif %}">
-                <div class="user-avatar">{{ user.username|first|upper }}</div>
-                Profile
+
+        {% if back_url %}
+            <a href="{{ back_url }}" class="nav-back">
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+                <span>{{ back_label|default:"Back" }}</span>
             </a>
         {% else %}
-            <a href="{% url 'accounts:login' %}" class="nav-link">Log In</a>
+            <nav class="nav-links">
+                <a href="{% url 'dashboard:index' %}" class="nav-link {% if active_nav == 'dashboard' %}active{% endif %}">
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+                        <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+                        <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+                        <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+                    </svg>
+                    Dashboard
+                </a>
+                <a href="{% url 'matches:upload' %}" class="nav-link {% if active_nav == 'upload' %}active{% endif %}">
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                    Upload Match
+                </a>
+                <a href="{% url 'teams:create' %}" class="nav-link {% if active_nav == 'teams' %}active{% endif %}">
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                    </svg>
+                    Teams
+                </a>
+                <a href="{% url 'players:list' %}" class="nav-link {% if active_nav == 'players' %}active{% endif %}">
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    </svg>
+                    Players
+                </a>
+            </nav>
         {% endif %}
-    </nav>
+    </div>
+
+    <div class="nav-right">
+        <div class="status-pill">
+            <div class="pulse-dot"></div>
+            <span>CV Engine Online</span>
+        </div>
+
+        {% if request.user.is_authenticated or user.is_authenticated %}
+            {% with curr_user=request.user|default:user %}
+            <div class="user-nav-group">
+                <a href="{% url 'accounts:profile' %}" class="user-profile-btn {% if active_nav == 'profile' %}active{% endif %}" title="View Analyst Profile">
+                    {% if curr_user.profile_picture %}
+                        <img src="{{ curr_user.profile_picture.url }}" alt="{{ curr_user.username }}" class="user-avatar-img" width="32" height="32" style="width:32px; height:32px; max-width:32px; max-height:32px; border-radius:8px; object-fit:cover; display:block; flex-shrink:0;">
+                    {% else %}
+                        <div class="user-avatar-mini">
+                            {{ curr_user.username|slice:":1"|upper }}
+                        </div>
+                    {% endif %}
+                    <div class="user-nav-meta">
+                        <span class="user-nav-name">{{ curr_user.first_name|default:curr_user.username }}</span>
+                        <span class="user-nav-role">Analyst</span>
+                    </div>
+                </a>
+                <a href="{% url 'accounts:logout' %}" class="nav-logout-btn" title="Sign Out">
+                    <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                    </svg>
+                </a>
+            </div>
+            {% endwith %}
+        {% else %}
+            <div class="auth-nav-group">
+                <a href="{% url 'accounts:login' %}" class="btn btn-secondary btn-sm">Log In</a>
+                <a href="{% url 'accounts:register' %}" class="btn btn-primary btn-sm">Register</a>
+            </div>
+        {% endif %}
+    </div>
 </header>

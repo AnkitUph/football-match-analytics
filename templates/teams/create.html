@@ -10,13 +10,7 @@
     <link rel="stylesheet" href="{% static 'css/teams.css' %}">
 </head>
 <body>
-    <nav class="top-nav">
-        <a class="nav-brand" href="{% url 'dashboard:index' %}">
-            <div class="nav-brand-icon">⚽</div>
-            Analytics Studio
-        </a>
-        <a class="nav-back" href="{% url 'dashboard:index' %}">← Dashboard</a>
-    </nav>
+    {% include "includes/top_nav.html" with active_nav="teams" %}
 
     <div class="teams-container">
         <p class="page-eyebrow">Team Management</p>

@@ -151,24 +151,10 @@ class PipelineConfig:
     # real clip; that's the "single continuous angle first" rule.
     enable_shot_detection: bool = False
     enable_reid: bool = False
-    # Jersey OCR (Stage 3c) is implemented (ai_engine/stage3_team_reid/
-    # jersey_ocr.py) but VALIDATED NON-VIABLE on this project's test
-    # footage: EasyOCR found zero legible digits even on the single
-    # largest player bounding box in the entire match (~104x76px full
-    # bbox) — broadcast-resolution wide shots don't contain enough
-    # resolvable pixels for a jersey number, full stop, not a threshold
-    # or sampling problem. Disabled to avoid paying its CPU cost every
-    # upload for a guaranteed-empty result on footage like this. Flip
-    # back to True if you ever process footage with closer/tighter
-    # camera angles (players consistently >200px tall) — the code path
-    # is untouched and will pick up real numbers if the input supports it.
-    #
-    # Individual player identification for THIS footage instead uses a
-    # manual mapping (see apps/matches/models.py: TrackPlayerIdentification,
-    # and the /identify/ page) — a human links each tracked identity to
-    # a real MatchLineup entry, the same "human replaces unreliable
-    # automatic CV" pattern as MatchCalibration.
-    enable_ocr: bool = False
+    # Jersey OCR (Stage 3c): Powered by spatio-temporal JerseyNumberTemporalNet
+    # model (EfficientNet-B0 + BiLSTM sequence modeling). Enabled for automated
+    # player jersey recognition and lineup linking.
+    enable_ocr: bool = True
 
 
 DEFAULT_CONFIG = PipelineConfig()

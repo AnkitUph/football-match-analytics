@@ -12,32 +12,7 @@
 <body>
 
     <!-- Tactical Top Nav -->
-    <header class="top-nav">
-        <a href="{% url 'dashboard:index' %}" class="nav-brand">
-            <div class="nav-logo-badge">
-                <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <circle cx="12" cy="12" r="9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    <path d="M12 3a9 9 0 0 1 9 9m-9-9a9 9 0 0 0-9 9m9-9v18m9-9a9 9 0 0 1-9 9m9-9H3m9 9a9 9 0 0 1-9-9" stroke-width="1.6" />
-                </svg>
-            </div>
-            <div class="nav-brand-text">Tactical<span>Studio</span></div>
-        </a>
-
-        <div class="nav-actions">
-            <a href="{% url 'teams:create' %}" class="nav-btn nav-btn-secondary">
-                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
-                Manage Teams
-            </a>
-            <a href="{% url 'dashboard:index' %}" class="nav-btn nav-btn-secondary">
-                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                </svg>
-                Dashboard
-            </a>
-        </div>
-    </header>
+    {% include "includes/top_nav.html" with active_nav="upload" %}
 
     <div class="container">
 

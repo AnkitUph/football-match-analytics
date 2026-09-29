@@ -11,32 +11,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
     {% include "includes/head_assets.html" %}
-    <link rel="stylesheet" href="{% static 'css/auth.css' %}">
+    <link rel="stylesheet" href="{% static 'css/auth.css' %}?v=1.2">
 </head>
 <body>
+    <!-- Tactical Top Nav -->
+    {% include "includes/top_nav.html" with active_nav="profile" %}
 
-    <!-- Sticky Navigation Bar -->
-    <header class="top-navbar">
-        <a href="{% url 'dashboard:index' %}" class="nav-brand">
-            <div class="brand-icon-wrap">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-                    <polyline points="2 17 12 22 22 17"></polyline>
-                    <polyline points="2 12 12 17 22 12"></polyline>
-                </svg>
-            </div>
-            <span class="nav-title">Football Analytics</span>
-        </a>
-        <a href="{% url 'dashboard:index' %}" class="nav-back-btn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-                <line x1="19" y1="12" x2="5" y2="12"></line>
-                <polyline points="12 19 5 12 12 5"></polyline>
-            </svg>
-            <span>Back to Dashboard</span>
-        </a>
-    </header>
-
-    <main class="container">
+    <main class="profile-container">
         <!-- Messages -->
         {% if messages %}
             <div class="messages-container" role="alert">
@@ -65,7 +46,7 @@
             <div class="hero-identity">
                 <div class="avatar-container">
                     {% if profile_user.profile_picture %}
-                        <img class="profile-avatar" id="avatar-preview-img" src="{{ profile_user.profile_picture.url }}" alt="{{ profile_user.username }}">
+                        <img class="profile-avatar" id="avatar-preview-img" src="{{ profile_user.profile_picture.url }}" alt="{{ profile_user.username }}" width="88" height="88" style="width:88px; height:88px; max-width:88px; max-height:88px; border-radius:24px; object-fit:cover; display:block; flex-shrink:0;">
                     {% else %}
                         <div class="avatar-fallback" id="avatar-fallback-initials">
                             {{ profile_user.username|first|upper }}

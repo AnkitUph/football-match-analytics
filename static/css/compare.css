@@ -559,6 +559,69 @@
             margin-bottom: 28px;
         }
 
+        .coverage-badge {
+            font-size: 11px;
+            color: var(--pitch-emerald);
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-weight: 600;
+        }
+
+        .territory-analytics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin: 20px 0 24px 0;
+        }
+
+        .zone-card {
+            background: rgba(11, 16, 20, 0.6);
+            border: 1px solid var(--border-glass);
+            border-radius: 12px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .zone-card-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .zone-dual-vals {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 14px;
+        }
+
+        .zone-mini-bar {
+            height: 5px;
+            background: rgba(255, 255, 255, 0.06);
+            border-radius: 4px;
+            display: flex;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+
+        .z-bar-p1 {
+            background: var(--home-color);
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .z-bar-p2 {
+            background: var(--away-color);
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
         .heatmaps-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -570,7 +633,7 @@
             background: #0d1418;
             border: 1px solid var(--border-glass);
             border-radius: var(--radius-lg);
-            padding: 18px;
+            padding: 20px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -578,13 +641,26 @@
             position: relative;
         }
 
-        .heatmap-box h4 {
-            font-size: 14px;
-            font-weight: 700;
-            margin-bottom: 4px;
+        .hm-player-header {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 10px;
+            margin-bottom: 6px;
+        }
+
+        .hm-jersey-pill {
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 11.5px;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .heatmap-box h4 {
+            font-size: 15px;
+            font-weight: 700;
+            margin: 0;
+            color: var(--text-main);
         }
 
         .heatmap-meta {
@@ -619,6 +695,60 @@
             flex-direction: column;
             align-items: center;
             gap: 8px;
+        }
+
+        .heatmap-zone-breakdown {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 14px;
+            width: 100%;
+            justify-content: center;
+        }
+
+        .zone-pill {
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid var(--border-glass);
+            padding: 4px 10px;
+            border-radius: 6px;
+            color: var(--text-secondary);
+        }
+
+        .heat-intensity-legend {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            margin-top: 22px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-glass);
+        }
+
+        .heat-legend-label {
+            font-size: 11.5px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .heat-gradient-bar {
+            width: 220px;
+            height: 8px;
+            border-radius: 6px;
+            background: linear-gradient(90deg, #10b981 0%, #06b6d4 30%, #eab308 65%, #ef4444 100%);
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.25);
+        }
+
+        @media (max-width: 900px) {
+            .territory-analytics-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+            .heatmaps-grid {
+                grid-template-columns: 1fr;
+            }
         }
 
         /* TEAM TACTICAL DUEL PANE */

@@ -49,6 +49,7 @@ from collections import defaultdict
 import numpy as np
 
 from ai_engine.config import TeamReidConfig
+from ai_engine.jersey_number_ocr import JerseyNumberReader
 from ai_engine.utils.types import Team, Tracklet
 
 
@@ -56,17 +57,13 @@ class JerseyOCR:
     def __init__(self, config: TeamReidConfig):
         self.config = config
         self._reader = None
+        self._temporal_reader = JerseyNumberReader()
 
     def _load_reader(self):
         if self._reader is not None:
             return self._reader
 
         import easyocr
-        # gpu=False: this project's CV pipeline runs CPU-only PyTorch —
-        # Intel Arc has no CUDA support, and that's a separate question
-        # from the OpenVINO export used for YOLO detection (Stage 1).
-        # EasyOCR's underlying model is plain PyTorch and doesn't know
-        # about OpenVINO at all.
         self._reader = easyocr.Reader(["en"], gpu=False)
         return self._reader
 
@@ -83,9 +80,6 @@ class JerseyOCR:
         try:
             results = reader.readtext(crop, allowlist="0123456789")
         except Exception:
-            # A single crop failing to decode (bad shape, corrupt frame
-            # read, etc.) shouldn't take down the whole OCR pass for this
-            # tracklet — the caller just gets one fewer reading to vote with.
             return None, 0.0
 
         if not results:
@@ -103,12 +97,7 @@ def aggregate_jersey_number(
 ) -> tuple[int | None, float]:
     """
     Majority vote across independent per-frame OCR reads for one
-    tracklet. Requires at least `min_agreeing_reads` reads to agree on
-    the SAME number before accepting it — guards against the single-
-    lucky-read failure mode described in this module's docstring. Ties
-    (equal vote counts) are broken by higher total summed confidence.
-
-    Returns (None, 0.0) if no number reached the min_agreeing_reads bar.
+    tracklet.
     """
     if not readings:
         return None, 0.0
@@ -134,30 +123,48 @@ def run_jersey_ocr_for_tracklets(
     tracklets: list[Tracklet],
     video_path: str,
     config: TeamReidConfig,
-    max_samples_per_tracklet: int = 10,
+    max_samples_per_tracklet: int = 8,
     min_agreeing_reads: int = 2,
 ) -> None:
     """
-    Mutates each PLAYER tracklet's .jersey_number/.jersey_number_conf in
-    place. Referee and unknown-team tracklets are skipped entirely — a
-    referee's number (if visible at all) isn't relevant to identifying a
-    PLAYER against the match lineup.
-
-    Sampling: up to max_samples_per_tracklet frames, evenly spread across
-    the tracklet's OWN duration (not fixed video-wide frame numbers) — a
-    short-lived tracklet gets closely-spaced samples instead of being
-    skipped past, a long one gets spread out instead of over-sampled.
-    Crops are trimmed to the top ~65% of the bbox height as a torso
-    heuristic (no pose/orientation data is available to do better than
-    this) — reduces confusion from shorts/socks patterns and pitch-side
-    advertising bleeding into the bottom of a bounding box.
+    Mutates each PLAYER tracklet's .jersey_number/.jersey_number_conf in place.
+    Uses deep temporal network (JerseyNumberTemporalNet) when available, or
+    per-frame OCR with voting.
+    
+    Optimized with single monotonic forward video pass (eliminating thousands
+    of random backward seeks that previously caused 45+ minute bottlenecks).
     """
     import cv2
+    from collections import defaultdict
 
-    ocr = JerseyOCR(config)
+    temporal_reader = JerseyNumberReader()
+    ocr = JerseyOCR(config) if temporal_reader.deep_model is None else None
 
-    player_tracklets = [t for t in tracklets if t.team in (Team.TEAM_A, Team.TEAM_B)]
+    # Filter to real player tracklets with meaningful duration (ignore 1-4 frame noise)
+    player_tracklets = [
+        t for t in tracklets 
+        if t.team in (Team.TEAM_A, Team.TEAM_B) and (len(t.detections) >= 8 or len(tracklets) <= 40)
+    ]
     if not player_tracklets:
+        return
+
+    # Build chronological frame mapping for single monotonic video sweep
+    crops_needed_by_frame: dict[int, list[tuple[Tracklet, tuple]]] = defaultdict(list)
+    tracklet_sampled_count: dict[int, int] = defaultdict(int)
+
+    for t in player_tracklets:
+        if not t.detections:
+            continue
+        n = len(t.detections)
+        sample_count = min(max_samples_per_tracklet, n)
+        sample_indices = sorted(set(
+            round(i * (n - 1) / max(sample_count - 1, 1)) for i in range(sample_count)
+        ))
+        for idx in sample_indices:
+            det = t.detections[idx]
+            crops_needed_by_frame[det.frame_idx].append((t, det.bbox))
+
+    if not crops_needed_by_frame:
         return
 
     cap = cv2.VideoCapture(video_path)
@@ -165,42 +172,62 @@ def run_jersey_ocr_for_tracklets(
         cap.release()
         return
 
+    track_crops: dict[int, list] = defaultdict(list)
+    track_readings: dict[int, list] = defaultdict(list)
+
     try:
-        for t in player_tracklets:
-            if not t.detections:
+        sorted_frames = sorted(crops_needed_by_frame.keys())
+        curr_pos = 0
+
+        for target_f in sorted_frames:
+            # Monotonic forward positioning (no backward seeks)
+            if target_f != curr_pos:
+                if 0 < (target_f - curr_pos) <= 8:
+                    while curr_pos < target_f:
+                        cap.grab()
+                        curr_pos += 1
+                else:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_f)
+                    curr_pos = target_f
+
+            ok, frame = cap.read()
+            curr_pos += 1
+            if not ok or frame is None:
                 continue
 
-            n = len(t.detections)
-            sample_count = min(max_samples_per_tracklet, n)
-            sample_indices = sorted(set(
-                round(i * (n - 1) / max(sample_count - 1, 1)) for i in range(sample_count)
-            ))
-
-            readings = []
-            for idx in sample_indices:
-                det = t.detections[idx]
-                cap.set(cv2.CAP_PROP_POS_FRAMES, det.frame_idx)
-                ok, frame = cap.read()
-                if not ok:
-                    continue
-
-                x1, y1, x2, y2 = map(int, det.bbox)
+            for t, bbox in crops_needed_by_frame[target_f]:
+                x1, y1, x2, y2 = map(int, bbox)
                 x1, y1 = max(x1, 0), max(y1, 0)
                 crop = frame[y1:y2, x1:x2]
-                if crop.size == 0:
+                if crop.size == 0 or crop.shape[0] < 15 or crop.shape[1] < 8:
                     continue
 
                 torso_height = max(int(crop.shape[0] * 0.65), 1)
-                torso_crop = crop[:torso_height, :]
+                torso_crop = crop[:torso_height, :].copy()
                 if torso_crop.size == 0:
                     continue
 
-                number, conf = ocr.read_number(torso_crop)
-                if number is not None:
-                    readings.append((number, conf))
+                if temporal_reader.deep_model is not None:
+                    track_crops[t.track_id].append(torso_crop)
+                elif ocr is not None:
+                    number, conf = ocr.read_number(torso_crop)
+                    if number is not None:
+                        track_readings[t.track_id].append((number, conf))
 
-            jersey_number, jersey_conf = aggregate_jersey_number(readings, min_agreeing_reads)
-            t.jersey_number = jersey_number
-            t.jersey_number_conf = jersey_conf
     finally:
         cap.release()
+
+    # Fast neural prediction pass per player tracklet
+    for t in player_tracklets:
+        if temporal_reader.deep_model is not None:
+            crops = track_crops.get(t.track_id, [])
+            if crops:
+                num, conf = temporal_reader.predict_tracklet_deep(crops)
+                t.jersey_number = num
+                t.jersey_number_conf = conf
+        else:
+            readings = track_readings.get(t.track_id, [])
+            if readings:
+                jersey_number, jersey_conf = aggregate_jersey_number(readings, min_agreeing_reads)
+                t.jersey_number = jersey_number
+                t.jersey_number_conf = jersey_conf

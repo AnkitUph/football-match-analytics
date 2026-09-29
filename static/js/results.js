@@ -72,22 +72,42 @@ const hudModeTag = document.getElementById('hud-mode-tag');
             }
         };
 
-        window.seekVideoToFrame = function (frameIdx) {
+        window.seekVideoToFrame = function (frameIdx, shotMinute) {
             if (!videoEl) return;
-            if (frameIdx == null || frameIdx < 0) return;
+            
             // Switch to overview tab so the replay widget is visible
-            showTab('overview');
-            // 25 fps nominal video rate; lead in by 0.6 seconds so user sees play develop
-            const targetTime = Math.max(0, (frameIdx / 25.0) - 0.6);
+            if (typeof showTab === 'function') {
+                showTab('overview');
+            }
+
+            let targetTime = 0;
+            const validFrame = frameIdx != null && !isNaN(parseFloat(frameIdx)) && parseFloat(frameIdx) > 0;
+            if (validFrame) {
+                // 25 fps nominal video rate; lead in by 0.8s so user sees the play develop
+                targetTime = Math.max(0, (parseFloat(frameIdx) / 25.0) - 0.8);
+            } else if (shotMinute != null && !isNaN(parseFloat(shotMinute))) {
+                // Approximate from match minute if frame_idx not explicitly mapped
+                const maxDur = videoEl.duration || (90 * 60);
+                targetTime = Math.min(maxDur, Math.max(0, (parseFloat(shotMinute) * 60.0) - 2.0));
+            }
+
             videoEl.currentTime = targetTime;
             videoEl.play().catch(() => { });
 
-            // Visual pulse on the video container
-            const wrap = document.querySelector('.replay-video-wrap');
-            if (wrap) {
-                wrap.style.boxShadow = '0 0 0 3px #4FAE79, 0 8px 24px rgba(79, 174, 121, 0.35)';
-                setTimeout(() => { wrap.style.boxShadow = ''; }, 1200);
+            // Scroll side-replay-col into center view smoothly
+            const replayWrap = document.getElementById('replay-video-container') || document.querySelector('.side-replay-col') || document.querySelector('.replay-card');
+            if (replayWrap) {
+                replayWrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                replayWrap.style.transition = 'box-shadow 0.3s ease';
+                replayWrap.style.boxShadow = '0 0 0 3px #10b981, 0 0 32px rgba(16, 185, 129, 0.45)';
+                setTimeout(() => { replayWrap.style.boxShadow = ''; }, 1600);
             }
+
+            if (hudTime) hudTime.textContent = formatTime(targetTime);
+        };
+
+        window.seekVideoToGoal = function (minute, frameIdx) {
+            seekVideoToFrame(frameIdx, minute);
         };
 
         if (videoEl) {
@@ -106,7 +126,20 @@ const hudModeTag = document.getElementById('hud-mode-tag');
         function renderLineup(containerId, players) {
             const container = document.getElementById(containerId);
             if (!container) return;
-            container.innerHTML = players.map((p, i) => {
+
+            const indexed = players.map((p, idx) => ({ ...p, _origIndex: idx }));
+            let starters = indexed.filter(p => p.is_starting !== false);
+            let subs = indexed.filter(p => p.is_starting === false);
+
+            if (starters.length === 0) {
+                starters = indexed.slice(0, 11);
+                subs = indexed.slice(11);
+            } else if (starters.length > 11) {
+                subs = [...starters.slice(11), ...subs];
+                starters = starters.slice(0, 11);
+            }
+
+            const renderCard = (p) => {
                 let badgeHtml = '';
                 if (p.distance_is_real) {
                     badgeHtml = p.distance_confirmed
@@ -119,7 +152,7 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 if (p.passes_completed_is_real && p.passes_completed !== undefined) subStats.push(p.passes_completed + ' passes');
 
                 return `
-                <div class="lineup-row" onclick="openPlayer('${containerId}', ${i})">
+                <div class="lineup-row" onclick="openPlayer('${containerId}', ${p._origIndex})">
                     <div class="lineup-jersey">${p.jersey_number}</div>
                     <div class="lineup-info">
                         <div class="lineup-name">
@@ -127,10 +160,26 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                         </div>
                         <div class="lineup-position">${subStats.join(' · ')}</div>
                     </div>
-                    <div class="lineup-rating">${p.rating}</div>
+                    <div class="lineup-rating">${p.rating || '6.5'}</div>
                 </div>
-            `}).join('');
+            `;
+            };
+
+            let html = `
+                <div class="lineup-section-title">Starting XI (${starters.length})</div>
+                ${starters.map(renderCard).join('')}
+            `;
+
+            if (subs.length > 0) {
+                html += `
+                    <div class="lineup-section-title" style="margin-top: 14px;">Substitutes / Bench (${subs.length})</div>
+                    ${subs.map(renderCard).join('')}
+                `;
+            }
+
+            container.innerHTML = html;
         }
+
         renderLineup('lineup-home', homePlayers);
         renderLineup('lineup-away', awayPlayers);
 
@@ -139,26 +188,47 @@ const hudModeTag = document.getElementById('hud-mode-tag');
         let lineupPitchFilter = 'both';
 
         function detectFormation(players) {
+            const indexed = players.map((p, idx) => ({ ...p, _origIndex: idx }));
+            let starters = indexed.filter(p => p.is_starting !== false);
+            let subs = indexed.filter(p => p.is_starting === false);
+
+            if (starters.length === 0) {
+                starters = indexed.slice(0, 11);
+                subs = indexed.slice(11);
+            } else if (starters.length > 11) {
+                subs = [...starters.slice(11), ...subs];
+                starters = starters.slice(0, 11);
+            }
+
             const gks = [];
             const defs = [];
             const mids = [];
             const fwds = [];
 
-            players.forEach((p, idx) => {
-                const item = { ...p, _origIndex: idx };
+            starters.forEach((p) => {
                 const pos = (p.position || 'MID').toUpperCase();
-                if (pos === 'GK') gks.push(item);
-                else if (pos === 'DEF') defs.push(item);
-                else if (pos === 'FWD') fwds.push(item);
-                else mids.push(item);
+                if (pos === 'GK') {
+                    if (gks.length < 1) gks.push(p);
+                    else defs.push(p);
+                } else if (pos === 'DEF') {
+                    defs.push(p);
+                } else if (pos === 'FWD') {
+                    fwds.push(p);
+                } else {
+                    mids.push(p);
+                }
             });
 
-            const dCount = defs.length || 4;
-            const mCount = mids.length || 3;
-            const fCount = fwds.length || 3;
+            if (gks.length === 0 && starters.length > 0) {
+                gks.push(starters[0]);
+            }
+
+            const dCount = defs.length;
+            const mCount = mids.length;
+            const fCount = fwds.length;
             const label = `${dCount}-${mCount}-${fCount}`;
 
-            return { label, gks, defs, mids, fwds };
+            return { label, gks, defs, mids, fwds, starters, subs };
         }
 
         const homeFormation = detectFormation(homePlayers);
@@ -182,10 +252,18 @@ const hudModeTag = document.getElementById('hud-mode-tag');
             if (listAway) listAway.textContent = awayFormation.label;
 
             if (benchHome) {
-                benchHome.textContent = `${homeFormation.defs.length} Defenders · ${homeFormation.mids.length} Midfielders · ${homeFormation.fwds.length} Forwards`;
+                const subsNames = homeFormation.subs.map(s => '#' + s.jersey_number + ' ' + s.name).join(', ');
+                benchHome.innerHTML = `
+                    <div><strong>Starting XI:</strong> ${homeFormation.defs.length} Defenders · ${homeFormation.mids.length} Midfielders · ${homeFormation.fwds.length} Forwards</div>
+                    <div style="margin-top:4px; font-size:11px; color:#64748b;"><strong>Bench (${homeFormation.subs.length}):</strong> ${subsNames || 'None'}</div>
+                `;
             }
             if (benchAway) {
-                benchAway.textContent = `${awayFormation.defs.length} Defenders · ${awayFormation.mids.length} Midfielders · ${awayFormation.fwds.length} Forwards`;
+                const subsNames = awayFormation.subs.map(s => '#' + s.jersey_number + ' ' + s.name).join(', ');
+                benchAway.innerHTML = `
+                    <div><strong>Starting XI:</strong> ${awayFormation.defs.length} Defenders · ${awayFormation.mids.length} Midfielders · ${awayFormation.fwds.length} Forwards</div>
+                    <div style="margin-top:4px; font-size:11px; color:#64748b;"><strong>Bench (${awayFormation.subs.length}):</strong> ${subsNames || 'None'}</div>
+                `;
             }
         }
 
@@ -519,6 +597,18 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                     + '</span>';
             }
 
+            // Link to permanent player profile if available
+            const profileLink = document.getElementById('modal-player-profile-link');
+            if (profileLink) {
+                const targetPlayerId = p.player_id || p.id;
+                if (targetPlayerId) {
+                    profileLink.href = `/players/${targetPlayerId}/`;
+                    profileLink.style.display = 'flex';
+                } else {
+                    profileLink.style.display = 'none';
+                }
+            }
+
             document.getElementById('player-modal').classList.add('open');
         }
 
@@ -700,16 +790,15 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                     circle.addEventListener('mouseenter', (e) => highlightShot(idx, e));
                     circle.addEventListener('mousemove', (e) => updateTooltipPos(e));
                     circle.addEventListener('mouseleave', () => unhighlightShot(idx));
-                    circle.addEventListener('click', () => {
+                    circle.addEventListener('click', (e) => {
+                        e.stopPropagation();
                         const row = document.querySelector(`.shot-row[data-shot-index="${idx}"]`);
                         if (row) {
                             row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                             row.classList.add('active');
                             setTimeout(() => row.classList.remove('active'), 1500);
                         }
-                        if (shot.frame_idx != null) {
-                            seekVideoToFrame(shot.frame_idx);
-                        }
+                        seekVideoToFrame(shot.frame_idx, shot.minute);
                     });
 
                     shotNodeGroup.appendChild(circle);
@@ -1174,8 +1263,8 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 });
                 row.addEventListener('click', () => {
                     const shot = shotsData[idx];
-                    if (shot && shot.frame_idx != null) {
-                        seekVideoToFrame(shot.frame_idx);
+                    if (shot) {
+                        seekVideoToFrame(shot.frame_idx, shot.minute);
                     }
                 });
             });
@@ -1576,5 +1665,577 @@ const hudModeTag = document.getElementById('hud-mode-tag');
         }
 
         window.switchComparisonSubtab = switchComparisonSubtab;
+        window.onPlayerSelectionChange = onPlayerSelectionChange;
+        window.initComparisonStudio = initComparisonStudio;
+
+        // =========================================================================
+        // 🎨 INTERACTIVE TELESTRATOR & TACTICAL DRAWING ENGINE
+        // =========================================================================
+        let telestratorActive = false;
+        let teleTool = 'freehand';
+        let teleColor = '#06b6d4';
+        let teleLineWidth = 4;
+        let teleHistory = [];
+        let isDrawing = false;
+        let startPoint = null;
+        let currentPoints = [];
+
+        const teleCanvas = document.getElementById('telestrator-canvas');
+        const teleContainer = document.getElementById('replay-video-container');
+        const teleToolbar = document.getElementById('telestrator-toolbar');
+        let teleCtx = teleCanvas ? teleCanvas.getContext('2d') : null;
+
+        function resizeTelestratorCanvas() {
+            if (!teleCanvas || !teleContainer) return;
+            const rect = teleContainer.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            teleCanvas.width = rect.width * dpr;
+            teleCanvas.height = rect.height * dpr;
+            teleCanvas.style.width = rect.width + 'px';
+            teleCanvas.style.height = rect.height + 'px';
+            if (teleCtx) {
+                teleCtx.resetTransform();
+                teleCtx.scale(dpr, dpr);
+            }
+            redrawTelestrator();
+        }
+
+        window.toggleTelestrator = function () {
+            telestratorActive = !telestratorActive;
+            const toggleBtn = document.getElementById('btn-telestrator-toggle');
+            const hudTeleTag = document.getElementById('hud-tele-tag');
+
+            if (teleContainer) {
+                teleContainer.classList.toggle('telestrator-active', telestratorActive);
+            }
+            if (toggleBtn) {
+                toggleBtn.classList.toggle('active', telestratorActive);
+            }
+            if (teleToolbar) {
+                teleToolbar.style.display = telestratorActive ? 'block' : 'none';
+            }
+            if (hudTeleTag) {
+                hudTeleTag.style.display = telestratorActive ? 'inline-block' : 'none';
+            }
+
+            if (telestratorActive) {
+                resizeTelestratorCanvas();
+                if (videoEl && !videoEl.paused) {
+                    videoEl.pause();
+                }
+            }
+        };
+
+        window.setTelestratorTool = function (tool) {
+            teleTool = tool;
+            document.querySelectorAll('.tele-tool-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.tool === tool);
+            });
+        };
+
+        window.setTelestratorColor = function (color) {
+            teleColor = color;
+            document.querySelectorAll('.tele-color-swatch').forEach(sw => {
+                sw.classList.toggle('active', sw.dataset.color === color);
+            });
+        };
+
+        window.setTelestratorSize = function (size) {
+            teleLineWidth = parseInt(size, 10);
+            document.querySelectorAll('.tele-size-btn').forEach(btn => {
+                btn.classList.toggle('active', parseInt(btn.dataset.size, 10) === teleLineWidth);
+            });
+        };
+
+        window.undoTelestrator = function () {
+            if (teleHistory.length > 0) {
+                teleHistory.pop();
+                redrawTelestrator();
+            }
+        };
+
+        window.clearTelestrator = function () {
+            teleHistory = [];
+            redrawTelestrator();
+        };
+
+        function getCanvasCoords(evt) {
+            if (!teleCanvas) return { x: 0, y: 0 };
+            const rect = teleCanvas.getBoundingClientRect();
+            const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+            const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top
+            };
+        }
+
+        function drawArrowHead(ctx, fromX, fromY, toX, toY, headLength = 16) {
+            const angle = Math.atan2(toY - fromY, toX - fromX);
+            ctx.beginPath();
+            ctx.moveTo(toX, toY);
+            ctx.lineTo(toX - headLength * Math.cos(angle - Math.PI / 6), toY - headLength * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(toX - (headLength * 0.6) * Math.cos(angle), toY - (headLength * 0.6) * Math.sin(angle));
+            ctx.lineTo(toX - headLength * Math.cos(angle + Math.PI / 6), toY - headLength * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function renderShape(ctx, shape) {
+            ctx.save();
+            ctx.strokeStyle = shape.color;
+            ctx.fillStyle = shape.color;
+            ctx.lineWidth = shape.lineWidth;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            if (shape.type === 'freehand') {
+                if (!shape.points || shape.points.length < 2) {
+                    ctx.restore();
+                    return;
+                }
+                ctx.beginPath();
+                ctx.moveTo(shape.points[0].x, shape.points[0].y);
+                for (let i = 1; i < shape.points.length; i++) {
+                    ctx.lineTo(shape.points[i].x, shape.points[i].y);
+                }
+                ctx.stroke();
+            } else if (shape.type === 'arrow') {
+                const { start, end } = shape;
+                ctx.beginPath();
+                ctx.moveTo(start.x, start.y);
+                ctx.lineTo(end.x, end.y);
+                ctx.stroke();
+                drawArrowHead(ctx, start.x, start.y, end.x, end.y, Math.max(12, shape.lineWidth * 3.5));
+            } else if (shape.type === 'spotlight') {
+                const { start, end } = shape;
+                const rx = Math.max(15, Math.abs(end.x - start.x));
+                const ry = Math.max(8, rx * 0.45); // Perspective flattened oval for pitch
+
+                // Outer halo glow
+                ctx.fillStyle = shape.color + '22';
+                ctx.beginPath();
+                ctx.ellipse(start.x, start.y, rx * 1.3, ry * 1.3, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Inner core ring
+                ctx.beginPath();
+                ctx.ellipse(start.x, start.y, rx, ry, 0, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // Central spotlight beam effect
+                ctx.fillStyle = shape.color + '33';
+                ctx.beginPath();
+                ctx.ellipse(start.x, start.y, rx, ry, 0, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (shape.type === 'distance') {
+                const { start, end } = shape;
+                ctx.setLineDash([4, 4]);
+                ctx.beginPath();
+                ctx.moveTo(start.x, start.y);
+                ctx.lineTo(end.x, end.y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Ticks at endpoints
+                const angle = Math.atan2(end.y - start.y, end.x - start.x);
+                const perp = angle + Math.PI / 2;
+                const tickLen = 8;
+                ctx.beginPath();
+                ctx.moveTo(start.x - tickLen * Math.cos(perp), start.y - tickLen * Math.sin(perp));
+                ctx.lineTo(start.x + tickLen * Math.cos(perp), start.y + tickLen * Math.sin(perp));
+                ctx.moveTo(end.x - tickLen * Math.cos(perp), end.y - tickLen * Math.sin(perp));
+                ctx.lineTo(end.x + tickLen * Math.cos(perp), end.y + tickLen * Math.sin(perp));
+                ctx.stroke();
+
+                // Distance calculation estimate (scaled to 105m pitch)
+                const pxDist = Math.hypot(end.x - start.x, end.y - start.y);
+                const rect = teleCanvas.getBoundingClientRect();
+                const estimatedMeters = ((pxDist / (rect.width || 600)) * 68.0).toFixed(1);
+
+                const midX = (start.x + end.x) / 2;
+                const midY = (start.y + end.y) / 2;
+
+                // Pill label
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+                ctx.strokeStyle = shape.color;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.roundRect(midX - 28, midY - 12, 56, 24, 6);
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.fillStyle = '#f8fafc';
+                ctx.font = 'bold 11px system-ui, -apple-system, sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`${estimatedMeters}m`, midX, midY);
+            } else if (shape.type === 'zone') {
+                const { start, end } = shape;
+                const x = Math.min(start.x, end.x);
+                const y = Math.min(start.y, end.y);
+                const w = Math.abs(end.x - start.x);
+                const h = Math.abs(end.y - start.y);
+
+                ctx.fillStyle = shape.color + '2b';
+                ctx.setLineDash([6, 4]);
+                ctx.beginPath();
+                ctx.roundRect(x, y, w, h, 8);
+                ctx.fill();
+                ctx.stroke();
+                ctx.setLineDash([]);
+            } else if (shape.type === 'text') {
+                const { start, text } = shape;
+                if (!text) {
+                    ctx.restore();
+                    return;
+                }
+                ctx.font = 'bold 12px system-ui, -apple-system, sans-serif';
+                const textWidth = ctx.measureText(text).width;
+
+                ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+                ctx.strokeStyle = shape.color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.roundRect(start.x, start.y - 14, textWidth + 16, 28, 6);
+                ctx.fill();
+                ctx.stroke();
+
+                ctx.fillStyle = '#ffffff';
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(text, start.x + 8, start.y);
+            }
+
+            ctx.restore();
+        }
+
+        function redrawTelestrator() {
+            if (!teleCtx || !teleCanvas) return;
+            const rect = teleCanvas.getBoundingClientRect();
+            teleCtx.clearRect(0, 0, rect.width, rect.height);
+
+            for (const shape of teleHistory) {
+                renderShape(teleCtx, shape);
+            }
+
+            if (isDrawing && startPoint) {
+                if (teleTool === 'freehand') {
+                    renderShape(teleCtx, {
+                        type: 'freehand',
+                        color: teleColor,
+                        lineWidth: teleLineWidth,
+                        points: currentPoints
+                    });
+                } else if (['arrow', 'spotlight', 'distance', 'zone'].includes(teleTool) && currentPoints.length > 0) {
+                    renderShape(teleCtx, {
+                        type: teleTool,
+                        color: teleColor,
+                        lineWidth: teleLineWidth,
+                        start: startPoint,
+                        end: currentPoints[currentPoints.length - 1]
+                    });
+                }
+            }
+        }
+
+        if (teleCanvas) {
+            const startDrawing = (evt) => {
+                if (!telestratorActive) return;
+                evt.preventDefault();
+
+                const autoPauseEl = document.getElementById('tele-autopause');
+                if ((!autoPauseEl || autoPauseEl.checked) && videoEl && !videoEl.paused) {
+                    videoEl.pause();
+                }
+
+                isDrawing = true;
+                startPoint = getCanvasCoords(evt);
+                currentPoints = [startPoint];
+
+                if (teleTool === 'text') {
+                    const note = prompt('Enter Tactical Note / Tag:', 'Exploit Half-Space');
+                    if (note && note.trim()) {
+                        teleHistory.push({
+                            type: 'text',
+                            color: teleColor,
+                            lineWidth: teleLineWidth,
+                            start: startPoint,
+                            text: note.trim()
+                        });
+                        redrawTelestrator();
+                    }
+                    isDrawing = false;
+                }
+            };
+
+            const moveDrawing = (evt) => {
+                if (!isDrawing || !telestratorActive) return;
+                evt.preventDefault();
+                const pt = getCanvasCoords(evt);
+                currentPoints.push(pt);
+                redrawTelestrator();
+            };
+
+            const stopDrawing = (evt) => {
+                if (!isDrawing || !telestratorActive) return;
+                isDrawing = false;
+                if (currentPoints.length > 0) {
+                    if (teleTool === 'freehand') {
+                        teleHistory.push({
+                            type: 'freehand',
+                            color: teleColor,
+                            lineWidth: teleLineWidth,
+                            points: [...currentPoints]
+                        });
+                    } else if (['arrow', 'spotlight', 'distance', 'zone'].includes(teleTool)) {
+                        teleHistory.push({
+                            type: teleTool,
+                            color: teleColor,
+                            lineWidth: teleLineWidth,
+                            start: startPoint,
+                            end: currentPoints[currentPoints.length - 1]
+                        });
+                    }
+                }
+                startPoint = null;
+                currentPoints = [];
+                redrawTelestrator();
+            };
+
+            teleCanvas.addEventListener('mousedown', startDrawing);
+            teleCanvas.addEventListener('mousemove', moveDrawing);
+            teleCanvas.addEventListener('mouseup', stopDrawing);
+            teleCanvas.addEventListener('mouseleave', stopDrawing);
+
+            teleCanvas.addEventListener('touchstart', startDrawing, { passive: false });
+            teleCanvas.addEventListener('touchmove', moveDrawing, { passive: false });
+            teleCanvas.addEventListener('touchend', stopDrawing);
+        }
+
+        window.exportTelestratorSnapshot = function () {
+            if (!teleCanvas || !videoEl) return;
+
+            const offCanvas = document.createElement('canvas');
+            const targetW = videoEl.videoWidth || teleCanvas.width || 1280;
+            const targetH = videoEl.videoHeight || teleCanvas.height || 720;
+            offCanvas.width = targetW;
+            offCanvas.height = targetH;
+            const offCtx = offCanvas.getContext('2d');
+
+            try {
+                // Render base video frame
+                offCtx.drawImage(videoEl, 0, 0, targetW, targetH);
+            } catch (err) {
+                // If tainted by CORS, fill pitch-dark backdrop
+                offCtx.fillStyle = '#0f172a';
+                offCtx.fillRect(0, 0, targetW, targetH);
+            }
+
+            // Scale factor to map telestrator coordinates to native resolution
+            const rect = teleCanvas.getBoundingClientRect();
+            const scaleX = targetW / (rect.width || targetW);
+            const scaleY = targetH / (rect.height || targetH);
+
+            offCtx.save();
+            offCtx.scale(scaleX, scaleY);
+            for (const shape of teleHistory) {
+                renderShape(offCtx, shape);
+            }
+            offCtx.restore();
+
+            // Tactical Scorebug / Watermark Header
+            offCtx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            offCtx.fillRect(16, 16, 320, 48);
+            offCtx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
+            offCtx.lineWidth = 1.5;
+            offCtx.strokeRect(16, 16, 320, 48);
+
+            offCtx.fillStyle = '#10b981';
+            offCtx.font = 'bold 13px system-ui, sans-serif';
+            offCtx.fillText(`${HOME_TEAM_NAME} vs ${AWAY_TEAM_NAME}`, 28, 36);
+
+            offCtx.fillStyle = '#94a3b8';
+            offCtx.font = '11px monospace';
+            offCtx.fillText(`Tactical Telestrator • ${formatTime(videoEl.currentTime)}`, 28, 52);
+
+            // Convert to download link
+            offCanvas.toBlob((blob) => {
+                if (!blob) return;
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Tactical_Telestrator_${HOME_TEAM_SHORT}_vs_${AWAY_TEAM_SHORT}_${Math.round(videoEl.currentTime)}s.png`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 'image/png');
+        };
+
+        window.addEventListener('resize', resizeTelestratorCanvas);
+
+        // Global hotkeys (T for Telestrator, Esc to close/deactivate, Ctrl+Z for Undo)
+        document.addEventListener('keydown', (e) => {
+            if (['input', 'textarea', 'select'].includes((e.target.tagName || '').toLowerCase())) return;
+            if (e.key === 't' || e.key === 'T') {
+                toggleTelestrator();
+            } else if (e.key === 'Escape') {
+                if (telestratorActive) toggleTelestrator();
+                closeClipStudioModal();
+                closeModal();
+            } else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+                if (telestratorActive) {
+                    e.preventDefault();
+                    undoTelestrator();
+                }
+            }
+        });
+
+
+        // =========================================================================
+        // ✂️ EVENT VIDEO CLIP STUDIO CONTROLLER
+        // =========================================================================
+        let clipLoopInterval = null;
+
+        window.openClipStudioModal = function (startSec = 0, endSec = 10, title = 'Match_Highlight') {
+            const modal = document.getElementById('clip-studio-modal');
+            const previewVideo = document.getElementById('clip-preview-video');
+            const titleInput = document.getElementById('clip-title-input');
+            const startInput = document.getElementById('clip-start-input');
+            const endInput = document.getElementById('clip-end-input');
+
+            if (titleInput) titleInput.value = title;
+            if (startInput) startInput.value = Math.max(0, startSec).toFixed(1);
+            if (endInput) endInput.value = Math.max(startSec + 1, endSec).toFixed(1);
+
+            if (previewVideo && videoEl) {
+                previewVideo.src = videoEl.src;
+                previewVideo.currentTime = startSec;
+            }
+
+            updateClipStudioRange();
+            if (modal) modal.classList.add('open');
+        };
+
+        window.closeClipStudioModal = function () {
+            const modal = document.getElementById('clip-studio-modal');
+            const previewVideo = document.getElementById('clip-preview-video');
+            if (modal) modal.classList.remove('open');
+            if (previewVideo) {
+                previewVideo.pause();
+            }
+            if (clipLoopInterval) {
+                clearInterval(clipLoopInterval);
+                clipLoopInterval = null;
+            }
+        };
+
+        window.openClipStudioAtCurrent = function () {
+            const cur = videoEl ? videoEl.currentTime : 0;
+            const start = Math.max(0, cur - 4);
+            const end = cur + 6;
+            openClipStudioModal(start, end, `Play_${Math.round(cur)}s`);
+        };
+
+        window.quickExportShotClip = function (frameIdx, label) {
+            const shotSec = Math.max(0, (frameIdx / 25.0));
+            const startSec = Math.max(0, shotSec - 4.5);
+            const endSec = shotSec + 5.5;
+            const cleanTitle = (label || 'Shot_Moment').replace(/[^a-zA-Z0-9_\-]/g, '_');
+            const mode = currentVideoMode || 'annotated';
+            const exportUrl = `/matches/${MATCH_PUBLIC_ID}/export/clip/?start=${startSec.toFixed(1)}&end=${endSec.toFixed(1)}&mode=${mode}&title=${cleanTitle}`;
+
+            // Trigger instant download via hidden link
+            const a = document.createElement('a');
+            a.href = exportUrl;
+            a.download = `${cleanTitle}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        };
+
+        window.setClipPresetAroundCurrent = function (presetSec) {
+            const cur = videoEl ? videoEl.currentTime : 0;
+            const startInput = document.getElementById('clip-start-input');
+            const endInput = document.getElementById('clip-end-input');
+            if (startInput) startInput.value = Math.max(0, cur - presetSec / 2).toFixed(1);
+            if (endInput) endInput.value = (cur + presetSec / 2).toFixed(1);
+            updateClipStudioRange();
+            previewClipLoop();
+        };
+
+        window.updateClipStudioRange = function () {
+            const startInput = document.getElementById('clip-start-input');
+            const endInput = document.getElementById('clip-end-input');
+            const badge = document.getElementById('clip-duration-badge');
+            const rangeDisplay = document.getElementById('clip-range-display');
+
+            const startVal = parseFloat(startInput?.value || 0);
+            const endVal = parseFloat(endInput?.value || 10);
+            const duration = Math.max(0.5, endVal - startVal);
+
+            if (badge) badge.textContent = `Duration: ${duration.toFixed(1)}s`;
+            if (rangeDisplay) rangeDisplay.textContent = `${formatTime(startVal)} → ${formatTime(endVal)}`;
+        };
+
+        window.previewClipLoop = function () {
+            const previewVideo = document.getElementById('clip-preview-video');
+            const startInput = document.getElementById('clip-start-input');
+            const endInput = document.getElementById('clip-end-input');
+
+            if (!previewVideo) return;
+            const start = parseFloat(startInput?.value || 0);
+            const end = parseFloat(endInput?.value || 10);
+
+            if (clipLoopInterval) {
+                clearInterval(clipLoopInterval);
+            }
+
+            previewVideo.currentTime = start;
+            previewVideo.play().catch(() => {});
+
+            clipLoopInterval = setInterval(() => {
+                if (previewVideo.currentTime >= end || previewVideo.currentTime < start) {
+                    previewVideo.currentTime = start;
+                }
+            }, 100);
+        };
+
+        window.triggerClipDownload = function () {
+            const titleInput = document.getElementById('clip-title-input');
+            const startInput = document.getElementById('clip-start-input');
+            const endInput = document.getElementById('clip-end-input');
+            const statusBox = document.getElementById('clip-export-status');
+            const modeRadio = document.querySelector('input[name="clip-mode"]:checked');
+
+            const title = (titleInput?.value || 'Highlight').trim();
+            const start = parseFloat(startInput?.value || 0);
+            const end = parseFloat(endInput?.value || 10);
+            const mode = modeRadio ? modeRadio.value : 'annotated';
+
+            if (statusBox) {
+                statusBox.className = 'clip-export-status info';
+                statusBox.style.display = 'block';
+                statusBox.textContent = '⏳ Rendering and cutting MP4 sub-clip with FFmpeg...';
+            }
+
+            const exportUrl = `/matches/${MATCH_PUBLIC_ID}/export/clip/?start=${start.toFixed(1)}&end=${end.toFixed(1)}&mode=${mode}&title=${encodeURIComponent(title)}`;
+
+            // Create download trigger
+            const a = document.createElement('a');
+            a.href = exportUrl;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+
+            setTimeout(() => {
+                if (statusBox) {
+                    statusBox.textContent = '✅ Sub-clip generation dispatched! Check your downloads.';
+                    setTimeout(() => { statusBox.style.display = 'none'; }, 4000);
+                }
+            }, 1500);
+        };
+
         window.onPlayerSelectionChange = onPlayerSelectionChange;
         window.initComparisonStudio = initComparisonStudio;
