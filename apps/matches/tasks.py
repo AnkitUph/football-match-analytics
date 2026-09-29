@@ -1464,12 +1464,15 @@ def compute_pitch_mapping(self, match_id):
     except Exception:
         pass
 
+    match.status = Match.MatchStatus.COMPLETED
+    match.processing_progress = 100
+    match.save(update_fields=["status", "processing_progress", "updated_at"])
+
     # Ensure annotated replay video is refreshed asynchronously if this was a post-match recalibration
-    if match.status == Match.MatchStatus.COMPLETED:
-        try:
-            render_match_video.delay(match.id)
-        except Exception:
-            logger.exception("Failed to dispatch render_match_video for match=%s", match.id)
+    try:
+        render_match_video.delay(match.id)
+    except Exception:
+        logger.exception("Failed to dispatch render_match_video for match=%s", match.id)
 
 
 @shared_task
