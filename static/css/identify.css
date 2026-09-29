@@ -179,6 +179,14 @@
     transition: var(--transition-smooth);
 }
 
+.player-card select optgroup {
+    background-color: #1e293b !important;
+    color: #38bdf8 !important;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 6px 4px;
+}
+
 .player-card select option {
     background-color: #0f172a !important;
     color: #f8fafc !important;

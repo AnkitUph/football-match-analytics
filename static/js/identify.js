@@ -25,10 +25,31 @@
 
         function optionsHtml(track) {
             const opts = ['<option value="">Unassigned</option>'];
-            (track.lineup_options || []).forEach(entry => {
-                const selected = entry.id === track.assigned_lineup_entry_id ? 'selected' : '';
-                opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}</option>`);
-            });
+            const assignedId = track.assigned_lineup_entry_id;
+            const topCandidates = track.top_candidates || [];
+            const allOptions = track.lineup_options || [];
+
+            if (topCandidates.length > 0) {
+                opts.push('<optgroup label="✨ Top AI Suggestions">');
+                topCandidates.forEach(cand => {
+                    const selected = cand.lineup_entry_id === assignedId ? 'selected' : '';
+                    opts.push(`<option value="${cand.lineup_entry_id}" ${selected}>#${cand.jersey_number} ${cand.player_name}</option>`);
+                });
+                opts.push('</optgroup>');
+
+                opts.push('<optgroup label="📋 Full Squad Lineup">');
+                allOptions.forEach(entry => {
+                    const alreadyInTop = topCandidates.some(c => c.lineup_entry_id === entry.id);
+                    const selected = (!alreadyInTop && entry.id === assignedId) ? 'selected' : '';
+                    opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}</option>`);
+                });
+                opts.push('</optgroup>');
+            } else {
+                allOptions.forEach(entry => {
+                    const selected = entry.id === assignedId ? 'selected' : '';
+                    opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}</option>`);
+                });
+            }
             return opts.join('');
         }
 

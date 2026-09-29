@@ -1258,11 +1258,33 @@ def identify_players(request, public_id):
         track_ids = {t["track_id"] for t in tracks}
         crops_b64 = _extract_track_crops_base64(video.original_video.path, csv_content, track_ids)
 
+    from ai_engine.stage5_pitch_mapping.formation_matcher import match_tracks_to_lineup_hungarian
+
+    home_tracks = [t for t in tracks if t["team"] == Team.TEAM_A.value]
+    away_tracks = [t for t in tracks if t["team"] == Team.TEAM_B.value]
+
+    home_lineup_objs = list(match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number"))
+    away_lineup_objs = list(match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number"))
+
+    _, home_top_cand = match_tracks_to_lineup_hungarian(
+        [{"track_id": t["track_id"], "median_x": t.get("median_x", 0.0), "median_y": t.get("median_y", 0.0), "duration": t.get("frames_tracked", 100)} for t in home_tracks],
+        home_lineup_objs,
+        formation_name=getattr(match, "home_formation", "4-3-3"),
+        defending_left=True,
+    )
+    _, away_top_cand = match_tracks_to_lineup_hungarian(
+        [{"track_id": t["track_id"], "median_x": t.get("median_x", 0.0), "median_y": t.get("median_y", 0.0), "duration": t.get("frames_tracked", 100)} for t in away_tracks],
+        away_lineup_objs,
+        formation_name=getattr(match, "away_formation", "4-3-3"),
+        defending_left=False,
+    )
+
     for t in tracks:
         ident = existing.get(t["track_id"])
         t["assigned_lineup_entry_id"] = ident.lineup_entry_id if ident else None
         t["is_auto_assigned"] = ident.is_auto_assigned if ident else False
         t["lineup_options"] = home_lineup if t["team"] == Team.TEAM_A.value else away_lineup
+        t["top_candidates"] = home_top_cand.get(t["track_id"], []) if t["team"] == Team.TEAM_A.value else away_top_cand.get(t["track_id"], [])
         t["crop_b64"] = crops_b64.get(t["track_id"])
 
     context = {

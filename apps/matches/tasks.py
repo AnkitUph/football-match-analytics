@@ -1517,6 +1517,8 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
     side_by_team = {Team.TEAM_A: MatchLineup.Side.HOME, Team.TEAM_B: MatchLineup.Side.AWAY}
     CAP_PER_SIDE = 11
 
+    from ai_engine.stage5_pitch_mapping.formation_matcher import match_tracks_to_lineup_hungarian
+
     to_create = []
 
     for team_enum, side in side_by_team.items():
@@ -1531,7 +1533,7 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
         if not team_identities:
             continue
 
-        ident_meta = {}
+        track_summaries = []
         for ident in team_identities:
             pts = list(ident.trajectory.values())
             x_vals = [p.x_m for p in pts]
@@ -1540,14 +1542,18 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
             med_y = float(np.median(y_vals)) if y_vals else 0.0
             cls_val = cls_by_track.get(ident.master_id)
             is_gk = (cls_val in (ObjectClass.GOALKEEPER, "goalkeeper")) or (getattr(ident, "cls", None) in (ObjectClass.GOALKEEPER, "goalkeeper")) or (abs(med_x) > 38.0)
-            ident_meta[ident.master_id] = {
-                "identity": ident,
+            track_summaries.append({
+                "track_id": ident.master_id,
+                "median_x": med_x,
+                "median_y": med_y,
                 "duration": len(ident.trajectory),
-                "med_x": med_x,
-                "med_y": med_y,
                 "is_gk": is_gk,
-                "jersey": ident.jersey_number,
-            }
+                "jersey_number": ident.jersey_number,
+            })
+
+        # Prioritize top duration tracks
+        track_summaries.sort(key=lambda t: -t["duration"])
+        track_summaries = track_summaries[:CAP_PER_SIDE]
 
         available_lineups = list(
             match.lineups.filter(side=side)
@@ -1557,85 +1563,24 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
         if not available_lineups:
             continue
 
-        assigned_pairs = []
-        unmatched_idents = set(ident_meta.keys())
-        unmatched_lineups = {l.id: l for l in available_lineups}
-
-        # 1. Direct Jersey Match: if OCR caught a jersey number, match directly
-        for tid in list(unmatched_idents):
-            j_num = ident_meta[tid]["jersey"]
-            if j_num is not None:
-                match_l = next((l for l in unmatched_lineups.values() if l.jersey_number == j_num), None)
-                if match_l:
-                    assigned_pairs.append((tid, match_l.id))
-                    unmatched_idents.remove(tid)
-                    unmatched_lineups.pop(match_l.id)
-
-        # 2. Goalkeeper Match: match GK lineup entry with GK-classified or deepest goal identity
-        gk_lineup = next(
-            (l for l in unmatched_lineups.values() if (l.position or "").upper() in ("GK", "GOALKEEPER") or l.jersey_number == 1),
-            None
-        )
-        if gk_lineup and unmatched_idents:
-            gk_candidates = [tid for tid in unmatched_idents if ident_meta[tid]["is_gk"]]
-            if not gk_candidates:
-                gk_candidates = sorted(unmatched_idents, key=lambda tid: -abs(ident_meta[tid]["med_x"]))
-            best_gk_tid = max(gk_candidates, key=lambda tid: ident_meta[tid]["duration"])
-            assigned_pairs.append((best_gk_tid, gk_lineup.id))
-            unmatched_idents.remove(best_gk_tid)
-            unmatched_lineups.pop(gk_lineup.id)
-
-        # 3. Position-Aware Formation Match for Outfield Starters:
-        # Determine team defending direction from average position of tracks
-        all_med_x = [ident_meta[tid]["med_x"] for tid in ident_meta]
+        formation_str = getattr(match, "home_formation", "4-3-3") if side == MatchLineup.Side.HOME else getattr(match, "away_formation", "4-3-3")
+        formation_str = formation_str or "4-3-3"
+        all_med_x = [t["median_x"] for t in track_summaries]
         defending_left = (np.mean(all_med_x) <= 0) if all_med_x else True
 
-        def attack_depth(tid):
-            x = ident_meta[tid]["med_x"]
-            return x if defending_left else -x
+        assigned_pairs, _ = match_tracks_to_lineup_hungarian(
+            track_summaries, available_lineups, formation_name=formation_str, defending_left=defending_left
+        )
 
-        def pos_rank(lineup):
-            p = (lineup.position or "").upper()
-            if "DEF" in p or "DF" in p or "BACK" in p:
-                return 1
-            if "MID" in p or "MF" in p:
-                return 2
-            if "FWD" in p or "FW" in p or "ATT" in p or "ST" in p or "WING" in p:
-                return 3
-            return 4
-
-        starters = [l for l in unmatched_lineups.values() if l.is_starting]
-        subs = [l for l in unmatched_lineups.values() if not l.is_starting]
-        sorted_lineups = sorted(starters, key=lambda l: (pos_rank(l), l.jersey_number)) + sorted(subs, key=lambda l: (pos_rank(l), l.jersey_number))
-
-        # Select top duration tracks first so starters receive active tracks
-        slots_remaining = max(CAP_PER_SIDE - existing_count_by_side.get(side, 0) - len(assigned_pairs), 0)
-        usable_lineups = sorted_lineups[:slots_remaining]
-
-        outfield_candidates = [tid for tid in unmatched_idents if not ident_meta[tid]["is_gk"]]
-        if not outfield_candidates:
-            outfield_candidates = list(unmatched_idents)
-
-        top_tracks = sorted(outfield_candidates, key=lambda tid: -ident_meta[tid]["duration"])[:len(usable_lineups)]
-        # Order those top tracks from defense to attack
-        top_tracks_by_pos = sorted(top_tracks, key=lambda tid: attack_depth(tid))
-
-        for tid, l in zip(top_tracks_by_pos, usable_lineups):
-            assigned_pairs.append((tid, l.id))
-            if tid in unmatched_idents:
-                unmatched_idents.remove(tid)
-            if l.id in unmatched_lineups:
-                unmatched_lineups.pop(l.id)
-
-        for tid, lid in assigned_pairs:
+        for a in assigned_pairs:
             to_create.append(TrackPlayerIdentification(
                 match=match,
-                track_id=tid,
-                lineup_entry_id=lid,
+                track_id=a["track_id"],
+                lineup_entry_id=a["lineup_entry_id"],
                 is_auto_assigned=True,
             ))
-            already_claimed_lineup_ids.add(lid)
-            already_assigned_track_ids.add(tid)
+            already_claimed_lineup_ids.add(a["lineup_entry_id"])
+            already_assigned_track_ids.add(a["track_id"])
             existing_count_by_side[side] += 1
 
     if to_create:

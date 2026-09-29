@@ -137,7 +137,7 @@ def match_tracklets_within_shot(
         a_end_frame = a.detections[-1].frame_idx
         a_end_pos = a.detections[-1].center
         for j, b in enumerate(survivors):
-            if i == j:
+            if i == j or a.team != b.team:
                 continue
             gap = b.detections[0].frame_idx - a_end_frame
             if 0 < gap < max_gap_frames:

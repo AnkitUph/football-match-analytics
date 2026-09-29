@@ -81,7 +81,7 @@ def perceptual_kit_distance(bgr1: np.ndarray, bgr2: np.ndarray, l_weight: float 
 def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
     """
     Samples a tight chest-region crop, dynamically decouples pitch grass pixels using
-    HSV hue isolation, and returns the median BGR color of the jersey fabric.
+    HSV hue and saturation isolation, and returns the median BGR color of the jersey fabric.
     Returns None if the crop is too small or empty.
     """
     if crop is None or crop.size == 0:
@@ -90,18 +90,17 @@ def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
     if h < 15 or w < 8:
         return None
 
-    # Sample chest region: 20%-45% vertical, 25%-75% horizontal
-    torso = crop[int(h * 0.20):int(h * 0.45), int(w * 0.25):int(w * 0.75)]
+    # Sample chest region: 18%-45% vertical, 22%-78% horizontal
+    torso = crop[int(h * 0.18):int(h * 0.45), int(w * 0.22):int(w * 0.78)]
     if torso.size == 0:
         return None
 
     try:
-        # Decouple green pitch turf using HSV hue
-        # Pitch grass has hue in [35, 85] with saturation >= 35
+        # Decouple green pitch turf using HSV hue [32, 88] and saturation >= 25
         hsv_torso = cv2.cvtColor(torso, cv2.COLOR_BGR2HSV)
-        grass = (hsv_torso[:, :, 0] >= 35) & (hsv_torso[:, :, 0] <= 85) & (hsv_torso[:, :, 1] >= 35)
-        # If not almost the entire torso is grass (which would happen for a green kit)
-        if np.mean(grass) < 0.75:
+        grass = (hsv_torso[:, :, 0] >= 32) & (hsv_torso[:, :, 0] <= 88) & (hsv_torso[:, :, 1] >= 25) & (hsv_torso[:, :, 2] >= 25)
+        # If not almost the entire torso is grass (which would happen only for a full neon green kit)
+        if np.mean(grass) < 0.80:
             non_grass = torso[~grass]
             if len(non_grass) >= 12:
                 return np.median(non_grass.astype(np.float32), axis=0)
@@ -368,6 +367,16 @@ def classify_teams_with_dinov2(
             result[tid] = classify_team_by_known_colors(
                 track_colors[tid], home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, is_gk=True
             )
+        elif home_bgr is not None and away_bgr is not None and tid in track_colors:
+            col = track_colors[tid]
+            dh = perceptual_kit_distance(col, home_bgr)
+            da = perceptual_kit_distance(col, away_bgr)
+            # If individual color clearly favors one team kit, honor ground truth color
+            if abs(da - dh) >= 12.0:
+                result[tid] = Team.TEAM_A if dh < da else Team.TEAM_B
+            else:
+                assigned_team = (Team.TEAM_A if c0_is_team_a else Team.TEAM_B) if l == 0 else (Team.TEAM_B if c0_is_team_a else Team.TEAM_A)
+                result[tid] = assigned_team
         else:
             if l == 0:
                 result[tid] = Team.TEAM_A if c0_is_team_a else Team.TEAM_B
