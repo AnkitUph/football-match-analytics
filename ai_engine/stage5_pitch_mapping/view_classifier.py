@@ -123,3 +123,40 @@ def classify_video_views(
 
     cap.release()
     return results
+
+
+def get_non_tactical_frame_ranges(video_path: str, stride: int = 10) -> list[tuple[int, int]]:
+    """
+    Fast single-pass scanner to find all non-tactical broadcast intervals
+    (replays, close-ups, dugout/crowd cuts, graphic wipes).
+    """
+    cap = cv2.VideoCapture(video_path)
+    classifier = ViewClassifier()
+    non_tactical_ranges: list[tuple[int, int]] = []
+    f_idx = 0
+    in_non_tactical = False
+    start_f = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if f_idx % stride == 0:
+            res = classifier.classify_frame(frame, f_idx)
+            # Tactical sideline view requires sufficient pitch grass and stadium stands in top quarter
+            is_tactical = (res.green_ratio >= 0.45 and res.top_green_ratio <= 0.35)
+            if not is_tactical:
+                if not in_non_tactical:
+                    in_non_tactical = True
+                    start_f = f_idx
+            else:
+                if in_non_tactical:
+                    in_non_tactical = False
+                    non_tactical_ranges.append((start_f, f_idx))
+        f_idx += 1
+
+    cap.release()
+    if in_non_tactical:
+        non_tactical_ranges.append((start_f, f_idx))
+    return non_tactical_ranges
+

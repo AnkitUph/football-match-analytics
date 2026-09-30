@@ -81,94 +81,117 @@ class IdentityGallery:
             identity.reid_embedding = blended.tolist()
 
 
-def match_tracklets_within_shot(
+def build_unified_master_identity_table(
     tracklets: list[Tracklet],
     config: PitchMappingConfig,
-    fps: float,
-    max_gap_frames: int = 30,
-    max_stitch_distance_px: float = 80.0,
-) -> list[Tracklet]:
+    fps: float = 25.0,
+    homography_by_frame: dict[int, np.ndarray] | None = None,
+    max_gap_frames: int = 75,
+    max_stitch_distance_px: float = 100.0,
+    max_stitch_distance_m: float = 6.5,
+) -> tuple[list[Tracklet], dict[int, int]]:
     """
-    Regime 1: spatial + Hungarian matching within one continuous shot.
+    Area 3a & 3d: Unified Master Identity Table & Metric Pitch Graph Stitcher.
 
-    VALIDATED against real footage (test_11.avi, BoT-SORT output): 120 raw
-    tracklets -> 56 after duration filtering -> 37 after stitching. Real,
-    meaningful reduction, though still above the ~22-25 theoretical count
-    (players+ref+GK) — some fragmentation remains that pure spatial
-    proximity can't resolve (gaps > max_gap_frames, or player movement
-    exceeding max_stitch_distance_px between frames). Closing that
-    remaining gap is what Stage 3's Re-ID embeddings (second-pass) are
-    for — this function intentionally does NOT try to solve it with ad
-    hoc looser thresholds, since that risks false-merging different
-    players instead.
+    Constructs a 100% deterministic map `raw_track_id -> stitched_id` while
+    consolidating fragmented tracklets across camera cuts and tracking gaps.
 
-    Step 1: filter out tracklets shorter than
-    config.min_tracklet_duration_sec — cheap noise removal (in the
-    validated test, this alone cut 120 -> 56).
-
-    Step 2: build a cost matrix between every survivor's END point and
-    every other survivor's START point (cost = pixel distance, only
-    considered if the start occurs shortly after the end within
-    max_gap_frames). Solve via Hungarian assignment
-    (scipy.optimize.linear_sum_assignment) rather than greedy pairing —
-    validated as necessary on real data, since several tracklets had
-    multiple ambiguous candidates and greedy matching risks picking the
-    wrong one.
-
-    Step 3: merge matched pairs via union-find, so multi-hop chains (A
-    stitches to B, B stitches to C) correctly collapse into one tracklet
-    rather than needing multiple passes.
-
-    Team is resolved per merged group via majority vote across the
-    fragments' individually-classified teams (call Stage 3's
-    classify_team on each fragment before this function, same as any
-    other single tracklet).
+    Hard Constraints:
+    - Overlapping tracklets (active in same frame) can NEVER merge.
+    - Tracklets belonging to different teams can NEVER merge.
+    - Referees (Team.REFEREE) are isolated from player tracklet merging.
     """
+    from ai_engine.stage5_pitch_mapping.homography import image_point_to_pitch
+
     min_duration_frames = int(config.min_tracklet_duration_sec * fps)
     survivors = [t for t in tracklets if t.duration_frames >= min_duration_frames]
 
+    id_mapping: dict[int, int] = {t.track_id: t.track_id for t in tracklets}
+
     n = len(survivors)
     if n == 0:
-        return []
+        return tracklets, id_mapping
 
     INF = 1e6
     cost = np.full((n, n), INF)
+
     for i, a in enumerate(survivors):
-        a_end_frame = a.detections[-1].frame_idx
-        a_end_pos = a.detections[-1].center
+        a_frames = {d.frame_idx for d in a.detections}
+        a_end_det = a.detections[-1]
+        a_end_frame = a_end_det.frame_idx
+        a_end_pos = a_end_det.center
+
+        # Pitch-space coordinate if homography is available
+        a_pitch_pt = None
+        if homography_by_frame and a_end_frame in homography_by_frame:
+            fx, fy = a_end_pos[0], a_end_det.y2
+            a_pitch_pt = image_point_to_pitch(fx, fy, homography_by_frame[a_end_frame])
+
         for j, b in enumerate(survivors):
-            if i == j or a.team != b.team:
+            if i == j or a.team != b.team or a.cls != b.cls:
                 continue
-            gap = b.detections[0].frame_idx - a_end_frame
+
+            b_frames = {d.frame_idx for d in b.detections}
+            # Hard constraint 1: Anti-overlap
+            if a_frames & b_frames:
+                continue
+
+            b_start_det = b.detections[0]
+            gap = b_start_det.frame_idx - a_end_frame
             if 0 < gap < max_gap_frames:
-                b_start_pos = b.detections[0].center
-                dist = float(np.hypot(a_end_pos[0] - b_start_pos[0], a_end_pos[1] - b_start_pos[1]))
-                if dist < max_stitch_distance_px:
-                    cost[i, j] = dist
+                b_start_pos = b_start_det.center
+                pixel_dist = float(np.hypot(a_end_pos[0] - b_start_pos[0], a_end_pos[1] - b_start_pos[1]))
+
+                # Check pitch distance if available
+                pitch_dist = None
+                if homography_by_frame and b_start_det.frame_idx in homography_by_frame and a_pitch_pt is not None:
+                    bfx, bfy = b_start_pos[0], b_start_det.y2
+                    b_pitch_pt = image_point_to_pitch(bfx, bfy, homography_by_frame[b_start_det.frame_idx])
+                    pitch_dist = float(np.hypot(a_pitch_pt.x_m - b_pitch_pt.x_m, a_pitch_pt.y_m - b_pitch_pt.y_m))
+
+                if pitch_dist is not None:
+                    if pitch_dist <= max_stitch_distance_m:
+                        cost[i, j] = pitch_dist * 10.0 + (gap * 0.1)
+                elif pixel_dist < max_stitch_distance_px:
+                    cost[i, j] = pixel_dist + (gap * 0.2)
 
     row_ind, col_ind = linear_sum_assignment(cost)
     merges = [(i, j) for i, j in zip(row_ind, col_ind) if cost[i, j] < INF]
 
     parent = {t.track_id: t.track_id for t in survivors}
+    group_frames = {t.track_id: {d.frame_idx for d in t.detections} for t in survivors}
 
     def find(x: int) -> int:
+        path = []
         while parent[x] != x:
+            path.append(x)
             x = parent[x]
+        for node in path:
+            parent[node] = x
         return x
 
     for i, j in merges:
-        parent[find(survivors[j].track_id)] = find(survivors[i].track_id)
+        root_i = find(survivors[i].track_id)
+        root_j = find(survivors[j].track_id)
+        if root_i == root_j:
+            continue
+        # Hard transitive anti-overlap check: root groups must never share any active frame!
+        if group_frames[root_i] & group_frames[root_j]:
+            continue
+        parent[root_j] = root_i
+        group_frames[root_i].update(group_frames[root_j])
 
     groups: dict[int, list[Tracklet]] = {}
     for t in survivors:
-        groups.setdefault(find(t.track_id), []).append(t)
+        root = find(t.track_id)
+        id_mapping[t.track_id] = root
+        groups.setdefault(root, []).append(t)
 
     merged_tracklets = []
     for root, members in groups.items():
         members.sort(key=lambda m: m.detections[0].frame_idx)
         team_votes = Counter(m.team for m in members)
 
-        # Preserve highest-confidence jersey recognition across merged tracklet fragments
         best_jersey = None
         best_conf = 0.0
         for m in members:
@@ -191,7 +214,27 @@ def match_tracklets_within_shot(
             merged.detections.extend(m.detections)
         merged_tracklets.append(merged)
 
-    return merged_tracklets
+    # Ensure any tracklets that were below min_duration_frames are retained as standalone tracklets
+    short_tracklets = [t for t in tracklets if t.duration_frames < min_duration_frames]
+    merged_tracklets.extend(short_tracklets)
+
+    return merged_tracklets, id_mapping
+
+
+def match_tracklets_within_shot(
+    tracklets: list[Tracklet],
+    config: PitchMappingConfig,
+    fps: float,
+    max_gap_frames: int = 30,
+    max_stitch_distance_px: float = 80.0,
+) -> list[Tracklet]:
+    """
+    Backwards-compatible wrapper around build_unified_master_identity_table.
+    """
+    merged, _ = build_unified_master_identity_table(
+        tracklets, config, fps=fps, max_gap_frames=max_gap_frames, max_stitch_distance_px=max_stitch_distance_px
+    )
+    return merged
 
 
 def assign_tracklets_to_gallery(

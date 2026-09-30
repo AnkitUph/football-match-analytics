@@ -154,8 +154,8 @@ def detect_passes(
         dt_sec = max(0.04, dt_frames / 25.0)
         speed = round(dist / dt_sec, 1)
 
-        # Kinematic filters: pass must cover at least 2.0m, take >= 2 frames, and speed <= 45.0 m/s
-        if dist < 2.0 or dt_frames < 2 or speed > 45.0:
+        # Kinematic filters: pass must cover at least 4.5m, take >= 3 frames, and speed <= 32.0 m/s
+        if dist < 4.5 or dt_frames < 3 or speed > 32.0:
             continue
 
         events.append(
@@ -332,8 +332,8 @@ def detect_passes_with_metadata(
         dt_sec = max(0.04, dt_frames / fps)
         speed = round(dist / dt_sec, 1)
 
-        # Kinematic filters: discard instantaneous 1-frame or unphysical teleports
-        if dist < 2.0 or dt_frames < 2 or speed > 45.0:
+        # Kinematic filters: discard micro-distance nudges, instantaneous blips, or unphysical teleports
+        if dist < 4.5 or dt_frames < 3 or speed > 32.0:
             continue
 
         is_completed = (t1 == t2)
@@ -576,9 +576,10 @@ def detect_shots(
     min_origin_distance_m: float = 1.0,
     max_origin_distance_m: float = 35.0,
     min_alignment: float = 0.88,
-    cooldown_frames: int = 200,
+    cooldown_frames: int = 60,
     identities: list[MasterIdentity] | None = None,
     pass_intervals: list[tuple[int, int]] | None = None,
+    celebration_intervals: list[tuple[int, int]] | None = None,
 ) -> list[Event]:
     """
     Detects genuine shots on goal:
@@ -675,7 +676,7 @@ def detect_shots(
                     ((goal_center_pitch[0] - p.x_m) ** 2 + (goal_center_pitch[1] - p.y_m) ** 2) ** 0.5
                     for p in future_pts
                 )
-                min_approach = 5.0 if origin_dist <= 12.0 else 7.5
+                min_approach = max(1.5, origin_dist * 0.20) if origin_dist <= 16.5 else 6.0
                 if (origin_dist - min_future_dist) < min_approach:
                     continue  # Did not travel sufficiently towards goal
             else:
@@ -732,9 +733,28 @@ def detect_shots(
                 post_net_pts = [ball_map[f] for f in range(first_net_frame + 1, first_net_frame + 35) if f in ball_map]
                 rebounded = any(p.x_m * goal_dir < 48.0 for p in post_net_pts)
                 net_count = sum(1 for p in post_net_pts if p.x_m * goal_dir >= 51.5)
-                if not rebounded and net_count >= 5:
+                # Physical deceleration check: A ball entering the net decelerates sharply (< 15 m/s).
+                # A ball flying OVER the crossbar into the stands maintains high projectile speed (> 18 m/s).
+                fast_over_bar = False
+                if len(post_net_pts) >= 2:
+                    fast_over_bar = any(
+                        ((post_net_pts[k+1].x_m - post_net_pts[k].x_m)**2 + (post_net_pts[k+1].y_m - post_net_pts[k].y_m)**2)**0.5 * 25.0 > 18.0
+                        for k in range(len(post_net_pts) - 1)
+                    )
+                if not rebounded and net_count >= 5 and not fast_over_bar:
                     is_goal = True
                     is_on_target = True
+
+            # Broadcast goal verification:
+            # If a shot on target inside the attacking zone is followed within 150 frames (6s)
+            # by an extended broadcast celebration/replay cut (>= 450 frames / 18s)
+            if not is_goal and celebration_intervals and is_on_target and origin_dist <= 22.0 and alignment >= 0.85:
+                has_major_cut = any(
+                    0 <= (cut_start - current.frame_idx) <= 150 and (cut_end - cut_start) >= 450
+                    for cut_start, cut_end in celebration_intervals
+                )
+                if has_major_cut:
+                    is_goal = True
 
             events.append(
                 Event(
@@ -773,6 +793,14 @@ def detect_shots(
                 clusters.append((grp[0], grp[-1]))
 
         for start_net, end_net in clusters:
+            # Broadcast celebration requirement for occluded net-settling detection
+            if celebration_intervals:
+                has_major_cut = any(
+                    0 <= (cut_start - start_net) <= 200 and (cut_end - cut_start) >= 250
+                    for cut_start, cut_end in celebration_intervals
+                )
+                if not has_major_cut:
+                    continue
             # Check if a shot was already recorded within 150 frames before start_net
             matching_shots = [
                 e for e in events

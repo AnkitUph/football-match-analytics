@@ -68,6 +68,7 @@ def stitch_tracklets(
 
     # Disjoint Set / Union-Find for track IDs
     parent = {tid: tid for tid in sorted_tids}
+    group_frames = {tid: {d.frame_idx for d in spans[tid]["dets"]} for tid in sorted_tids}
 
     def find(i):
         path = []
@@ -81,12 +82,19 @@ def stitch_tracklets(
     def union(i, j):
         root_i = find(i)
         root_j = find(j)
-        if root_i != root_j:
-            # Keep the earlier track as root
-            if spans[root_i]["start_f"] <= spans[root_j]["start_f"]:
-                parent[root_j] = root_i
-            else:
-                parent[root_i] = root_j
+        if root_i == root_j:
+            return False
+        # HARD ANTI-OVERLAP CONSTRAINT: Never merge tracklets that share any active frame
+        if group_frames[root_i] & group_frames[root_j]:
+            return False
+        # Keep the earlier track as root
+        if spans[root_i]["start_f"] <= spans[root_j]["start_f"]:
+            parent[root_j] = root_i
+            group_frames[root_i].update(group_frames[root_j])
+        else:
+            parent[root_i] = root_j
+            group_frames[root_j].update(group_frames[root_i])
+        return True
 
     merges_done = 0
 
@@ -97,13 +105,19 @@ def stitch_tracklets(
             continue
 
         meta1 = spans[tid1]
+        root1 = find(tid1)
         best_tid2 = None
         best_sim = similarity_thresh
 
         for j in range(i + 1, len(sorted_tids)):
             tid2 = sorted_tids[j]
+            root2 = find(tid2)
             # Cannot merge if already part of same master track
-            if find(tid1) == find(tid2):
+            if root1 == root2:
+                continue
+
+            # Hard anti-overlap check: root groups must not share any active frames
+            if group_frames[root1] & group_frames[root2]:
                 continue
 
             emb2 = track_embeddings.get(tid2)
@@ -116,16 +130,16 @@ def stitch_tracklets(
             if meta1["cls"] != meta2["cls"]:
                 continue
 
-            # 2. Temporal ordering & gap constraint (allow slight overlap of up to 6 frames during handoff)
+            # 2. Strict temporal ordering & gap constraint (no negative gaps or overlaps)
             gap = meta2["start_f"] - meta1["end_f"]
-            if gap < -6 or gap > max_gap_frames:
+            if gap <= 0 or gap > max_gap_frames:
                 continue
 
             # 3. Spatial displacement sanity (in pixels)
             dx = meta2["start_center"][0] - meta1["end_center"][0]
             dy = meta2["start_center"][1] - meta1["end_center"][1]
             dist_px = np.hypot(dx, dy)
-            max_allowed_dist_px = max(80.0, max(gap, 0) * 12.0)
+            max_allowed_dist_px = min(180.0, max(60.0, gap * 8.0))
             if dist_px > max_allowed_dist_px:
                 continue
 
@@ -136,8 +150,8 @@ def stitch_tracklets(
                 best_tid2 = tid2
 
         if best_tid2 is not None:
-            union(tid1, best_tid2)
-            merges_done += 1
+            if union(tid1, best_tid2):
+                merges_done += 1
 
     logger.info(f"Stitched {merges_done} tracklet fragments into persistent tracks")
 

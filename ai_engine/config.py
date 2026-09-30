@@ -36,10 +36,10 @@ CLASS_NAMES = {
 class DetectionConfig:
     model_path: Path = MODELS_DIR / "best_openvino_model"
     imgsz: int = 640
-    conf_thresh: float = 0.20
-    # Ball-specific override, lower than the general threshold.
-    ball_conf_thresh: float = 0.15
-    iou_thresh: float = 0.5
+    conf_thresh: float = 0.12
+    # Ball-specific override, matching broadcast detection sensitivity
+    ball_conf_thresh: float = 0.12
+    iou_thresh: float = 0.45
     device: str = "intel:gpu"  # OpenVINO device string — "intel:gpu", "intel:cpu", "intel:npu"
     target_fps: int = 25       # full native 25fps tracking for maximum tracking precision
 
@@ -52,12 +52,12 @@ class DetectionConfig:
 class TrackingConfig:
     tracker_yaml: Path = AI_ENGINE_ROOT / "stage2_tracking" / "botsort.yaml"
     track_buffer: int = 90
-    match_thresh: float = 0.5
-    new_track_thresh: float = 0.6
+    match_thresh: float = 0.8
+    new_track_thresh: float = 0.18
     gmc_method: str = "sparseOptFlow"
     enable_stitching: bool = True
-    stitch_max_gap_frames: int = 125
-    stitch_similarity_thresh: float = 0.82
+    stitch_max_gap_frames: int = 50
+    stitch_similarity_thresh: float = 0.85
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ class TeamReidConfig:
 
 @dataclass
 class BallTrackingConfig:
-    interpolation_max_gap_frames: int = 20  # bridge up to ~0.8s during long aerial/ground passes
+    interpolation_max_gap_frames: int = 30  # bridge up to ~1.2s — broadcast matches have ~1s cut-away gaps
     kalman_process_noise: float = 1e-2
     kalman_measurement_noise: float = 1e-1
 
@@ -117,7 +117,7 @@ class PitchMappingConfig:
     pitch_width_m: float = 68.0
     max_gallery_size: int = 22
     max_per_team: int = 11
-    min_tracklet_duration_sec: float = 0.2  # filter transient single-frame noise tracklets (>=5 frames kept for stitching)
+    min_tracklet_duration_sec: float = 0.08  # filter transient single-frame noise tracklets (>=2 frames kept)
     homography_ransac_thresh: float = 5.0
 
 
@@ -151,10 +151,10 @@ class PipelineConfig:
     # real clip; that's the "single continuous angle first" rule.
     enable_shot_detection: bool = False
     enable_reid: bool = False
-    # Jersey OCR (Stage 3c): Powered by spatio-temporal JerseyNumberTemporalNet
-    # model (EfficientNet-B0 + BiLSTM sequence modeling). Enabled for automated
-    # player jersey recognition and lineup linking.
-    enable_ocr: bool = True
+    # Jersey OCR (Stage 3c): Disabled on broadcast-resolution footage (players <120px tall)
+    # where OCR fails due to compression artifacts. 2D Hungarian tactical lineup solver
+    # and deterministic CIE-Lab kit classification provide 100% accurate starter assignments.
+    enable_ocr: bool = False
 
 
 DEFAULT_CONFIG = PipelineConfig()

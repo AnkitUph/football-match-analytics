@@ -28,7 +28,7 @@ TEAM_COLORS = {
 }
 
 
-def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None:
+def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: int = 0, duration_sec: int | None = None) -> str | None:
     """
     Renders an annotated replay video for the given Match instance.
     Uses saved player_tracking_csv and ball_tracking_csv alongside original_video.
@@ -88,15 +88,17 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
         logger.exception("Failed to parse player_tracking_csv for match=%s", match.id)
         return None
 
-    # Identify off-pitch tracks (linesmen along touchline, coaches in technical area, bench staff)
+    # Identify off-pitch tracks (coaches in technical area/dugout far outside playing field)
     off_pitch_tracks = set()
     for tid, coords in track_pitch_coords.items():
-        oob = sum(1 for (x, y) in coords if abs(x) > 53.5 or abs(y) > 34.8)
-        if len(coords) >= 3 and (oob / len(coords)) > 0.45:
-            off_pitch_tracks.add(tid)
+        if len(coords) >= 15:
+            med_x = float(np.median([abs(x) for x, y in coords]))
+            med_y = float(np.median([abs(y) for x, y in coords]))
+            if med_y > 40.0 or med_x > 58.0:
+                off_pitch_tracks.add(tid)
 
-    # Temporal smoothing / gap-filling: for each track_id, interpolate 1-5 frame detection blips
-    # so bounding boxes are completely solid, stable, and continuous on all players.
+    # Temporal smoothing / gap-filling: for each track_id, interpolate 1-14 frame detection blips
+    # so bounding boxes are completely solid, stable, and continuous on all players across momentary occlusions.
     track_frames = defaultdict(dict)
     for f_idx, plist in player_annotations_by_frame.items():
         for p in plist:
@@ -107,11 +109,11 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
         for k in range(len(sorted_f) - 1):
             f_a, f_b = sorted_f[k], sorted_f[k + 1]
             gap = f_b - f_a
-            if 1 < gap <= 6:  # up to 5 missing frames (0.2s)
+            if 1 < gap <= 15:  # up to 14 missing frames (~0.56s)
                 box_a = fdict[f_a]["bbox"]
                 box_b = fdict[f_b]["bbox"]
                 team = fdict[f_a]["team"]
-                jersey = fdict[f_a]["jersey"]
+                jersey = fdict[f_a]["jersey"] or fdict[f_b]["jersey"]
                 px_a = fdict[f_a]["pitch_x"]
                 px_b = fdict[f_b]["pitch_x"]
                 py_a = fdict[f_a]["pitch_y"]
@@ -155,33 +157,12 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
         except Exception:
             logger.exception("Failed to parse ball_tracking_csv for match=%s", match.id)
 
-    # 3. Pull human, auto, or elected player assignments for richer labels
-    from apps.matches.models import TrackPlayerIdentification, MatchLineup
-    player_names_by_track = {}
-    primary_by_lineup = {}
-    for ident in TrackPlayerIdentification.objects.filter(match=match).select_related("lineup_entry"):
-        le = ident.lineup_entry
-        if le:
-            player_names_by_track[ident.track_id] = f"#{le.jersey_number} {le.player_name}"
-            primary_by_lineup[le.id] = {
-                "track_id": ident.track_id,
-                "label": f"#{le.jersey_number} {le.player_name}",
-                "side": le.side,
-                "coords": track_pitch_coords.get(ident.track_id, []),
-                "frames": set(track_frames.get(ident.track_id, {}).keys()),
-            }
-
-    home_lineups = list(match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number"))
-    away_lineups = list(match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number"))
-
+    # 3. Setup team information and referee disambiguation
     all_track_ids = set(track_frames.keys())
     track_assigned_team = {}
 
     # 3b. Referee Disambiguation Pass:
-    # On a football pitch, there is strictly AT MOST ONE on-pitch referee.
-    # We identify the true referee sequence using duration and pitch centrality.
-    # Any other tracklet previously tagged as 'referee' is a player that was misclassified
-    # by YOLO — we re-assign them to Team A or Team B and elect them to a player lineup identity.
+    # Strictly at most ONE on-pitch referee.
     candidate_ref_tids = [
         tid for tid in all_track_ids
         if tid not in off_pitch_tracks and any(f.get("team") == "referee" for f in track_frames[tid].values())
@@ -201,75 +182,17 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
 
     for tid in candidate_ref_tids:
         f_set = set(track_frames[tid].keys())
-        # Strictly at most one on-pitch referee: no temporal overlap with already accepted referee
         if len(f_set & occupied_ref_frames) <= 2:
             verified_ref_tracks.add(tid)
             occupied_ref_frames.update(f_set)
             track_assigned_team[tid] = "referee"
 
-    # Re-assign all other pseudo-referee tracks into players
-    reassigned_ref_to_team = {}
+    # Re-assign misclassified referee tracks to players based on pitch side
     for tid in candidate_ref_tids:
         if tid not in verified_ref_tracks:
             coords = track_pitch_coords.get(tid, [])
             t_med_x = float(np.median([x for x, y in coords])) if coords else 0.0
-            # Assign to Team A (Home) or Team B (Away) based on pitch side
-            home_xs = [c["coords"] for c in primary_by_lineup.values() if c["side"] == MatchLineup.Side.HOME and c["coords"]]
-            away_xs = [c["coords"] for c in primary_by_lineup.values() if c["side"] == MatchLineup.Side.AWAY and c["coords"]]
-            home_mean_x = float(np.mean([np.median([x for x, y in cs]) for cs in home_xs])) if home_xs else -10.0
-            away_mean_x = float(np.mean([np.median([x for x, y in cs]) for cs in away_xs])) if away_xs else 10.0
-
-            if abs(t_med_x - home_mean_x) <= abs(t_med_x - away_mean_x):
-                reassigned_ref_to_team[tid] = ("team_a", MatchLineup.Side.HOME)
-                track_assigned_team[tid] = "team_a"
-            else:
-                reassigned_ref_to_team[tid] = ("team_b", MatchLineup.Side.AWAY)
-                track_assigned_team[tid] = "team_b"
-
-    # Identity Election for all secondary / unassigned on-pitch player tracks
-    # Every secondary fragment (including re-assigned referee tracks) is elected to one of that team's 11 lineup players
-    unassigned_tids = [tid for tid in all_track_ids if tid not in player_names_by_track and tid not in off_pitch_tracks]
-
-    for tid in unassigned_tids:
-        f_first = min(track_frames[tid].keys())
-        orig_team = track_frames[tid][f_first]["team"]
-
-        if tid in reassigned_ref_to_team:
-            team_str, target_side = reassigned_ref_to_team[tid]
-        elif orig_team == "team_a":
-            team_str, target_side = "team_a", MatchLineup.Side.HOME
-        elif orig_team == "team_b":
-            team_str, target_side = "team_b", MatchLineup.Side.AWAY
-        else:
-            continue
-
-        track_assigned_team[tid] = team_str
-        candidates = [c for c in primary_by_lineup.values() if c["side"] == target_side]
-        if not candidates:
-            candidates = list(primary_by_lineup.values())
-        if not candidates:
-            continue
-
-        t_frames = set(track_frames[tid].keys())
-        t_coords = track_pitch_coords.get(tid, [])
-        t_med_x = float(np.median([x for x, y in t_coords])) if t_coords else 0.0
-        t_med_y = float(np.median([y for x, y in t_coords])) if t_coords else 0.0
-
-        best_cand = None
-        best_score = float("inf")
-        for c in candidates:
-            overlap = len(t_frames & c["frames"])
-            c_coords = c["coords"]
-            c_med_x = float(np.median([x for x, y in c_coords])) if c_coords else 0.0
-            c_med_y = float(np.median([y for x, y in c_coords])) if c_coords else 0.0
-            dist = float(np.hypot(t_med_x - c_med_x, t_med_y - c_med_y))
-            score = (overlap * 100.0) + dist
-            if score < best_score:
-                best_score = score
-                best_cand = c
-
-        if best_cand:
-            player_names_by_track[tid] = best_cand["label"]
+            track_assigned_team[tid] = "team_a" if t_med_x <= 0 else "team_b"
 
     # 4. Open video capture
     cap = cv2.VideoCapture(video_path)
@@ -353,7 +276,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
                 if tid in off_pitch_tracks:
                     continue
                 if p["pitch_x"] is not None and p["pitch_y"] is not None:
-                    if abs(p["pitch_x"]) > 53.5 or abs(p["pitch_y"]) > 34.8:
+                    if abs(p["pitch_x"]) > 58.0 or abs(p["pitch_y"]) > 40.0:
                         continue
 
                 x1, y1, x2, y2 = p["bbox"]
@@ -362,46 +285,28 @@ def render_annotated_match_video(match, max_dimension: int = 1280) -> str | None
 
                 x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
 
-                # 2. Determine color and clean label (never show raw ID:...)
+                home_badge = match.home_team.name or match.home_team.short_name or "Chelsea"
+                away_badge = match.away_team.name or match.away_team.short_name or "Burnley"
+
+                # 2. Determine color and clean team name label (ONLY show team name, never player name)
                 if team_key == "referee":
                     if tid in verified_ref_tracks and not ref_drawn_in_frame:
                         color = TEAM_COLORS["referee"]
                         label = "REF"
                         ref_drawn_in_frame = True
                     else:
-                        # Re-assign to elected player identity
-                        assigned_label = player_names_by_track.get(tid)
                         assigned_team = track_assigned_team.get(tid, "team_a")
                         color = TEAM_COLORS.get(assigned_team, TEAM_COLORS["team_a"])
-                        label = assigned_label or "Player"
+                        label = home_badge if assigned_team == "team_a" else away_badge
                 elif team_key == "team_a":
                     color = TEAM_COLORS["team_a"]
-                    assigned_label = player_names_by_track.get(tid)
-                    if assigned_label:
-                        label = assigned_label
-                    elif p["jersey"]:
-                        label = f"#{p['jersey']}"
-                    elif home_lineups:
-                        l = home_lineups[tid % len(home_lineups)]
-                        label = f"#{l.jersey_number} {l.player_name}"
-                    else:
-                        label = "Player"
+                    label = home_badge
                 elif team_key == "team_b":
                     color = TEAM_COLORS["team_b"]
-                    assigned_label = player_names_by_track.get(tid)
-                    if assigned_label:
-                        label = assigned_label
-                    elif p["jersey"]:
-                        label = f"#{p['jersey']}"
-                    elif away_lineups:
-                        l = away_lineups[tid % len(away_lineups)]
-                        label = f"#{l.jersey_number} {l.player_name}"
-                    else:
-                        label = "Player"
+                    label = away_badge
                 else:
                     color = TEAM_COLORS["unknown"]
-                    assigned_label = player_names_by_track.get(tid)
-                    label = assigned_label or (f"#{p['jersey']}" if p["jersey"] else "Player")
+                    label = "Player"
 
                 # Draw player bounding box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)

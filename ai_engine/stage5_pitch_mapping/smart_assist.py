@@ -52,7 +52,51 @@ def detect_pitch_keypoints(frame_bgr, api_key=None, confidence_threshold=0.35, m
     landmarks_by_index = {l["roboflow_index"]: l for l in ROBOFLOW_KEYPOINTS_32}
     h_frame, w_frame = frame_bgr.shape[:2]
 
-    # --- Mode 1: Local YOLOv8-Pose Pitch Keypoint Model (Zero API latency) ---
+    # --- Mode 1: Roboflow Cloud API (High-accuracy broadcast model) ---
+    if api_key:
+        ok, buf = cv2.imencode(".jpg", frame_bgr)
+        if ok:
+            img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+            try:
+                resp = requests.post(
+                    f"https://detect.roboflow.com/{ROBOFLOW_MODEL_ID}",
+                    params={"api_key": api_key},
+                    data=img_b64,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=15,
+                )
+                if resp.ok:
+                    result = resp.json()
+                    predictions = result.get("predictions")
+                    if predictions and len(predictions) > 0:
+                        suggestions = []
+                        for kp in predictions[0].get("keypoints", []):
+                            conf = kp.get("confidence", 0)
+                            if conf < confidence_threshold:
+                                continue
+                            kx, ky = kp.get("x", -1), kp.get("y", -1)
+                            if kx < 0 or kx >= w_frame or ky < 0 or ky >= h_frame:
+                                continue
+                            roboflow_index = kp["class_id"] + 1
+                            landmark = landmarks_by_index.get(roboflow_index)
+                            if landmark is None:
+                                continue
+                            suggestions.append({
+                                "landmark_id": landmark["id"],
+                                "label": landmark["label"],
+                                "pixel_x": float(kx),
+                                "pixel_y": float(ky),
+                                "pitch_x": landmark["x"],
+                                "pitch_y": landmark["y"],
+                                "confidence": float(conf),
+                            })
+                        if len(suggestions) >= 4:
+                            suggestions.sort(key=lambda s: -s["confidence"])
+                            return suggestions[:max_points]
+            except Exception as e:
+                _logger.debug("Roboflow cloud API request error (%s), attempting local fallback", e)
+
+    # --- Mode 2: Local YOLOv8-Pose Pitch Keypoint Model Fallback ---
     local_model = _get_local_pitch_model()
     if local_model is not None:
         try:
@@ -86,59 +130,6 @@ def detect_pitch_keypoints(frame_bgr, api_key=None, confidence_threshold=0.35, m
                     suggestions.sort(key=lambda s: -s["confidence"])
                     return suggestions[:max_points]
         except Exception as e:
-            _logger.debug("Local pitch keypoint prediction error (%s), attempting fallback", e)
+            _logger.debug("Local pitch keypoint prediction error (%s)", e)
 
-    # --- Mode 2: Roboflow Cloud API Fallback ---
-    if not api_key:
-        return []
-
-    ok, buf = cv2.imencode(".jpg", frame_bgr)
-    if not ok:
-        return []
-
-    img_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
-
-    try:
-        resp = requests.post(
-            f"https://detect.roboflow.com/{ROBOFLOW_MODEL_ID}",
-            params={"api_key": api_key},
-            data=img_b64,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=15,
-        )
-        result = resp.json()
-    except Exception:
-        return []
-
-    predictions = result.get("predictions")
-    if not predictions:
-        return []
-
-    landmarks_by_index = {l["roboflow_index"]: l for l in ROBOFLOW_KEYPOINTS_32}
-
-    h_frame, w_frame = frame_bgr.shape[:2]
-    suggestions = []
-    for kp in predictions[0].get("keypoints", []):
-        confidence = kp.get("confidence", 0)
-        if confidence < confidence_threshold:
-            continue
-        # Ensure point is strictly inside visible frame boundaries
-        kx, ky = kp.get("x", -1), kp.get("y", -1)
-        if kx < 0 or kx >= w_frame or ky < 0 or ky >= h_frame:
-            continue
-        roboflow_index = kp["class_id"] + 1  # NOT kp["class"] — see docstring above
-        landmark = landmarks_by_index.get(roboflow_index)
-        if landmark is None:
-            continue
-        suggestions.append({
-            "landmark_id": landmark["id"],
-            "label": landmark["label"],
-            "pixel_x": kx,
-            "pixel_y": ky,
-            "pitch_x": landmark["x"],
-            "pitch_y": landmark["y"],
-            "confidence": confidence,
-        })
-
-    suggestions.sort(key=lambda s: -s["confidence"])
-    return suggestions[:max_points]
+    return []

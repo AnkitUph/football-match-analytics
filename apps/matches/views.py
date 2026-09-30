@@ -8,6 +8,7 @@ import tempfile
 import os
 
 import cv2
+import numpy as np
 
 from django.conf import settings
 from django.contrib import messages
@@ -1169,7 +1170,7 @@ def _extract_track_crops_base64(video_path, player_tracking_csv_content, track_i
         if track_id not in track_ids:
             continue
         x1, y1, x2, y2 = float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"])
-        detections_by_track[track_id].append((int(row["frame_idx"]), x1, y1, x2, y2, (x2 - x1) * (y2 - y1)))
+        detections_by_track[track_id].append((int(row["frame_idx"]), x1, y1, x2, y2))
 
     crops_b64 = {tid: None for tid in track_ids}
 
@@ -1178,36 +1179,70 @@ def _extract_track_crops_base64(video_path, player_tracking_csv_content, track_i
         cap.release()
         return crops_b64
 
+    frame_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1920.0
+    frame_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 1080.0
+
     try:
         for track_id in track_ids:
             dets = detections_by_track.get(track_id, [])
             if not dets:
                 continue
 
-            # Largest-area candidates first (closer to camera = more
-            # pixels), THEN sorted by frame_idx so any seeking within
-            # this one track's candidates at least moves forward.
-            candidates = sorted(dets, key=lambda d: d[5], reverse=True)[:candidates_per_track]
+            # Sample up to 15 evenly spaced candidate frames across the tracklet's lifetime
+            indices = np.linspace(0, len(dets) - 1, min(15, len(dets)), dtype=int)
+            candidates = [dets[i] for i in indices]
             candidates.sort(key=lambda d: d[0])
 
-            best_crop, best_sharpness = None, -1.0
-            for frame_idx, x1, y1, x2, y2, _area in candidates:
+            best_crop = None
+            best_score = -1.0
+
+            for frame_idx, x1, y1, x2, y2 in candidates:
+                w = x2 - x1
+                h = y2 - y1
+                if w <= 8.0 or h <= 15.0:
+                    continue
+
+                # Upright human posture prior (ideal aspect ratio h/w ~ 2.2)
+                aspect = h / max(w, 1.0)
+                aspect_weight = float(np.exp(-0.5 * ((aspect - 2.2) / 0.7) ** 2))
+
+                # Boundary penalty (penalize truncated players touching frame borders)
+                edge_penalty = 1.0
+                if x1 < 8.0 or y1 < 8.0 or x2 > (frame_w - 8.0) or y2 > (frame_h - 8.0):
+                    edge_penalty = 0.25
+
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ok, frame = cap.read()
                 if not ok:
                     continue
-                xi1, yi1, xi2, yi2 = int(max(x1, 0)), int(max(y1, 0)), int(x2), int(y2)
+
+                xi1, yi1 = max(0, int(x1)), max(0, int(y1))
+                xi2, yi2 = min(int(frame_w), int(x2)), min(int(frame_h), int(y2))
                 crop = frame[yi1:yi2, xi1:xi2]
-                if crop.size == 0:
+                if crop.size == 0 or crop.shape[0] < 15 or crop.shape[1] < 8:
                     continue
+
                 gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-                sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-                if sharpness > best_sharpness:
-                    best_sharpness = sharpness
+                lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+                # Composite visual quality score
+                score = lap_var * aspect_weight * edge_penalty * np.log1p(h)
+                if score > best_score:
+                    best_score = score
                     best_crop = crop
 
             if best_crop is not None:
-                ok, buf = cv2.imencode(".jpg", best_crop)
+                # Enhance visual rendering: high-quality Lanczos scaling for card display
+                ch, cw = best_crop.shape[:2]
+                if ch < 200 and cw > 10:
+                    scale = 200.0 / ch
+                    nw, nh = int(cw * scale), 200
+                    best_crop = cv2.resize(best_crop, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
+                    # Subtle unsharp mask for crisp texture
+                    gaussian = cv2.GaussianBlur(best_crop, (0, 0), 1.5)
+                    best_crop = cv2.addWeighted(best_crop, 1.25, gaussian, -0.25, 0)
+
+                ok, buf = cv2.imencode(".jpg", best_crop, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
                 if ok:
                     crops_b64[track_id] = base64.b64encode(buf.tobytes()).decode("ascii")
     finally:
@@ -1241,8 +1276,8 @@ def identify_players(request, public_id):
 
     tracks = _load_track_summaries(getattr(match, "files", None), match=match)
 
-    home_lineup = list(match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number").values("id", "jersey_number", "player_name"))
-    away_lineup = list(match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number").values("id", "jersey_number", "player_name"))
+    home_lineup = list(match.lineups.filter(side=MatchLineup.Side.HOME).order_by("jersey_number").values("id", "jersey_number", "player_name", "position"))
+    away_lineup = list(match.lineups.filter(side=MatchLineup.Side.AWAY).order_by("jersey_number").values("id", "jersey_number", "player_name", "position"))
 
     existing = {
         ident.track_id: ident

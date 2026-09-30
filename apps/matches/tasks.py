@@ -199,8 +199,7 @@ def process_match(self, match_id):
         gc.collect()
 
         for t in survivors:
-            if t.track_id in colors or t.track_id in track_embeddings:
-                valid.append(t)
+            valid.append(t)
 
         # Tracklet Stitching across brief occlusions using DINOv2 Re-ID similarity
         if getattr(DEFAULT_CONFIG.tracking, "enable_stitching", True) and track_embeddings:
@@ -254,7 +253,7 @@ def process_match(self, match_id):
                 home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
             )
 
-        from ai_engine.utils.types import Team
+        from ai_engine.utils.types import Team, ObjectClass
 
         # Referee Disambiguation:
         # Identify true on-pitch referee track(s) using referee detection counts,
@@ -283,7 +282,7 @@ def process_match(self, match_id):
                 occupied_ref_frames.update(r_frames)
 
         for t in valid:
-            if t.track_id in verified_ref_ids:
+            if t.track_id in verified_ref_ids or t.cls == ObjectClass.REFEREE or (t.cls and getattr(t.cls, "value", "") == "referee"):
                 t.team = Team.REFEREE
             else:
                 t.team = team_by_track_id.get(t.track_id, Team.UNKNOWN)
@@ -354,8 +353,12 @@ def process_match(self, match_id):
         writer = csv.writer(ball_csv)
         writer.writerow(["frame_idx", "x_px", "y_px", "interpolated"])
         for p in ball_trajectory:
-            if p.x_m is not None:
-                writer.writerow([p.frame_idx, p.x_m, p.y_m, p.interpolated])
+            # Save ALL frames, including None gaps — this preserves the full
+            # frame timeline so compute_pitch_mapping can re-interpolate over
+            # the pitch-projected trajectory instead of losing gap timestamps.
+            x_val = round(p.x_m, 2) if p.x_m is not None else ""
+            y_val = round(p.y_m, 2) if p.y_m is not None else ""
+            writer.writerow([p.frame_idx, x_val, y_val, p.interpolated])
         files.ball_tracking_csv.save(f"match_{match.id}_ball.csv", ContentFile(ball_csv.getvalue()), save=False)
 
         files.save()
@@ -564,6 +567,17 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
             if not ok:
                 continue
 
+            # 1. Reject non-tactical broadcast frames (replays, close-ups, crowd, graphics)
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            grass_mask = cv2.inRange(hsv, (35, 38, 38), (85, 255, 255))
+            h_f, w_f = frame.shape[:2]
+            green_ratio = float(np.count_nonzero(grass_mask) / (h_f * w_f))
+            top_h = max(1, int(h_f * 0.25))
+            top_green_ratio = float(np.count_nonzero(grass_mask[:top_h, :]) / (top_h * w_f))
+            # Tactical sideline camera requires >= 45% grass, and top quarter must NOT be all grass (replays/zooms)
+            if green_ratio < 0.45 or top_green_ratio > 0.35:
+                continue
+
             suggestions = detect_pitch_keypoints(
                 frame, settings.ROBOFLOW_API_KEY, confidence_threshold=0.5, max_points=12
             )
@@ -574,26 +588,22 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
             if len(suggestions) < 4:
                 continue
 
-            # Score = sum of confidences across all detected points, NOT
-            # real-world x-span. An earlier version of this function
-            # scored by x-span specifically to avoid picking frames whose
-            # confident points all cluster in one place -- but a real
-            # side-by-side visual check (homography reprojection overlay
-            # against match 10's known-good manual calibration on this
-            # same clip) showed x-span maximization backfired: it
-            # actively prefers spurious far-field detections, since a
-            # WRONG "right box corner" detection sitting near a goal line
-            # inflates x-span just as effectively as a real one would.
-            # Confirmed concretely -- the overlay showed a confidently
-            # labeled "right_box_top"/"right_corner_top"/"right_penalty_spot"
-            # cluster drawn on empty grass with no real box or corner
-            # anywhere near it, while this same anchor's halfway-line/
-            # center-circle points (a well-validated cluster, confirmed
-            # via reprojection tests on two independent clips earlier
-            # this session) were correctly aligned. Summed confidence is
-            # a more neutral proxy for "this is a clean, unambiguous
-            # frame" -- it doesn't specifically go looking for distant
-            # landmark types the way x-span does.
+            # 2. Mathematical Conditioning Guard: Ensure points span 2D space and form a non-degenerate H
+            img_pts = [(s["pixel_x"], s["pixel_y"]) for s in suggestions]
+            pitch_pts = [(s["pitch_x"], s["pitch_y"]) for s in suggestions]
+            from ai_engine.stage5_pitch_mapping.homography import compute_homography_from_points
+            from ai_engine.config import DEFAULT_CONFIG
+            H_cand = compute_homography_from_points(img_pts, pitch_pts, DEFAULT_CONFIG.pitch_mapping)
+            if H_cand is None or abs(H_cand[2, 2]) < 1e-4:
+                continue
+            H_norm = H_cand / H_cand[2, 2]
+            det_cand = abs(np.linalg.det(H_norm))
+            cond_cand = np.linalg.cond(H_norm)
+            x_span = max(p[0] for p in pitch_pts) - min(p[0] for p in pitch_pts)
+            y_span = max(p[1] for p in pitch_pts) - min(p[1] for p in pitch_pts)
+            if det_cand < 1e-4 or cond_cand > 250000 or x_span < 12.0 or y_span < 12.0:
+                continue
+
             score = sum(s["confidence"] for s in suggestions)
             if score > best_score:
                 best_score = score
@@ -752,13 +762,19 @@ def compute_pitch_mapping(self, match_id):
             if not ok:
                 break
             H = homography_tracker.update(frame)
-            if H is not None:
-                if was_cut_paused:
-                    # Resumed from cut: re-anchor optical flow on the fresh frame
-                    homography_tracker.resume_after_cut(frame, H_target=anchor_H)
-                    was_cut_paused = False
-                seg_frames.append(frame_idx)
-                seg_H.append(H.copy())
+            if H is not None and abs(H[2, 2]) > 1e-4:
+                H_norm = H / H[2, 2]
+                det_H = abs(np.linalg.det(H_norm))
+                cond_H = np.linalg.cond(H_norm)
+                if det_H > 1e-4 and cond_H < 250000:
+                    if was_cut_paused:
+                        # Resumed from cut: re-anchor optical flow on the fresh frame
+                        homography_tracker.resume_after_cut(frame, H_target=anchor_H)
+                        was_cut_paused = False
+                    seg_frames.append(frame_idx)
+                    seg_H.append(H_norm.copy())
+                else:
+                    was_cut_paused = True
             else:
                 was_cut_paused = True
 
@@ -891,32 +907,95 @@ def compute_pitch_mapping(self, match_id):
         with files.ball_tracking_csv.open("rb") as f:
             ball_content = f.read().decode("utf-8")
         for row in csv.DictReader(io.StringIO(ball_content)):
+            raw_x = row.get("x_px", "")
+            raw_y = row.get("y_px", "")
+            # Gracefully handle None/empty gap rows written by process_match
+            x_m = float(raw_x) if raw_x not in ("", None) else None
+            y_m = float(raw_y) if raw_y not in ("", None) else None
             ball_trajectory.append(BallTrajectoryPoint(
                 frame_idx=int(row["frame_idx"]),
-                x_m=float(row["x_px"]),
-                y_m=float(row["y_px"]),
+                x_m=x_m,
+                y_m=y_m,
                 interpolated=row["interpolated"].strip().lower() == "true",
             ))
 
     # --- Stage 5-6: possession/pass/shot detection + TeamStatistics ---
-    ball_pitch_trajectory = []
-    ball_csv = io.StringIO()
-    ball_writer = csv.writer(ball_csv)
-    ball_writer.writerow(["frame_idx", "x_px", "y_px", "interpolated", "pitch_x", "pitch_y"])
+    # Build raw pitch trajectory from pixel detections + homography
+    ball_pitch_raw: list[BallTrajectoryPoint] = []
     for p in ball_trajectory:
-        px, py = "", ""
         if p.x_m is not None and p.frame_idx in homography_by_frame:
             pt = image_point_to_pitch(p.x_m, p.y_m, homography_by_frame[p.frame_idx])
             if abs(pt.x_m) <= 55.0 and abs(pt.y_m) <= 37.0:
-                ball_pitch_trajectory.append(
+                ball_pitch_raw.append(
                     BallTrajectoryPoint(frame_idx=p.frame_idx, x_m=pt.x_m, y_m=pt.y_m, interpolated=p.interpolated)
                 )
-                px, py = round(pt.x_m, 2), round(pt.y_m, 2)
-        ball_writer.writerow([p.frame_idx, p.x_m, p.y_m, p.interpolated, px, py])
+
+    # Second-pass Kalman interpolation in pitch-metric space:
+    # Gaps survive the homography projection when the ball pixel position is
+    # valid but the frame's homography is missing (e.g. during close-ups /
+    # replay cuts). Bridging these in pitch space is safer — the pitch
+    # coordinate system has hard bounds (±55m, ±37m) that immediately reject
+    # any extrapolation drifting off the playing surface.
+    from ai_engine.stage4_ball_tracking.ball_tracker import interpolate_gaps as _interpolate_pitch_gaps
+    from ai_engine.utils.types import Detection as _Det
+    if ball_pitch_raw:
+        all_frames = sorted({p.frame_idx for p in ball_trajectory})
+        raw_by_frame = {p.frame_idx: p for p in ball_pitch_raw}
+        pitch_by_frame: dict = {}
+        for fid in all_frames:
+            rpt = raw_by_frame.get(fid)
+            if rpt is not None:
+                # Wrap pitch meters in a fake Detection so interpolate_gaps can handle it
+                pitch_by_frame[fid] = _Det(
+                    frame_idx=fid, cls=ObjectClass.BALL, conf=1.0,
+                    x1=rpt.x_m - 0.1, y1=rpt.y_m - 0.1,
+                    x2=rpt.x_m + 0.1, y2=rpt.y_m + 0.1,
+                )
+            else:
+                pitch_by_frame[fid] = None
+        # frame_width/height guard in pitch-meter units (±55m x, ±37m y)
+        # Re-map to [0, 110] x [0, 74] so the frame-bounds guard works correctly
+        for fid, det in pitch_by_frame.items():
+            if det is not None:
+                det.x1 += 55.0; det.x2 += 55.0
+                det.y1 += 37.0; det.y2 += 37.0
+        pitch_interp = _interpolate_pitch_gaps(
+            pitch_by_frame, DEFAULT_CONFIG.ball_tracking,
+            frame_width=110, frame_height=74,
+        )
+        ball_pitch_trajectory: list[BallTrajectoryPoint] = []
+        for tp in pitch_interp:
+            if tp.x_m is not None:
+                ball_pitch_trajectory.append(BallTrajectoryPoint(
+                    frame_idx=tp.frame_idx,
+                    x_m=tp.x_m - 55.0,   # undo the offset back to [-55, 55]
+                    y_m=tp.y_m - 37.0,   # undo the offset back to [-37, 37]
+                    interpolated=tp.interpolated,
+                ))
+    else:
+        ball_pitch_trajectory = []
+
+    # Rewrite ball_tracking_csv with pitch coordinates included
+    ball_csv = io.StringIO()
+    ball_writer = csv.writer(ball_csv)
+    ball_writer.writerow(["frame_idx", "x_px", "y_px", "interpolated", "pitch_x", "pitch_y"])
+    pitch_traj_by_frame = {p.frame_idx: p for p in ball_pitch_trajectory}
+    for p in ball_trajectory:
+        px, py = "", ""
+        ptp = pitch_traj_by_frame.get(p.frame_idx)
+        if ptp is not None:
+            px, py = round(ptp.x_m, 2), round(ptp.y_m, 2)
+        x_val = round(p.x_m, 2) if p.x_m is not None else ""
+        y_val = round(p.y_m, 2) if p.y_m is not None else ""
+        ball_writer.writerow([p.frame_idx, x_val, y_val, p.interpolated, px, py])
     files.ball_tracking_csv.save(f"match_{match.id}_ball.csv", ContentFile(ball_csv.getvalue()), save=True)
 
-    # --- Merge fragmented raw tracklets into one-per-real-player first ---
-    stitched = match_tracklets_within_shot(valid, DEFAULT_CONFIG.pitch_mapping, fps=25.0)
+
+    # --- Merge fragmented raw tracklets using metric pitch distance and Unified Master ID Table ---
+    from ai_engine.stage5_pitch_mapping.identity_association import build_unified_master_identity_table
+    stitched, id_mapping = build_unified_master_identity_table(
+        valid, DEFAULT_CONFIG.pitch_mapping, fps=25.0, homography_by_frame=homography_by_frame
+    )
 
     # Rewrite player_tracking_csv using STITCHED tracklets so track IDs, teams, and crop bounding boxes match 100%
     player_csv = io.StringIO()
@@ -959,16 +1038,29 @@ def compute_pitch_mapping(self, match_id):
     except Exception:
         logger.exception("Failed to auto-assign tracks for match=%s", match.id)
 
+    # Filter broadcast footage: exclude replays, crowd/dugout cuts, and graphic transitions
+    from ai_engine.stage5_pitch_mapping.view_classifier import get_non_tactical_frame_ranges
+    try:
+        non_tactical_ranges = get_non_tactical_frame_ranges(video_path, stride=10)
+    except Exception:
+        non_tactical_ranges = []
+
+    def is_non_tactical(f_idx):
+        return any(s <= f_idx <= e for s, e in non_tactical_ranges)
+
+    tactical_ball_trajectory = [p for p in ball_pitch_trajectory if not is_non_tactical(p.frame_idx)]
+
     # Continuous frame-level possession + discrete possession change events
-    cont_possession = compute_continuous_possession(ball_pitch_trajectory, identities, fps=25.0)
+    cont_possession = compute_continuous_possession(tactical_ball_trajectory, identities, fps=25.0)
     possession_events = cont_possession["possession_events"]
     if not possession_events:
-        possession_events = detect_possession(ball_pitch_trajectory, identities, DEFAULT_CONFIG.event_detection)
+        possession_events = detect_possession(tactical_ball_trajectory, identities, DEFAULT_CONFIG.event_detection)
+    possession_events = [e for e in possession_events if not is_non_tactical(e.frame_idx)]
     possession_pct_by_team = cont_possession["percentages"]
 
     pass_events = detect_passes(possession_events, identities)
-    recorded_passes = detect_passes_with_metadata(possession_events, identities, ball_pitch_trajectory, fps=25.0)
-    corner_events = detect_corner_kicks(ball_pitch_trajectory, identities, fps=25.0)
+    recorded_passes = detect_passes_with_metadata(possession_events, identities, tactical_ball_trajectory, fps=25.0)
+    corner_events = detect_corner_kicks(tactical_ball_trajectory, identities, fps=25.0)
     pass_intervals = [
         (p["start_frame"], p["frame_idx"])
         for p in recorded_passes
@@ -979,10 +1071,11 @@ def compute_pitch_mapping(self, match_id):
         )
     ]
     shot_events = detect_shots(
-        ball_pitch_trajectory,
+        tactical_ball_trajectory,
         ((52.5, 0.0), (-52.5, 0.0)),
         identities=identities,
         pass_intervals=pass_intervals,
+        celebration_intervals=non_tactical_ranges,
     )
 
     team_by_master_id = {i.master_id: i.team for i in identities}
@@ -1506,6 +1599,10 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
 
     cls_by_track = cls_by_track or {}
 
+    active_master_ids = {ident.master_id for ident in identities}
+    # Delete stale assignments from prior runs whose track IDs no longer exist
+    TrackPlayerIdentification.objects.filter(match=match).exclude(track_id__in=active_master_ids).delete()
+
     already_assigned_track_ids = set(
         TrackPlayerIdentification.objects.filter(match=match).values_list("track_id", flat=True)
     )
@@ -1554,9 +1651,26 @@ def _auto_assign_unidentified_tracks(match, identities, cls_by_track=None):
                 "jersey_number": ident.jersey_number,
             })
 
-        # Prioritize top duration tracks
-        track_summaries.sort(key=lambda t: -t["duration"])
-        track_summaries = track_summaries[:CAP_PER_SIDE]
+        # Ensure exactly 1 GK track and 10 outfield tracks are selected per team
+        gk_tracks = [t for t in track_summaries if t["is_gk"]]
+        outfield_tracks = [t for t in track_summaries if not t["is_gk"]]
+
+        gk_tracks.sort(key=lambda t: -t["duration"])
+        outfield_tracks.sort(key=lambda t: -t["duration"])
+
+        selected_tracks = []
+        if gk_tracks:
+            selected_tracks.append(gk_tracks[0])
+        selected_tracks.extend(outfield_tracks[:10])
+
+        if len(selected_tracks) < CAP_PER_SIDE:
+            remaining_needed = CAP_PER_SIDE - len(selected_tracks)
+            already_selected_ids = {t["track_id"] for t in selected_tracks}
+            leftover = [t for t in track_summaries if t["track_id"] not in already_selected_ids]
+            leftover.sort(key=lambda t: -t["duration"])
+            selected_tracks.extend(leftover[:remaining_needed])
+
+        track_summaries = selected_tracks
 
         available_lineups = list(
             match.lineups.filter(side=side)

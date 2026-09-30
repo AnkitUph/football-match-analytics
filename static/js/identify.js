@@ -33,7 +33,8 @@
                 opts.push('<optgroup label="✨ Top AI Suggestions">');
                 topCandidates.forEach(cand => {
                     const selected = cand.lineup_entry_id === assignedId ? 'selected' : '';
-                    opts.push(`<option value="${cand.lineup_entry_id}" ${selected}>#${cand.jersey_number} ${cand.player_name}</option>`);
+                    const pos = cand.position ? ` (${cand.position})` : '';
+                    opts.push(`<option value="${cand.lineup_entry_id}" ${selected}>#${cand.jersey_number} ${cand.player_name}${pos}</option>`);
                 });
                 opts.push('</optgroup>');
 
@@ -41,13 +42,15 @@
                 allOptions.forEach(entry => {
                     const alreadyInTop = topCandidates.some(c => c.lineup_entry_id === entry.id);
                     const selected = (!alreadyInTop && entry.id === assignedId) ? 'selected' : '';
-                    opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}</option>`);
+                    const pos = entry.position ? ` (${entry.position})` : '';
+                    opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}${pos}</option>`);
                 });
                 opts.push('</optgroup>');
             } else {
                 allOptions.forEach(entry => {
                     const selected = entry.id === assignedId ? 'selected' : '';
-                    opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}</option>`);
+                    const pos = entry.position ? ` (${entry.position})` : '';
+                    opts.push(`<option value="${entry.id}" ${selected}>#${entry.jersey_number} ${entry.player_name}${pos}</option>`);
                 });
             }
             return opts.join('');
@@ -74,10 +77,12 @@
                         : '<span class="badge badge-confirmed">Verified</span>')
                     : '';
 
+                const pillText = track.is_gk ? `GK ${teamLabel.toUpperCase()}` : teamLabel.toUpperCase();
+
                 card.innerHTML = `
                     <div class="crop-wrap">${cropHtml}</div>
                     <div class="card-meta">
-                        <span class="team-pill ${teamLabel}">${teamLabel}</span>
+                        <span class="team-pill ${teamLabel}">${pillText}</span>
                         <span>${track.distance_km} km</span>
                     </div>
                     ${badgeHtml ? `<div>${badgeHtml}</div>` : ''}

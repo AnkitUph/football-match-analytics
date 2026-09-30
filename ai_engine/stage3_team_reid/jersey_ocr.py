@@ -73,7 +73,7 @@ class JerseyOCR:
         legible was found, the read wasn't purely digits, or confidence
         was below config.ocr_min_confidence.
         """
-        if crop is None or crop.size == 0:
+        if crop is None or crop.size == 0 or crop.shape[0] < 120:
             return None, 0.0
 
         reader = self._load_reader()

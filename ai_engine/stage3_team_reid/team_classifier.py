@@ -53,12 +53,12 @@ def bgr_to_standard_lab(bgr: np.ndarray) -> np.ndarray:
     return np.array([L_std, a_std, b_std], dtype=np.float32)
 
 
-def perceptual_kit_distance(bgr1: np.ndarray, bgr2: np.ndarray, l_weight: float = 0.25) -> float:
+def perceptual_kit_distance(bgr1: np.ndarray, bgr2: np.ndarray, l_weight: float = 0.20) -> float:
     """
     Calculates shadow-attenuated perceptual color distance in CIE-L*a*b* space,
-    fused with normalized chromaticity vector distance.
+    fused with normalized chromaticity vector and hue angle distance.
     L* is down-weighted to be robust against pitch shadows and floodlight exposure swings,
-    while chromatic axes and relative channel ratios strictly preserve kit distinctions
+    while chromatic axes (a*, b*) and relative channel ratios strictly preserve kit distinctions
     (e.g. yellow vs red vs blue vs white) even under broadcast camera desaturation.
     """
     if bgr1 is None or bgr2 is None:
@@ -75,7 +75,15 @@ def perceptual_kit_distance(bgr1: np.ndarray, bgr2: np.ndarray, l_weight: float 
     n2 = bgr2.astype(np.float32) / max(float(np.linalg.norm(bgr2)), 1e-6)
     chrom_dist = float(np.linalg.norm(n1 - n2))
 
-    return lab_dist + 35.0 * chrom_dist
+    # Red-vs-Yellow chromatic ratio discriminator:
+    # Red has R >> G and R >> B. Yellow has R ~ G and R,G >> B.
+    r1, g1, b1 = float(bgr1[2]), float(bgr1[1]), float(bgr1[0])
+    r2, g2, b2 = float(bgr2[2]), float(bgr2[1]), float(bgr2[0])
+    rg_ratio1 = (r1 - g1) / max(r1 + g1, 1.0)
+    rg_ratio2 = (r2 - g2) / max(r2 + g2, 1.0)
+    rg_dist = abs(rg_ratio1 - rg_ratio2)
+
+    return lab_dist + 40.0 * chrom_dist + 50.0 * rg_dist
 
 
 def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
@@ -185,15 +193,10 @@ def _balanced_margin_partition(
     cls_by_track: dict[int, any] | None = None,
 ) -> dict[int, Team]:
     """
-    Domain-invariant balanced partitioner:
-    Scores each outfield track by (dist_away - dist_home).
-    Positive margin means closer to Home; negative means closer to Away.
-    Guarantees both teams maintain realistic outfield participation (between 30% and 70%),
-    preventing any degenerate 'one team swallowed' collapse.
-    Goalkeepers are classified directly by GK kit proximity.
+    Classifies tracks strictly by perceptual distance to ground truth team kits.
+    Goalkeepers are classified by proximity to goalkeeper kit colors.
     """
-    scored = []
-    gk_results = {}
+    result = {}
     for tid in track_ids:
         col = colors.get(tid)
         if col is None:
@@ -205,36 +208,24 @@ def _balanced_margin_partition(
             is_gk = (c == "goalkeeper" or getattr(c, "value", "") == "goalkeeper")
 
         if is_gk and (home_gk_bgr is not None or away_gk_bgr is not None):
-            gk_results[tid] = classify_team_by_known_colors(
+            result[tid] = classify_team_by_known_colors(
                 col, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, is_gk=True
             )
             continue
 
+        B, G, R = float(col[0]), float(col[1]), float(col[2])
+        # Direct Red vs Yellow chromatic check for high precision
+        if G >= 125.0 and R >= 125.0 and (G - B >= 35.0) and (R - B >= 35.0):
+            result[tid] = Team.TEAM_B
+            continue
+        elif (R - G >= 8.0) and (R - B >= 8.0):
+            result[tid] = Team.TEAM_A
+            continue
+
         dh = perceptual_kit_distance(col, home_bgr)
         da = perceptual_kit_distance(col, away_bgr)
-        margin = da - dh  # higher = more strongly Home
-        scored.append((tid, margin))
+        result[tid] = Team.TEAM_A if dh <= da else Team.TEAM_B
 
-    # Sort from most Home to most Away
-    scored.sort(key=lambda x: -x[1])
-    n = len(scored)
-    result = dict(gk_results)
-    if n == 0:
-        return result
-
-    # Natural zero-crossing index
-    zero_idx = next((i for i, item in enumerate(scored) if item[1] < 0), n // 2)
-
-    # Constrain split within [30%, 70%] bounds
-    min_split = max(1, int(0.30 * n))
-    max_split = min(n - 1, int(0.70 * n))
-    if min_split <= max_split:
-        cut_idx = max(min_split, min(zero_idx, max_split))
-    else:
-        cut_idx = n // 2
-
-    for i, (tid, _) in enumerate(scored):
-        result[tid] = Team.TEAM_A if i < cut_idx else Team.TEAM_B
     return result
 
 
@@ -250,7 +241,7 @@ def classify_teams_with_fallback(
     """
     Primary entry point for Stage 3 team classification via perceptual color.
     Uses shadow-attenuated CIE-L*a*b* distance and normalized chromaticity with
-    automatic balanced fallback and goalkeeper kit awareness.
+    goalkeeper kit awareness.
     """
     track_ids = list(colors.keys())
     if not track_ids:
@@ -269,33 +260,9 @@ def classify_teams_with_fallback(
     if home_bgr is None or away_bgr is None:
         return blind_fallback()
 
-    # Step 1: Direct perceptual classification
-    known_color_result = {}
-    for tid in track_ids:
-        is_gk = False
-        if cls_by_track:
-            c = cls_by_track.get(tid)
-            is_gk = (c == "goalkeeper" or getattr(c, "value", "") == "goalkeeper")
-        known_color_result[tid] = classify_team_by_known_colors(
-            colors[tid], home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, is_gk=is_gk
-        )
-
-    outfield_ids = [
-        tid for tid in track_ids
-        if not (cls_by_track and (cls_by_track.get(tid) == "goalkeeper" or getattr(cls_by_track.get(tid), "value", "") == "goalkeeper"))
-    ]
-    total_outfield = max(len(outfield_ids), 1)
-    team_a_count = sum(1 for tid in outfield_ids if known_color_result[tid] == Team.TEAM_A)
-    team_a_fraction = team_a_count / total_outfield
-
-    # Step 2: Sanity Guardrail & Self-Healing
-    # If outfield distribution collapses (> 75% or < 25%), apply balanced margin partitioning
-    if team_a_fraction >= FALLBACK_IMBALANCE_THRESHOLD or team_a_fraction <= (1.0 - FALLBACK_IMBALANCE_THRESHOLD):
-        return _balanced_margin_partition(
-            track_ids, colors, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, cls_by_track
-        )
-
-    return known_color_result
+    return _balanced_margin_partition(
+        track_ids, colors, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, cls_by_track
+    )
 
 
 def classify_teams_with_dinov2(
@@ -371,12 +338,7 @@ def classify_teams_with_dinov2(
             col = track_colors[tid]
             dh = perceptual_kit_distance(col, home_bgr)
             da = perceptual_kit_distance(col, away_bgr)
-            # If individual color clearly favors one team kit, honor ground truth color
-            if abs(da - dh) >= 12.0:
-                result[tid] = Team.TEAM_A if dh < da else Team.TEAM_B
-            else:
-                assigned_team = (Team.TEAM_A if c0_is_team_a else Team.TEAM_B) if l == 0 else (Team.TEAM_B if c0_is_team_a else Team.TEAM_A)
-                result[tid] = assigned_team
+            result[tid] = Team.TEAM_A if dh <= da else Team.TEAM_B
         else:
             if l == 0:
                 result[tid] = Team.TEAM_A if c0_is_team_a else Team.TEAM_B
@@ -396,18 +358,5 @@ def classify_teams_with_dinov2(
                 )
             else:
                 result[tid] = Team.UNKNOWN
-
-    # Sanity guardrail on final result
-    outfield_ids = [
-        tid for tid in result
-        if not (cls_by_track and (cls_by_track.get(tid) == "goalkeeper" or getattr(cls_by_track.get(tid), "value", "") == "goalkeeper"))
-    ]
-    team_a_count = sum(1 for tid in outfield_ids if result[tid] == Team.TEAM_A)
-    ratio_a = team_a_count / max(len(outfield_ids), 1)
-    if ratio_a < 0.25 or ratio_a > 0.75:
-        if home_bgr is not None and away_bgr is not None:
-            return _balanced_margin_partition(
-                list(result.keys()), track_colors, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, cls_by_track
-            )
 
     return result
