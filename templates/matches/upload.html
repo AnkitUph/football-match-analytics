@@ -77,7 +77,7 @@
                                     <option value="">Select team</option>
                                     <option value="__new__">➕ Add New Team to Database</option>
                                     {% for team in teams %}
-                                        <option value="{{ team.id }}">{{ team.name }}</option>
+                                        <option value="{{ team.id }}" data-primary-color="{{ team.primary_color }}">{{ team.name }}</option>
                                     {% endfor %}
                                 </select>
                             </div>

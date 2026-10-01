@@ -98,20 +98,20 @@ def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
     if h < 15 or w < 8:
         return None
 
-    # Sample chest region: 18%-45% vertical, 22%-78% horizontal
-    torso = crop[int(h * 0.18):int(h * 0.45), int(w * 0.22):int(w * 0.78)]
+    # Use the central chest to reduce pitch pixels when the detector box is
+    # loose, while retaining green jersey pixels as valid kit evidence.
+    torso = crop[int(h * 0.24):int(h * 0.44), int(w * 0.38):int(w * 0.62)]
     if torso.size == 0:
         return None
 
     try:
-        # Decouple green pitch turf using HSV hue [32, 88] and saturation >= 25
+        # The crop is already a narrow central chest region. Keep saturated
+        # green pixels here: hue-based grass masks erase green kits.
         hsv_torso = cv2.cvtColor(torso, cv2.COLOR_BGR2HSV)
-        grass = (hsv_torso[:, :, 0] >= 32) & (hsv_torso[:, :, 0] <= 88) & (hsv_torso[:, :, 1] >= 25) & (hsv_torso[:, :, 2] >= 25)
-        # If not almost the entire torso is grass (which would happen only for a full neon green kit)
-        if np.mean(grass) < 0.80:
-            non_grass = torso[~grass]
-            if len(non_grass) >= 12:
-                return np.median(non_grass.astype(np.float32), axis=0)
+        kit = (hsv_torso[:, :, 1] >= 45) & (hsv_torso[:, :, 2] >= 35)
+        kit_pixels = torso[kit]
+        if len(kit_pixels) >= 8:
+            return np.median(kit_pixels.astype(np.float32), axis=0)
     except Exception:
         pass
 
@@ -191,6 +191,7 @@ def _balanced_margin_partition(
     home_gk_bgr: np.ndarray | None = None,
     away_gk_bgr: np.ndarray | None = None,
     cls_by_track: dict[int, any] | None = None,
+    color_samples_by_track: dict[int, list[np.ndarray]] | None = None,
 ) -> dict[int, Team]:
     """
     Classifies tracks strictly by perceptual distance to ground truth team kits.
@@ -199,32 +200,51 @@ def _balanced_margin_partition(
     result = {}
     for tid in track_ids:
         col = colors.get(tid)
+        # Missing torso evidence should stay unknown; neutral gray must not
+        # be forced into one of the two teams.
         if col is None:
-            col = np.array([128.0, 128.0, 128.0], dtype=np.float32)
+            result[tid] = Team.UNKNOWN
+            continue
 
         is_gk = False
         if cls_by_track:
             c = cls_by_track.get(tid)
             is_gk = (c == "goalkeeper" or getattr(c, "value", "") == "goalkeeper")
 
-        if is_gk and (home_gk_bgr is not None or away_gk_bgr is not None):
-            result[tid] = classify_team_by_known_colors(
-                col, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, is_gk=True
+        home_ref = home_bgr
+        away_ref = away_bgr
+        if is_gk:
+            home_ref = home_gk_bgr if home_gk_bgr is not None else home_bgr
+            away_ref = away_gk_bgr if away_gk_bgr is not None else away_bgr
+
+        samples = (color_samples_by_track or {}).get(tid, [])
+        if not samples:
+            dh = perceptual_kit_distance(col, home_ref)
+            da = perceptual_kit_distance(col, away_ref)
+            result[tid] = (
+                Team.UNKNOWN if abs(dh - da) < 5.0
+                else (Team.TEAM_A if dh < da else Team.TEAM_B)
             )
             continue
 
-        B, G, R = float(col[0]), float(col[1]), float(col[2])
-        # Direct Red vs Yellow chromatic check for high precision
-        if G >= 125.0 and R >= 125.0 and (G - B >= 35.0) and (R - B >= 35.0):
-            result[tid] = Team.TEAM_B
-            continue
-        elif (R - G >= 8.0) and (R - B >= 8.0):
-            result[tid] = Team.TEAM_A
-            continue
+        # A single bad crop can contain mostly pitch or an overlapping
+        # player. Vote across independently sampled frames; if confident
+        # samples disagree, the track may contain an ID switch, so do not
+        # paint every box with one team's name.
+        votes = []
+        for sample in samples:
+            if sample is None:
+                continue
+            dh = perceptual_kit_distance(sample, home_ref)
+            da = perceptual_kit_distance(sample, away_ref)
+            if abs(dh - da) < 5.0:
+                continue
+            votes.append(Team.TEAM_A if dh < da else Team.TEAM_B)
 
-        dh = perceptual_kit_distance(col, home_bgr)
-        da = perceptual_kit_distance(col, away_bgr)
-        result[tid] = Team.TEAM_A if dh <= da else Team.TEAM_B
+        if len(votes) >= 2 and len(set(votes)) == 1:
+            result[tid] = votes[0]
+        else:
+            result[tid] = Team.UNKNOWN
 
     return result
 
@@ -237,6 +257,7 @@ def classify_teams_with_fallback(
     home_gk_bgr: np.ndarray | None = None,
     away_gk_bgr: np.ndarray | None = None,
     cls_by_track: dict[int, any] | None = None,
+    color_samples_by_track: dict[int, list[np.ndarray]] | None = None,
 ) -> dict[int, Team]:
     """
     Primary entry point for Stage 3 team classification via perceptual color.
@@ -261,7 +282,8 @@ def classify_teams_with_fallback(
         return blind_fallback()
 
     return _balanced_margin_partition(
-        track_ids, colors, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr, cls_by_track
+        track_ids, colors, home_bgr, away_bgr, home_gk_bgr, away_gk_bgr,
+        cls_by_track, color_samples_by_track,
     )
 
 

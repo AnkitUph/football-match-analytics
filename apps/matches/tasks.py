@@ -166,6 +166,9 @@ def process_match(self, match_id):
         del crops_needed_by_frame
 
         # Compute median colors per tracklet
+        color_samples_by_track = {
+            tid: list(col_list) for tid, col_list in track_colors.items() if col_list
+        }
         for tid, col_list in track_colors.items():
             if col_list:
                 colors[tid] = np.median(np.array(col_list), axis=0)
@@ -220,7 +223,7 @@ def process_match(self, match_id):
                 if old_id in track_embeddings:
                     emb_groups[root_id].append(track_embeddings[old_id])
                 if old_id in colors:
-                    col_groups[root_id].append(colors[old_id])
+                    col_groups[root_id].extend(color_samples_by_track.get(old_id, [colors[old_id]]))
 
             new_embeddings = {}
             for root_id, embs in emb_groups.items():
@@ -229,11 +232,14 @@ def process_match(self, match_id):
                 new_embeddings[root_id] = (mean_e / norm) if norm > 1e-6 else mean_e
 
             new_colors = {}
+            new_color_samples = {}
             for root_id, cols in col_groups.items():
+                new_color_samples[root_id] = cols
                 new_colors[root_id] = np.median(cols, axis=0)
 
             track_embeddings = new_embeddings
             colors = new_colors
+            color_samples_by_track = new_color_samples
 
         home_bgr = _hex_to_bgr(match.home_kit_color) if match.home_kit_color else None
         away_bgr = _hex_to_bgr(match.away_kit_color) if match.away_kit_color else None
@@ -241,17 +247,15 @@ def process_match(self, match_id):
         away_gk_bgr = _hex_to_bgr(match.away_gk_kit_color) if match.away_gk_kit_color else None
         cls_by_track = {t.track_id: (t.cls.value if t.cls else None) for t in valid}
 
-        from ai_engine.stage3_team_reid.team_classifier import classify_teams_with_dinov2, classify_teams_with_fallback, perceptual_kit_distance
-        if getattr(DEFAULT_CONFIG.team_reid, "use_hf_dinov2", True) and len(track_embeddings) >= 4:
-            team_by_track_id = classify_teams_with_dinov2(
-                track_embeddings, colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
-                home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
-            )
-        else:
-            team_by_track_id = classify_teams_with_fallback(
-                colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
-                home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
-            )
+        from ai_engine.stage3_team_reid.team_classifier import classify_teams_with_fallback, perceptual_kit_distance
+        # Team assignment follows the selected jersey colors. Whole-player
+        # DINOv2 crops contain substantial pitch/background and vary with pose;
+        # keep those embeddings for re-identification, not team labels.
+        team_by_track_id = classify_teams_with_fallback(
+            colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
+            home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
+            color_samples_by_track=color_samples_by_track,
+        )
 
         from ai_engine.utils.types import Team, ObjectClass
 
@@ -381,7 +385,7 @@ def process_match(self, match_id):
             try:
                 # Run synchronously so real TeamStatistics, PlayerStatistics,
                 # passes, shots, and heatmaps are fully computed BEFORE status=COMPLETED
-                compute_pitch_mapping(match.id)
+                compute_pitch_mapping(match.id, finalize=False)
             except Exception:
                 logger.exception("compute_pitch_mapping failed for match=%s, continuing", match.id)
 
@@ -648,7 +652,7 @@ def _run_automatic_calibration(match, video_path, num_anchors=4, samples_per_win
 
 
 @shared_task(bind=True)
-def compute_pitch_mapping(self, match_id):
+def compute_pitch_mapping(self, match_id, finalize: bool = True):
     """
     Stage 5-6, fully decoupled from Stage 1-4 (process_match above).
 
@@ -1557,15 +1561,16 @@ def compute_pitch_mapping(self, match_id):
     except Exception:
         pass
 
-    match.status = Match.MatchStatus.COMPLETED
-    match.processing_progress = 100
-    match.save(update_fields=["status", "processing_progress", "updated_at"])
+    if finalize:
+        match.status = Match.MatchStatus.COMPLETED
+        match.processing_progress = 100
+        match.save(update_fields=["status", "processing_progress", "updated_at"])
 
-    # Ensure annotated replay video is refreshed asynchronously if this was a post-match recalibration
-    try:
-        render_match_video.delay(match.id)
-    except Exception:
-        logger.exception("Failed to dispatch render_match_video for match=%s", match.id)
+        # Ensure annotated replay video is refreshed asynchronously if this was a post-match recalibration
+        try:
+            render_match_video.delay(match.id)
+        except Exception:
+            logger.exception("Failed to dispatch render_match_video for match=%s", match.id)
 
 
 @shared_task

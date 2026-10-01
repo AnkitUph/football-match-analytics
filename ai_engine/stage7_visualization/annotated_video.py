@@ -77,6 +77,9 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
                     player_annotations_by_frame[f_idx].append({
                         "track_id": tid,
                         "team": team,
+                        # Keep object class independent of the team label. A
+                        # player with unknown team membership is still a player.
+                        "class": row.get("class", "player"),
                         "bbox": (x1, y1, x2, y2),
                         "jersey": jersey,
                         "pitch_x": pitch_x,
@@ -133,6 +136,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
                     player_annotations_by_frame[f_a + step].append({
                         "track_id": tid,
                         "team": team,
+                        "class": fdict[f_a].get("class", "player"),
                         "bbox": interp_box,
                         "jersey": jersey,
                         "pitch_x": interp_px,
@@ -271,11 +275,20 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
             for p in detections:
                 tid = p["track_id"]
                 team_key = track_assigned_team.get(tid, p["team"])
+                object_class = p.get("class", "player")
+                is_player = object_class in ("player", "goalkeeper")
+                # The object detector's class is the source of truth for
+                # player vs referee. A noisy team/referee label must not turn
+                # a player detection into a referee overlay.
+                if is_player and team_key == "referee":
+                    team_key = "unknown"
 
-                # 1. Off-pitch filtering: do not bound coaches, staff, or linesmen outside the pitch
-                if tid in off_pitch_tracks:
+                # Team uncertainty and imperfect pitch calibration must never
+                # suppress a player/goalkeeper bbox. Keep off-pitch filtering
+                # for non-player detections only.
+                if not is_player and tid in off_pitch_tracks:
                     continue
-                if p["pitch_x"] is not None and p["pitch_y"] is not None:
+                if not is_player and p["pitch_x"] is not None and p["pitch_y"] is not None:
                     if abs(p["pitch_x"]) > 58.0 or abs(p["pitch_y"]) > 40.0:
                         continue
 
@@ -306,7 +319,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
                     label = away_badge
                 else:
                     color = TEAM_COLORS["unknown"]
-                    label = "Player"
+                    label = "Player" if is_player else object_class.replace("_", " ").title()
 
                 # Draw player bounding box
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)

@@ -1,12 +1,10 @@
-"""
-Fast, single-pass sequential video decoder to extract pure turf-isolated torso colors,
-re-classify all tracks with zero flips, and update player_tracking_csv and pitch mapping.
-"""
+"""Preview or apply conservative team relabeling from sampled jersey crops."""
 
 import os
 import sys
 import csv
 import io
+import argparse
 import cv2
 import numpy as np
 import django
@@ -16,14 +14,14 @@ sys.path.insert(0, "/app")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
-from apps.matches.models import Match, MatchFiles, TrackPlayerIdentification
+from apps.matches.models import Match, MatchFiles, MatchLineup, TrackPlayerIdentification
 from apps.matches.tasks import _hex_to_bgr, compute_pitch_mapping
 from ai_engine.stage3_team_reid.team_classifier import sample_torso_color, classify_teams_with_fallback
 from ai_engine.config import DEFAULT_CONFIG
 from ai_engine.utils.types import Team
 from django.core.files.base import ContentFile
 
-def fast_reclassify_match(match_id: int):
+def fast_reclassify_match(match_id: int, apply: bool = False):
     match = Match.objects.get(id=match_id)
     files = getattr(match, "files", None)
     if not files or not files.player_tracking_csv:
@@ -59,8 +57,13 @@ def fast_reclassify_match(match_id: int):
     for tid, dets in track_dets.items():
         cls_vals = [d["class"] for d in dets]
         cls_by_track[tid] = Counter(cls_vals).most_common(1)[0][0]
-        
-        sample_indices = np.linspace(0, len(dets)-1, min(4, len(dets)), dtype=int)
+
+        # Referees are assigned from their detector class below; don't spend
+        # video reads sampling their kits as if they were team players.
+        if cls_by_track[tid] not in ("player", "goalkeeper") or len(dets) < 12:
+            continue
+
+        sample_indices = np.linspace(0, len(dets)-1, min(3, len(dets)), dtype=int)
         for idx in sample_indices:
             d = dets[idx]
             f_idx = int(d["frame_idx"])
@@ -75,8 +78,14 @@ def fast_reclassify_match(match_id: int):
     
     for f_idx in sorted_frames:
         if curr_f != f_idx:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
-            curr_f = f_idx
+            gap = f_idx - curr_f
+            if 0 < gap <= 12:
+                while curr_f < f_idx:
+                    cap.grab()
+                    curr_f += 1
+            else:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+                curr_f = f_idx
             
         ok, frame = cap.read()
         curr_f += 1
@@ -100,10 +109,50 @@ def fast_reclassify_match(match_id: int):
     # Re-classify strictly by ground truth kit color
     team_by_track = classify_teams_with_fallback(
         colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
-        home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track
+        home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr, cls_by_track=cls_by_track,
+        color_samples_by_track=sampled_colors_by_track,
     )
 
-    # Re-write CSV with updated team column
+    # Compare the preview with the saved labels before changing anything.
+    old_by_track = {}
+    for tid, dets in track_dets.items():
+        old_by_track[tid] = Counter(d["team"] for d in dets).most_common(1)[0][0]
+
+    new_by_track = {}
+    for tid, old_team in old_by_track.items():
+        if old_team == "referee" or cls_by_track.get(tid) == "referee":
+            new_by_track[tid] = "referee"
+        elif tid in team_by_track:
+            new_by_track[tid] = team_by_track[tid].value
+        else:
+            # Keep the saved value where this run could not get a usable
+            # torso sample; missing evidence must not cause a team flip.
+            new_by_track[tid] = old_team
+
+    # Human-confirmed identities are stronger evidence than a noisy jersey
+    # crop. Keep their team side authoritative in the preview and on apply.
+    confirmed_side_by_track = {
+        row.track_id: row.lineup_entry.side
+        for row in TrackPlayerIdentification.objects.filter(
+            match=match, is_auto_assigned=False
+        ).select_related("lineup_entry")
+    }
+    for tid, side in confirmed_side_by_track.items():
+        new_by_track[tid] = "team_a" if side == MatchLineup.Side.HOME else "team_b"
+
+    transitions = Counter()
+    for tid, old_team in old_by_track.items():
+        transitions[(old_team, new_by_track[tid])] += 1
+    print("Track label preview (saved -> proposed):")
+    for key, count in sorted(transitions.items()):
+        print(f"  {key[0]} -> {key[1]}: {count}")
+    print(f"Human-confirmed tracks preserved: {len(confirmed_side_by_track)}")
+
+    if not apply:
+        print("Preview only; no match data was changed. Re-run with --apply to save.")
+        return
+
+    # Re-write CSV with updated team column only after explicit --apply.
     updated_csv = io.StringIO()
     fieldnames = reader.fieldnames
     writer = csv.DictWriter(updated_csv, fieldnames=fieldnames)
@@ -111,24 +160,30 @@ def fast_reclassify_match(match_id: int):
     
     for r in rows:
         tid = int(r["track_id"])
-        c_mode = cls_by_track.get(tid, "player")
-        if c_mode == "referee":
-            r["team"] = "referee"
-        else:
-            t_enum = team_by_track.get(tid, Team.UNKNOWN)
-            r["team"] = t_enum.value
+        r["team"] = new_by_track[tid]
         writer.writerow(r)
 
     files.player_tracking_csv.save(f"match_{match.id}_players.csv", ContentFile(updated_csv.getvalue().encode("utf-8")), save=True)
     print("Saved updated player_tracking_csv with true kit team assignments.")
 
-    # Invalidate stale identifications & recompute pitch mapping
-    TrackPlayerIdentification.objects.filter(match=match).delete()
-    print("Recomputing pitch mapping, topological lineup assignments, and stats...")
+    # Automatic lineup guesses are tied to the former team partition and
+    # should be rebuilt. Preserve every human-confirmed identification.
+    TrackPlayerIdentification.objects.filter(
+        match=match, is_auto_assigned=True
+    ).delete()
+    print("Recomputing pitch mapping and automatic lineup assignments...")
     compute_pitch_mapping(match.id)
+    # Team relabeling changes the overlay even when the underlying boxes do
+    # not change. Rebuild it so the results page doesn't keep showing stale
+    # labels/boxes from the previous processing run.
+    from ai_engine.stage7_visualization.annotated_video import render_annotated_match_video
+    match.refresh_from_db()
+    render_annotated_match_video(match)
     print(f"Match #{match_id} successfully reclassified and rebuilt.")
 
 if __name__ == "__main__":
-    import sys
-    mid = int(sys.argv[1]) if len(sys.argv) > 1 else 75
-    fast_reclassify_match(mid)
+    parser = argparse.ArgumentParser(description="Preview or reclassify team labels from saved player crops.")
+    parser.add_argument("match_id", type=int, nargs="?", default=75)
+    parser.add_argument("--apply", action="store_true", help="Save the new labels and recompute derived match data.")
+    args = parser.parse_args()
+    fast_reclassify_match(args.match_id, apply=args.apply)

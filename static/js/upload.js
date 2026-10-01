@@ -39,6 +39,21 @@
         if (nameField) nameField.required = isNew;
         if (shortField) shortField.required = isNew;
         if (colorField) colorField.required = isNew;
+
+        // Match kit inputs have template defaults, so they are never blank
+        // and the server cannot fall back to the selected team's profile
+        // color. Keep the registered team's primary color in sync instead.
+        if (!isNew && value) {
+            const select = document.getElementById(side + '_team');
+            const primaryColor = select && select.selectedOptions[0]
+                ? select.selectedOptions[0].dataset.primaryColor
+                : '';
+            if (primaryColor) {
+                document.querySelectorAll('input[name="' + side + '_kit_color"]').forEach(input => {
+                    input.value = primaryColor;
+                });
+            }
+        }
     }
 
     function assignSwatch(hex, fieldName) {
