@@ -135,7 +135,8 @@ def fit_team_color_clusters(torso_colors: list[np.ndarray], config: TeamReidConf
         [l[0] * 0.25, l[1], l[2]]
         for l in (bgr_to_standard_lab(c) for c in torso_colors)
     ], dtype=np.float32)
-    return KMeans(n_clusters=config.kmeans_clusters, n_init=10, random_state=0).fit(X_lab)
+    cluster_count = min(max(1, config.kmeans_clusters), len(X_lab))
+    return KMeans(n_clusters=cluster_count, n_init=10, random_state=0).fit(X_lab)
 
 
 def classify_team(
@@ -264,19 +265,27 @@ def classify_teams_with_fallback(
     Uses shadow-attenuated CIE-L*a*b* distance and normalized chromaticity with
     goalkeeper kit awareness.
     """
-    track_ids = list(colors.keys())
+    track_ids = list(cls_by_track.keys()) if cls_by_track is not None else list(colors.keys())
     if not track_ids:
         return {}
 
     def blind_fallback() -> dict[int, Team]:
-        color_list = [colors[tid] for tid in track_ids]
+        color_list = [colors[tid] for tid in track_ids if colors.get(tid) is not None]
         if len(color_list) < 2:
-            return {tid: Team.UNKNOWN for tid in track_ids}
+            result = {tid: Team.UNKNOWN for tid in track_ids}
+            if cls_by_track:
+                for tid, cls in cls_by_track.items():
+                    if getattr(cls, "value", cls) == "referee":
+                        result[tid] = Team.REFEREE
+            return result
         clusters = fit_team_color_clusters(color_list, config)
-        return {
-            tid: classify_team("player", colors[tid], clusters)
-            for tid in track_ids
-        }
+        labeled_colors = [tid for tid in track_ids if colors.get(tid) is not None]
+        result = {tid: Team.UNKNOWN for tid in track_ids}
+        for tid in labeled_colors:
+            cls = cls_by_track.get(tid) if cls_by_track else None
+            cls_name = getattr(cls, "value", cls) or "player"
+            result[tid] = classify_team(cls_name, colors[tid], clusters)
+        return result
 
     if home_bgr is None or away_bgr is None:
         return blind_fallback()

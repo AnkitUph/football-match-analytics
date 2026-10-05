@@ -1,11 +1,8 @@
-"""
-Stage 1: Player & Ball Detection.
+"""Stage 1: player, goalkeeper, referee, and ball detection.
 
-Wraps your trained YOLO11s checkpoint (best.pt from the Kaggle notebook —
-mAP50 0.969 player / 0.880 referee / 0.828 goalkeeper / 0.792 ball).
-Validated on real broadcast footage (test_11.avi) — clean detections
-across all classes, ball detection working as expected (lower confidence,
-which Stage 4's interpolation is designed for).
+Wraps the configured Ultralytics checkpoint or exported model. Accuracy
+depends on the selected weights and has not been benchmarked in the current
+worktree.
 """
 
 from pathlib import Path

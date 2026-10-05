@@ -61,6 +61,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
                 try:
                     f_idx = int(row["frame_idx"])
                     tid = int(row["track_id"])
+                    shot_id = int(row.get("shot_id") or 0)
                     team = row.get("team", "unknown")
                     x1 = float(row["x1"])
                     y1 = float(row["y1"])
@@ -76,6 +77,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
 
                     player_annotations_by_frame[f_idx].append({
                         "track_id": tid,
+                        "shot_id": shot_id,
                         "team": team,
                         # Keep object class independent of the team label. A
                         # player with unknown team membership is still a player.
@@ -113,6 +115,8 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
             f_a, f_b = sorted_f[k], sorted_f[k + 1]
             gap = f_b - f_a
             if 1 < gap <= 15:  # up to 14 missing frames (~0.56s)
+                if fdict[f_a].get("shot_id", 0) != fdict[f_b].get("shot_id", 0):
+                    continue
                 box_a = fdict[f_a]["bbox"]
                 box_b = fdict[f_b]["bbox"]
                 team = fdict[f_a]["team"]
@@ -135,6 +139,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
 
                     player_annotations_by_frame[f_a + step].append({
                         "track_id": tid,
+                        "shot_id": fdict[f_a].get("shot_id", 0),
                         "team": team,
                         "class": fdict[f_a].get("class", "player"),
                         "bbox": interp_box,
@@ -145,6 +150,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
 
     # 2. Parse ball tracking CSV
     ball_by_frame = {}
+    ball_shot_by_frame = {}
     if files_obj.ball_tracking_csv:
         try:
             with files_obj.ball_tracking_csv.open("rb") as f:
@@ -152,10 +158,13 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
                 for row in reader:
                     try:
                         f_idx = int(row["frame_idx"])
+                        raw_shot_id = row.get("shot_id", "")
+                        shot_id = int(raw_shot_id) if raw_shot_id not in (None, "") else None
+                        ball_shot_by_frame[f_idx] = shot_id
                         x_px = float(row["x_px"])
                         y_px = float(row["y_px"])
                         interp = row.get("interpolated", "").lower() in ("true", "1")
-                        ball_by_frame[f_idx] = (x_px, y_px, interp)
+                        ball_by_frame[f_idx] = (x_px, y_px, interp, shot_id)
                     except (ValueError, KeyError):
                         continue
         except Exception:
@@ -253,6 +262,7 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
         return None
 
     ball_trail = []
+    last_ball_shot_id = None
     frame_idx = 0
 
     logger.info(
@@ -348,9 +358,14 @@ def render_annotated_match_video(match, max_dimension: int = 1280, start_sec: in
                 )
 
             # Draw ball marker and trail
+            frame_shot_id = ball_shot_by_frame.get(frame_idx)
+            if frame_shot_id is not None and frame_shot_id != last_ball_shot_id:
+                ball_trail.clear()
+                last_ball_shot_id = frame_shot_id
+
             b_info = ball_by_frame.get(frame_idx)
             if b_info is not None:
-                bx, by, interp = b_info
+                bx, by, interp, shot_id = b_info
                 if scale != 1.0:
                     bx, by = bx * scale, by * scale
                 bx, by = int(bx), int(by)

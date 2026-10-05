@@ -1,30 +1,25 @@
 """
-Stage 5a: Pitch Perspective Mapping — Hybrid Approach.
+Homography utilities for mapping image points to pitch coordinates.
 
-VALIDATED DESIGN, tested against real footage (test_11.avi):
+Calibration currently requires known image-to-pitch point pairs. The line
+helpers are experimental; they do not provide automatic calibration or
+drift correction. Accuracy has not been benchmarked in the current worktree.
 
-1. BOOTSTRAP (once per shot): a manual 4-point calibration, same proven
-   pattern as your reference implementation's view_transformer.py — you
+1. BOOTSTRAP (once per shot): a manual 4-point calibration — you
    supply 4 pixel coordinates matched to known real-world pitch points
-   for the first frame of a continuous shot. Fully automatic bootstrap
-   (detecting 4 correspondences from nothing) was tested and found
-   unreliable — see homography_tracker.py's module docstring for the
-   full test results on why.
+   for a frame in a continuous shot.
 
 2. PROPAGATE (every frame): optical-flow tracked background features
    (same masking approach as your existing camera_movement_estimator.py)
    estimate the frame-to-frame image transform, composed with the
-   current homography. Validated over 100 real frames — produces smooth,
-   physically plausible motion tracking (see homography_tracker.py).
+   current homography. This propagation can drift or fail and must be
+   reviewed against calibration points (see homography_tracker.py).
 
-3. DRIFT-CORRECT (opportunistically): when the halfway-line detector
-   below finds a confident match, nudge the propagated homography back
-   toward it rather than letting drift accumulate indefinitely.
+3. Line detection helpers below are experimental aids and are not
+   connected to automatic calibration or drift correction.
 
-This file holds the per-frame keypoint detection (for bootstrap
-assistance and drift correction). homography_tracker.py holds the
-stateful propagation logic — see that file for the main entry point
-you'll actually call per-frame.
+This file holds the line-mask and point-mapping helpers.
+homography_tracker.py holds the stateful propagation logic.
 """
 
 import cv2
@@ -37,9 +32,8 @@ from ai_engine.utils.types import PitchPoint
 def detect_pitch_line_mask(frame: np.ndarray) -> np.ndarray:
     """
     Returns a binary mask of likely pitch-line pixels, restricted to the
-    actual pitch surface (found via largest green contour, NOT a dilated
-    green mask — dilation was tested and found to leak into advertising
-    boards, causing false line detections).
+    actual pitch surface, approximated by the largest detected green
+    region.
     """
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -66,10 +60,8 @@ def detect_pitch_line_mask(frame: np.ndarray) -> np.ndarray:
 
 def detect_halfway_line(frame: np.ndarray) -> tuple[float, float, float, float] | None:
     """
-    Detects the halfway line specifically — validated as the single most
-    reliable landmark across test frames (present and clean in every
-    frame checked, unlike box edges or the center circle, which are
-    intermittent and occlusion-prone).
+    Detects a candidate halfway line. This heuristic has not been
+    validated across camera orientations or broadcast footage.
 
     Returns (x1, y1, x2, y2) in pixel space for the longest, most
     vertical line found, or None if nothing confident enough is found.

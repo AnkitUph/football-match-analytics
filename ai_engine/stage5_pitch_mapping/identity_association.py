@@ -66,6 +66,7 @@ class IdentityGallery:
             team=tracklet.team,
             reid_embedding=tracklet.reid_embedding or [],
             jersey_number=tracklet.jersey_number,
+            cls=tracklet.cls,
         )
         self._identities[identity.master_id] = identity
         self._next_id += 1
@@ -130,6 +131,15 @@ def build_unified_master_identity_table(
         for j, b in enumerate(survivors):
             if i == j or a.team != b.team or a.cls != b.cls:
                 continue
+            if a.team not in (Team.TEAM_A, Team.TEAM_B):
+                # Unknown side labels are not evidence that two fragments
+                # belong to the same player; referees are not player IDs.
+                continue
+            # A negative shot_id marks an already-stitched master whose
+            # detections span multiple camera views. Its endpoint pair is
+            # not a single-shot transition, so it cannot seed another merge.
+            if a.shot_id < 0 or b.shot_id < 0:
+                continue
 
             b_frames = {d.frame_idx for d in b.detections}
             # Hard constraint 1: Anti-overlap
@@ -149,7 +159,13 @@ def build_unified_master_identity_table(
                     b_pitch_pt = image_point_to_pitch(bfx, bfy, homography_by_frame[b_start_det.frame_idx])
                     pitch_dist = float(np.hypot(a_pitch_pt.x_m - b_pitch_pt.x_m, a_pitch_pt.y_m - b_pitch_pt.y_m))
 
-                if pitch_dist is not None:
+                if a.shot_id != b.shot_id:
+                    # Pixel positions are not comparable across cuts. Only
+                    # join shots when both endpoints have calibrated pitch
+                    # coordinates and their metric positions agree.
+                    if pitch_dist is not None and pitch_dist <= max_stitch_distance_m:
+                        cost[i, j] = pitch_dist * 10.0 + (gap * 0.1)
+                elif pitch_dist is not None:
                     if pitch_dist <= max_stitch_distance_m:
                         cost[i, j] = pitch_dist * 10.0 + (gap * 0.1)
                 elif pixel_dist < max_stitch_distance_px:
@@ -242,16 +258,16 @@ def assign_tracklets_to_gallery(
 ) -> tuple[int, int]:
     """
     Feeds within-shot-stitched tracklets into the gallery, respecting the
-    <=22 cap. VALIDATED finding: process LONGEST tracklets first, not
+    <=22 cap. The current heuristic processes LONGEST tracklets first, not
     insertion order — since match_tracklets_within_shot's output usually
     still has more entries than real players (residual fragmentation),
     processing in arbitrary order risks a short leftover fragment
     grabbing a gallery slot before a genuinely distinct player's
     tracklet, incorrectly bumping them out when the cap is hit. Sorting
     by duration first means the cap preferentially rejects short,
-    likely-fragment tracklets. Tested on real data: with this ordering,
-    every accepted tracklet had >=335 frames of tracking, every rejected
-    one was shorter — a principled split, not an arbitrary one.
+    likely-fragment tracklets. The duration ordering is a heuristic; its
+    effect on identity accuracy has not been benchmarked in the current
+    worktree.
 
     REAL BUG FOUND during production testing: referees must be excluded
     here. The <=22/<=11-per-team cap is specifically about the two
@@ -268,13 +284,13 @@ def assign_tracklets_to_gallery(
     their own separate sub-cap.
 
     Returns (assigned_count, rejected_count). Rejected count includes
-    both cap-exceeded tracklets AND excluded referee tracklets.
+    both cap-exceeded and excluded unknown/referee tracklets.
     """
-    player_tracklets = [t for t in tracklets if t.team != Team.REFEREE]
-    excluded_referee_count = len(tracklets) - len(player_tracklets)
+    player_tracklets = [t for t in tracklets if t.team in (Team.TEAM_A, Team.TEAM_B)]
+    excluded_tracklet_count = len(tracklets) - len(player_tracklets)
 
     ordered = sorted(player_tracklets, key=lambda t: -t.duration_frames)
-    assigned, rejected = 0, excluded_referee_count
+    assigned, rejected = 0, excluded_tracklet_count
     for t in ordered:
         if gallery.can_add(t.team):
             gallery.add(t)
@@ -328,7 +344,11 @@ def match_tracklets_across_cut(
             matched_id = None
             if t.jersey_number is not None:
                 matched_id = next(
-                    (ident for ident in available_identities if ident.jersey_number == t.jersey_number),
+                    (
+                        ident for ident in available_identities
+                        if ident.jersey_number == t.jersey_number
+                        and (ident.cls is None or t.cls is None or ident.cls == t.cls)
+                    ),
                     None
                 )
             if matched_id is not None:
@@ -351,6 +371,9 @@ def match_tracklets_across_cut(
             for i, t in enumerate(valid_tracklets):
                 t_emb = np.array(t.reid_embedding)
                 for j, ident in enumerate(available_identities):
+                    if t.cls is not None and ident.cls is not None and t.cls != ident.cls:
+                        cost_matrix[i, j] = 1e6
+                        continue
                     i_emb = np.array(ident.reid_embedding) if ident.reid_embedding else None
                     if i_emb is not None:
                         sim = cosine_similarity(t_emb, i_emb)
@@ -366,6 +389,9 @@ def match_tracklets_across_cut(
                 sim = 1.0 - cost_matrix[r, c]
                 t = valid_tracklets[r]
                 ident = available_identities[c]
+
+                if t.cls is not None and ident.cls is not None and t.cls != ident.cls:
+                    continue
 
                 if sim >= similarity_threshold or not gallery.can_add(team):
                     assignments[t.track_id] = ident.master_id
@@ -384,7 +410,11 @@ def match_tracklets_across_cut(
                         new_id = gallery.add(t)
                         assignments[t.track_id] = new_id.master_id
                     elif available_identities:
-                        unmatched_c = [c for c in range(len(available_identities)) if c not in matched_ident_indices]
+                        unmatched_c = [
+                            c for c, ident in enumerate(available_identities)
+                            if c not in matched_ident_indices
+                            and (ident.cls is None or t.cls is None or ident.cls == t.cls)
+                        ]
                         if unmatched_c:
                             best_c = min(unmatched_c, key=lambda c: cost_matrix[r, c])
                             ident = available_identities[best_c]

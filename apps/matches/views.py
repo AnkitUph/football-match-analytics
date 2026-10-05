@@ -815,6 +815,8 @@ def calibrate_match(request, public_id):
     existing_calibrations = list(match.calibrations.order_by("calibration_frame"))
     has_real_stats = TeamStatistics.objects.filter(match=match).exists()
 
+    from ai_engine.stage5_pitch_mapping.smart_assist import has_local_pitch_model
+
     all_landmarks = _all_calibration_landmarks()
     context = {
         "match": match,
@@ -824,6 +826,7 @@ def calibrate_match(request, public_id):
         "landmarks": all_landmarks,
         "landmarks_json": json.dumps(all_landmarks),
         "roboflow_configured": bool(settings.ROBOFLOW_API_KEY),
+        "smart_assist_available": bool(settings.ROBOFLOW_API_KEY) or has_local_pitch_model(),
     }
     return render(request, "matches/calibrate.html", context)
 
@@ -894,9 +897,6 @@ def calibrate_suggest(request, public_id):
     from ai_engine.stage5_pitch_mapping.smart_assist import detect_pitch_keypoints
 
     match = get_object_or_404(Match, public_id=public_id, uploaded_by=request.user)
-
-    if not settings.ROBOFLOW_API_KEY:
-        return JsonResponse({"error": "Roboflow API key is not configured on the server."}, status=503)
 
     video = getattr(match, "video", None)
     if not video or not video.original_video:

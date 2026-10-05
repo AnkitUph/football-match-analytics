@@ -24,12 +24,16 @@ logger = logging.getLogger(__name__)
 _DINO_PROCESSOR = None
 _DINO_MODEL = None
 _DEVICE = None
+_DINO_MODEL_NAME = None
 
 
 def _get_dino_model(model_name: str = "facebook/dinov2-small"):
-    global _DINO_PROCESSOR, _DINO_MODEL, _DEVICE
-    if _DINO_MODEL is not None:
+    global _DINO_PROCESSOR, _DINO_MODEL, _DEVICE, _DINO_MODEL_NAME
+    if _DINO_MODEL is not None and _DINO_MODEL_NAME == model_name:
         return _DINO_PROCESSOR, _DINO_MODEL, _DEVICE
+
+    _DINO_PROCESSOR, _DINO_MODEL, _DEVICE = None, None, None
+    _DINO_MODEL_NAME = model_name
 
     try:
         import torch
@@ -51,10 +55,18 @@ class ReidEmbedder:
     """
     Extracts L2-normalized 384-d appearance embeddings from player image crops.
     """
-    def __init__(self, config: TeamReidConfig | None = None, model_name: str = "facebook/dinov2-small"):
+    def __init__(self, config: TeamReidConfig | None = None, model_name: str | None = None):
         self.config = config
-        self.model_name = model_name
-        self.embedding_dim = 384
+        configured_name = "facebook/dinov2-small"
+        if config is not None:
+            configured_name = config.reid_model_name
+            if (
+                configured_name == "facebook/dinov2-small"
+                and config.hf_model_name != "facebook/dinov2-small"
+            ):
+                configured_name = config.hf_model_name
+        self.model_name = model_name or configured_name
+        self.embedding_dim = config.reid_embedding_dim if config else 384
 
     def embed(self, crop: np.ndarray) -> np.ndarray | None:
         """
@@ -95,7 +107,10 @@ class ReidEmbedder:
         if not valid_pil_crops:
             return results
 
-        processor, model, device = _get_dino_model(self.model_name)
+        if self.config is not None and not self.config.use_hf_dinov2:
+            processor, model, device = None, None, None
+        else:
+            processor, model, device = _get_dino_model(self.model_name)
 
         if processor is None or model is None:
             # Color-histogram fallback embedding (384-dim)
@@ -113,7 +128,7 @@ class ReidEmbedder:
             return results
 
         try:
-            batch_size = 64
+            batch_size = max(1, self.config.reid_batch_size if self.config else 8)
             all_feats = []
             for b_start in range(0, len(valid_pil_crops), batch_size):
                 chunk = valid_pil_crops[b_start : b_start + batch_size]
@@ -159,4 +174,3 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     if denom <= 1e-8:
         return 0.0
     return float(np.dot(a, b) / denom)
-

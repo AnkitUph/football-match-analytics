@@ -28,10 +28,10 @@
             then label each point, or use <strong>Smart-assist</strong> to auto-detect high-confidence keypoints.
         </p>
 
-        {% if not roboflow_configured %}
+        {% if not smart_assist_available %}
             <div class="banner warn">
                 <span class="banner-icon">⚠️</span>
-                Smart-assist is unavailable — ROBOFLOW_API_KEY is not configured. Manual point placement still works.
+                Smart-assist is unavailable — no local pitch model or ROBOFLOW_API_KEY is configured. Manual point placement still works.
             </div>
         {% endif %}
 
@@ -51,7 +51,7 @@
                 <span class="control-label">Frame number</span>
                 <input type="number" class="frame-input" id="frame-idx-input" min="0" value="{{ default_frame_idx }}">
                 <button type="button" class="btn btn-secondary" id="load-frame-btn">🎞 Load Frame</button>
-                <button type="button" class="btn btn-smart" id="smart-assist-btn" {% if not roboflow_configured %}disabled{% endif %}>✨ Smart-assist</button>
+                <button type="button" class="btn btn-smart" id="smart-assist-btn" {% if not smart_assist_available %}disabled{% endif %}>✨ Smart-assist</button>
                 <span class="status-line" id="frame-status"></span>
             </div>
 

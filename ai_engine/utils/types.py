@@ -56,11 +56,11 @@ class Detection:
 @dataclass
 class Tracklet:
     """
-    A short spatial track from Stage 2, scoped to ONE continuous camera shot.
-    Does NOT persist across cuts on its own — that's what Stage 5's identity
-    association (backed by Stage 3's embeddings) is for.
+    A spatial track from Stage 2, normally scoped to one continuous camera
+    shot. Stage 5 may merge detections across shots; a negative shot_id marks
+    a composite already-merged identity reconstructed from saved CSV data.
     """
-    track_id: int              # local ID, only unique within its shot
+    track_id: int              # unique within one processed clip/master table
     shot_id: int                # which shot segment this belongs to (Stage 2.5)
     detections: list[Detection] = field(default_factory=list)
     cls: Optional[ObjectClass] = None

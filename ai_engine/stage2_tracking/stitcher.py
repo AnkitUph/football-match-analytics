@@ -57,6 +57,7 @@ def stitch_tracklets(
         spans[tid] = {
             "start_f": start_f,
             "end_f": end_f,
+            "shot_id": t.shot_id,
             "cls": cls_val,
             "start_center": start_center,
             "end_center": end_center,
@@ -125,6 +126,12 @@ def stitch_tracklets(
                 continue
 
             meta2 = spans[tid2]
+
+            # This stitcher uses image-space proximity, which is only valid
+            # inside one continuous camera view. Cross-cut identity matching
+            # belongs to the calibrated Stage 5 matcher.
+            if meta1["shot_id"] != meta2["shot_id"]:
+                continue
 
             # 1. Class consistency
             if meta1["cls"] != meta2["cls"]:

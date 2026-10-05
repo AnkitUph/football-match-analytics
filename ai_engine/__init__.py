@@ -20,7 +20,11 @@ Suggested build order (see project docs):
     6. stage6_event_detection — possession / passes / shots
     7. stage7_integration    — Celery task wiring into the Django DB
 
-Get 1 -> 2 -> 3(color only) -> 4 -> 5(single-angle) -> 6 -> 7 working on a
-single continuous camera angle FIRST. Add 2.5 + Re-ID (stage 3) + the
-multi-signal matching in stage 5 as a second pass.
+The standalone orchestrator runs Stages 1-4 on a clip and can run Stages 5-6
+when given per-shot calibration points. Enable shot detection to reset Stage 2
+tracking at cuts; enable Re-ID to attempt cross-shot player matching. The web
+application stores Stages 1-4 outputs and runs calibrated Stages 5-6 later,
+then renders the annotated video in Stage 7. Accuracy still needs review on
+the target footage; the standalone path does not create pitch outputs without
+explicit calibration.
 """

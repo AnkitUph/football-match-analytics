@@ -63,6 +63,8 @@ def detect_possession(
     for point in valid_points:
         closest_id, closest_dist = None, float("inf")
         for identity in identities:
+            if identity.team in (Team.REFEREE, Team.UNKNOWN):
+                continue
             pos = identity.trajectory.get(point.frame_idx)
             if pos is None:
                 continue

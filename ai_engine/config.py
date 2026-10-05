@@ -86,6 +86,7 @@ class TeamReidConfig:
     hf_model_name: str = "facebook/dinov2-small"
     reid_model_name: str = "facebook/dinov2-small"
     reid_embedding_dim: int = 384
+    reid_batch_size: int = 8
     reid_similarity_threshold: float = 0.6  # below this -> not a confident match
     ocr_enabled: bool = True
     ocr_min_confidence: float = 0.5
@@ -146,14 +147,12 @@ class PipelineConfig:
     pitch_mapping: PitchMappingConfig = field(default_factory=PitchMappingConfig)
     event_detection: EventDetectionConfig = field(default_factory=EventDetectionConfig)
 
-    # Feature flags — flip these on as you build each stage out.
-    # Keep everything past stage 2 off until stage 1+2 are validated on a
-    # real clip; that's the "single continuous angle first" rule.
+    # Feature flags. Keep optional multi-shot and Re-ID processing explicit
+    # until the configured detector and tracker have been reviewed on footage.
     enable_shot_detection: bool = False
     enable_reid: bool = False
-    # Jersey OCR (Stage 3c): Disabled on broadcast-resolution footage (players <120px tall)
-    # where OCR fails due to compression artifacts. 2D Hungarian tactical lineup solver
-    # and deterministic CIE-Lab kit classification provide 100% accurate starter assignments.
+    # Jersey OCR is disabled by default; enable it only when player crops have
+    # enough source resolution for legible shirt numbers.
     enable_ocr: bool = False
 
 

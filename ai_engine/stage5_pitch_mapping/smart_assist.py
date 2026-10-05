@@ -1,5 +1,5 @@
 """
-Roboflow keypoint-detection call, shared by:
+Pitch-keypoint detection helper, shared by:
   - apps.matches.tasks._run_automatic_calibration (the real, no-human
     path that runs for every match)
   - apps.matches.views.calibrate_suggest (the hidden /calibrate/ page's
@@ -28,6 +28,11 @@ _LOCAL_PITCH_MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "p
 _LOCAL_PITCH_MODEL = None
 
 
+def has_local_pitch_model() -> bool:
+    """Return whether the optional local keypoint checkpoint is installed."""
+    return _LOCAL_PITCH_MODEL_PATH.is_file()
+
+
 def _get_local_pitch_model():
     global _LOCAL_PITCH_MODEL
     if _LOCAL_PITCH_MODEL is None and _LOCAL_PITCH_MODEL_PATH.exists():
@@ -45,14 +50,50 @@ def detect_pitch_keypoints(frame_bgr, api_key=None, confidence_threshold=0.35, m
     Detects up to max_points suggested pixel<->pitch correspondences,
     highest-confidence first.
 
-    Tries local offline pitch keypoint model (pitch_keypoints_best.pt) first.
-    Falls back to hosted Roboflow keypoint model if local model is unavailable
-    or returns fewer than 4 keypoints.
+    Tries the optional local pitch keypoint model first, then the hosted
+    Roboflow model when an API key is supplied. Returns no suggestions if
+    neither source yields at least four mapped landmarks.
     """
     landmarks_by_index = {l["roboflow_index"]: l for l in ROBOFLOW_KEYPOINTS_32}
     h_frame, w_frame = frame_bgr.shape[:2]
 
-    # --- Mode 1: Roboflow Cloud API (High-accuracy broadcast model) ---
+    # --- Mode 1: optional local pitch keypoint model ---
+    local_model = _get_local_pitch_model()
+    if local_model is not None:
+        try:
+            results = local_model.predict(
+                frame_bgr,
+                conf=min(0.20, confidence_threshold),
+                verbose=False
+            )[0]
+            if results.keypoints is not None and len(results.keypoints.data) > 0:
+                kpts = results.keypoints.data[0].cpu().numpy()
+                suggestions = []
+                for idx, (kx, ky, conf) in enumerate(kpts):
+                    if conf < confidence_threshold:
+                        continue
+                    if kx < 0 or kx >= w_frame or ky < 0 or ky >= h_frame:
+                        continue
+                    roboflow_index = idx + 1
+                    landmark = landmarks_by_index.get(roboflow_index)
+                    if landmark is None:
+                        continue
+                    suggestions.append({
+                        "landmark_id": landmark["id"],
+                        "label": landmark["label"],
+                        "pixel_x": float(kx),
+                        "pixel_y": float(ky),
+                        "pitch_x": landmark["x"],
+                        "pitch_y": landmark["y"],
+                        "confidence": float(conf),
+                    })
+                if len(suggestions) >= 4:
+                    suggestions.sort(key=lambda s: -s["confidence"])
+                    return suggestions[:max_points]
+        except Exception as e:
+            _logger.debug("Local pitch keypoint prediction error (%s); trying hosted fallback", e)
+
+    # --- Mode 2: hosted Roboflow fallback ---
     if api_key:
         ok, buf = cv2.imencode(".jpg", frame_bgr)
         if ok:
@@ -94,42 +135,6 @@ def detect_pitch_keypoints(frame_bgr, api_key=None, confidence_threshold=0.35, m
                             suggestions.sort(key=lambda s: -s["confidence"])
                             return suggestions[:max_points]
             except Exception as e:
-                _logger.debug("Roboflow cloud API request error (%s), attempting local fallback", e)
-
-    # --- Mode 2: Local YOLOv8-Pose Pitch Keypoint Model Fallback ---
-    local_model = _get_local_pitch_model()
-    if local_model is not None:
-        try:
-            results = local_model.predict(
-                frame_bgr,
-                conf=min(0.20, confidence_threshold),
-                verbose=False
-            )[0]
-            if results.keypoints is not None and len(results.keypoints.data) > 0:
-                kpts = results.keypoints.data[0].cpu().numpy()
-                suggestions = []
-                for idx, (kx, ky, conf) in enumerate(kpts):
-                    if conf < confidence_threshold:
-                        continue
-                    if kx < 0 or kx >= w_frame or ky < 0 or ky >= h_frame:
-                        continue
-                    roboflow_index = idx + 1
-                    landmark = landmarks_by_index.get(roboflow_index)
-                    if landmark is None:
-                        continue
-                    suggestions.append({
-                        "landmark_id": landmark["id"],
-                        "label": landmark["label"],
-                        "pixel_x": float(kx),
-                        "pixel_y": float(ky),
-                        "pitch_x": landmark["x"],
-                        "pitch_y": landmark["y"],
-                        "confidence": float(conf),
-                    })
-                if len(suggestions) >= 4:
-                    suggestions.sort(key=lambda s: -s["confidence"])
-                    return suggestions[:max_points]
-        except Exception as e:
-            _logger.debug("Local pitch keypoint prediction error (%s)", e)
+                _logger.debug("Roboflow cloud API request error: %s", e)
 
     return []

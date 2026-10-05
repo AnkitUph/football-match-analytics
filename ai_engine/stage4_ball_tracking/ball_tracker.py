@@ -1,18 +1,9 @@
-"""
-Stage 4: Ball Tracking & Frame Interpolation.
+"""Stage 4: ball trajectory extraction and bounded Kalman interpolation.
 
-Validated against real footage (test_11.avi, 375 sampled frames at 12fps):
-251 real detections, 47 gaps (max gap 13 frames / ~1.1 sec), all gaps
-fell within interpolation_max_gap_frames=15 and were filled cleanly by
-the Kalman filter below — zero unresolved gaps on this clip. Resulting
-trajectory was visually smooth with no discontinuities between real and
-interpolated points.
-
-Note on detection rate: validated using conf_thresh=0.15 to catch more
-marginal candidates during testing. At your production conf_thresh=0.35
-(config.py), expect a somewhat lower real-detection hit rate than the
-67% measured here — the interpolation is exactly what's meant to absorb
-that gap, per the ball's known-weaker mAP50 (0.792) from training.
+The tracker produces one candidate ball detection per sampled video frame.
+This module selects the best candidate and interpolates short gaps in pixel
+coordinates. Long or out-of-frame gaps remain unknown; no accuracy claim is
+made here without a current, reproducible evaluation.
 """
 
 import numpy as np
@@ -44,7 +35,7 @@ def _build_kalman_filter(config: BallTrackingConfig) -> KalmanFilter:
     dt = 1.0
     kf.F = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]])
     kf.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]])
-    kf.R *= 5.0
+    kf.R *= config.kalman_measurement_noise
     kf.Q *= config.kalman_process_noise
     kf.P *= 500.0
     return kf
@@ -74,23 +65,36 @@ def interpolate_gaps(
     frames in that gap are marked missing rather than continuing to
     extrapolate into impossible territory.
     """
-    frames = sorted(ball_by_frame.keys())
+    if not ball_by_frame:
+        return []
+
+    # Advance one Kalman step per video frame, even if callers omit frames
+    # with no detections from the mapping.
+    detections_by_frame = ball_by_frame
+    frames = range(min(detections_by_frame), max(detections_by_frame) + 1)
     kf = _build_kalman_filter(config)
 
     initialized = False
     consecutive_missing = 0
     out_of_bounds = False
+    reinitialize_on_detection = False
     trajectory: list[BallTrajectoryPoint] = []
 
     for frame_idx in frames:
-        detection = ball_by_frame[frame_idx]
+        detection = detections_by_frame.get(frame_idx)
 
         if detection is not None:
             cx, cy = detection.center
             z = np.array([cx, cy])
-            if not initialized:
+            if not initialized or reinitialize_on_detection:
+                if reinitialize_on_detection:
+                    # The filter stopped advancing during an untrusted gap.
+                    # Treat this observation as a new segment instead of
+                    # applying it to stale position/velocity covariance.
+                    kf = _build_kalman_filter(config)
                 kf.x = np.array([cx, cy, 0, 0])
                 initialized = True
+                reinitialize_on_detection = False
             else:
                 kf.predict()
                 kf.update(z)
@@ -131,6 +135,8 @@ def interpolate_gaps(
                         BallTrajectoryPoint(frame_idx=frame_idx, x_m=None, y_m=None, interpolated=False)
                     )
             else:
+                if initialized:
+                    reinitialize_on_detection = True
                 trajectory.append(
                     BallTrajectoryPoint(frame_idx=frame_idx, x_m=None, y_m=None, interpolated=False)
                 )

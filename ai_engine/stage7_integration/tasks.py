@@ -1,25 +1,26 @@
 """
-Stage 7: Pipeline Integration & Celery Processing.
+Legacy Stage 7 task kept for compatibility; it is not the web workflow.
+The Django production workflow is implemented in ``apps.matches.tasks``.
+This helper accepts one calibration anchor and is not suitable as the
+production path for multi-shot matches. Its outputs have not been
+compared with the production workflow or benchmarked in the current tree.
 
-This is the ONLY file in ai_engine that imports Django models — every
-other stage stays framework-agnostic so it's testable standalone.
+Historical scope notes (not accuracy claims):
 
-HONEST SCOPE, READ BEFORE WIRING THIS UP:
-
-What this populates with REAL, validated data:
+What this task attempts to populate:
   - TeamStatistics: possession %, shots, passes, distance covered
-    (team-level aggregates — accurate, using Stage 6's validated logic)
+    (team-level aggregates from Stage 6 heuristics)
   - Heatmap-ready trajectory data (derived from MasterIdentity.trajectory)
 
 What this does NOT populate (left at model defaults, i.e. 0):
   - Goals, cards, fouls, tackles, interceptions, clearances, offsides,
     xG — no detection logic exists for any of these. Not a bug, just
     genuinely out of the current pipeline's scope.
-  - PlayerStatistics linked to real named Player records — this pipeline
-    has no jersey-number OCR (still second-pass, unbuilt), so it cannot
+  - PlayerStatistics linked to real named Player records — this legacy
+    task does not use the Stage 3 jersey OCR to
     map a tracked Master ID to an actual roster Player. Per-player rows
     are SKIPPED here rather than saved against guessed/wrong players.
-    Revisit once stage3_team_reid/jersey_ocr.py exists.
+    Revisit if this legacy task is retired or brought up to date.
   - Anything outside the calibrated camera segment(s) — Stage 5/6 only
     produce real numbers where a homography calibration exists for that
     part of the clip. See homography_tracker.py's docstring.
@@ -29,11 +30,8 @@ be sourced from wherever your project actually stores per-match kit
 colors (mentioned in project notes as part of the Phase 3 upload flow,
 but the exact model/field wasn't visible in what I could see of your
 codebase — verify and wire up the real lookup before relying on this).
-IMAGE_PTS/PITCH_PTS are the validated calibration points for this
-specific test clip's box-view segment — for a real uploaded match, this
-whole calibration step needs to come from somewhere else entirely (see
-the "known gap" discussion: manual calibration doesn't scale to a full
-match with multiple camera angles).
+IMAGE_PTS/PITCH_PTS are calibration points for a specific test clip, not
+general calibration values for other videos.
 """
 
 from pathlib import Path

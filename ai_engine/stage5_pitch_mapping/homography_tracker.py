@@ -1,35 +1,10 @@
-"""
-Stage 5a continued: Stateful Homography Propagation.
+"""Stage 5: propagate a calibrated image-to-pitch homography when possible.
 
-REDESIGNED after real-footage testing found the original approach
-(generic background-feature tracking + composed frame-to-frame affine
-transforms) breaks down badly during camera zoom: by 44 frames after
-bootstrap, a known test point mapped to a PHYSICALLY IMPOSSIBLE pitch
-coordinate (x=76m, when the pitch only extends to 52.5m) — chaining many
-small affine transforms together compounds error every step.
-
-FIX, VALIDATED ON THE SAME REAL FOOTAGE THAT BROKE THE OLD APPROACH:
-track the ORIGINAL calibration points directly via optical flow (not
-generic corner features elsewhere in the frame), and re-solve the full
-homography FRESH from their current tracked positions every frame — not
-composed/chained. This avoids compounding: each frame's homography is
-independently solved from the calibration points' current locations, so
-error doesn't accumulate through a long chain of matrix multiplications.
-
-Result: tested across the exact same 109-frame window that broke the old
-approach — error stayed under ~3m throughout (vs. becoming physically
-impossible off-pitch nonsense within 44 frames). Zero calibration points
-lost across the full range.
-
-REMAINING KNOWN LIMITATION: this still relies on the 4 original
-calibration points staying visible and trackable. If the camera cuts
-away entirely, zooms far enough that a point leaves frame, or a player
-occludes one of the box corners for an extended stretch, tracking will
-fail. No automatic recovery/re-bootstrap exists yet for that case — see
-try_recover() below, which is a real fallback (widen the search window
-once) but not a full solution. For long clips spanning real camera cuts,
-Stage 2.5's shot detection + a fresh manual bootstrap per shot remains
-the right long-term design, not chasing this further.
+The tracker follows calibration points and background features between
+frames. It can lose track during cuts, close-ups, occlusion, or camera
+motion; callers must treat missing or unvalidated homographies as
+unavailable. This implementation has not been benchmarked in the current
+worktree.
 """
 
 import cv2
@@ -46,7 +21,8 @@ class HomographyTracker:
     2. Continuous camera-motion propagation (optical flow on background features
        with RANSAC affine estimation) when calibration points leave the frame,
        are occluded, or during long camera pans.
-    Guarantees 100% frame coverage without premature failure or dropped frames.
+    Returns a homography estimate when tracking succeeds. It does not
+    guarantee coverage or calibrated accuracy for every frame.
     """
     def __init__(self, config: PitchMappingConfig):
         self.config = config
@@ -146,21 +122,24 @@ class HomographyTracker:
             self._feat_pts = cv2.goodFeaturesToTrack(self._old_gray, mask=mask, **self._feature_params)
 
         step_H = None
-        new_feat, f_status, _ = cv2.calcOpticalFlowPyrLK(
-            self._old_gray, gray, self._feat_pts, None, **self._lk_feat
-        )
-        if new_feat is not None and f_status is not None:
-            good_old = self._feat_pts[f_status.flatten() == 1]
-            good_new = new_feat[f_status.flatten() == 1]
-            if len(good_new) >= 8:
-                M, _ = cv2.estimateAffinePartial2D(
-                    good_old, good_new, method=cv2.RANSAC, ransacReprojThreshold=3.0
-                )
-                if M is not None:
-                    step_H = np.vstack([M, [0, 0, 1]])
+        new_feat = f_status = None
+        if self._feat_pts is not None and len(self._feat_pts) >= 8:
+            new_feat, f_status, _ = cv2.calcOpticalFlowPyrLK(
+                self._old_gray, gray, self._feat_pts, None, **self._lk_feat
+            )
+            if new_feat is not None and f_status is not None:
+                good_old = self._feat_pts[f_status.flatten() == 1]
+                good_new = new_feat[f_status.flatten() == 1]
+                if len(good_new) >= 8:
+                    M, _ = cv2.estimateAffinePartial2D(
+                        good_old, good_new, method=cv2.RANSAC, ransacReprojThreshold=3.0
+                    )
+                    if M is not None:
+                        step_H = np.vstack([M, [0, 0, 1]])
 
         # 2. Try direct calibration point tracking
         direct_success = False
+        homography_updated = False
         if self._calib_px_points is not None and len(self._calib_px_points) >= 4:
             new_calib, c_status, _ = cv2.calcOpticalFlowPyrLK(
                 self._old_gray, gray, self._calib_px_points, None, **self._lk_calib
@@ -188,6 +167,7 @@ class HomographyTracker:
                             self._calib_px_points = new_calib[c_valid].reshape(-1, 1, 2).astype(np.float32)
                             self._pitch_points = valid_pitch
                             direct_success = True
+                            homography_updated = True
 
         # 3. If direct re-solve was not possible, propagate via camera motion
         if not direct_success:
@@ -200,6 +180,7 @@ class HomographyTracker:
                         cond_prop = np.linalg.cond(H_prop_norm)
                         if det_prop > 1e-4 and cond_prop < 250000:
                             self.current_H = H_prop_norm
+                            homography_updated = True
                 except np.linalg.LinAlgError:
                     pass
 
@@ -224,7 +205,7 @@ class HomographyTracker:
             self._feat_pts = cv2.goodFeaturesToTrack(gray, mask=mask, **self._feature_params)
             self._frames_since_refresh = 0
 
-        return self.current_H
+        return self.current_H if homography_updated else None
 
     def resume_after_cut(
         self,
@@ -252,4 +233,3 @@ class HomographyTracker:
 
     def try_drift_correction(self, frame: np.ndarray) -> bool:
         return False
-

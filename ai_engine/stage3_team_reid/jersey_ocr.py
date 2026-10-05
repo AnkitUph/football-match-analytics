@@ -15,33 +15,26 @@ known failure mode, not a rare edge case, at this resolution. Expect a
 real, possibly large, fraction of tracklets to end up with
 jersey_number=None. That's the aggregation working as intended.
 
-VALIDATED FINDING (test_11.mp4): tested against the single LARGEST player
+HISTORICAL ONE-CROP OBSERVATION (test_11.mp4): tested against the single LARGEST player
 bounding box in the entire match (~104x76px, full bbox, no torso crop) —
 EasyOCR found zero legible text regions at all (empty result, not a
-low-confidence miss). Confirmed this is a genuine resolution ceiling, not
-a bug: a jersey number is maybe 15-20% of torso height, which on a 104px
+low-confidence miss). This suggests resolution limited OCR on that crop;
+it is not a benchmark across footage. A jersey number is maybe 15-20% of torso height, which on a 104px
 full-body box is a handful of pixels, well below what any OCR model can
 resolve through broadcast compression. DEFAULT_CONFIG.enable_ocr is set
-to False for this reason (see config.py) — the code path is otherwise
-correct and untouched, and will produce real reads given footage where
-players are consistently >200px tall.
+to False by default; higher-resolution footage still needs a reviewed
+accuracy estimate before roster identification relies on OCR output.
 
-SECOND, INDEPENDENT CONFIRMATION: a colleague's separate Tesseract-based
+An earlier separate Tesseract-based
 implementation (CLAHE contrast enhancement, dual-polarity Otsu
 binarization, cubic upscaling to 200px height, confidence-weighted
 majority voting — a well-designed module in its own right) was tested
 against the exact same crop. Zero raw digit candidates on EITHER
-polarity, before any confidence filtering. This rules out "wrong OCR
-engine" or "preprocessing wasn't good enough" as the cause: no amount of
-contrast/threshold/upscale tuning can recover spatial detail the source
-frame never captured (upscaling smooths existing pixels, it doesn't add
-information — related to the Nyquist limit). Do not re-attempt jersey
-OCR on this footage with a different engine or better preprocessing;
-the ceiling is the source resolution itself. The colleague's confidence-
-weighted majority vote and dual-polarity binarization ARE worth porting
-into aggregate_jersey_number()/read_number() below if OCR is ever
-re-enabled on higher-resolution footage — just not a reason to add a
-second OCR engine dependency for this footage.
+polarity, before any confidence filtering. This was a limited manual spot
+check, not a comparison of OCR systems or preprocessing methods. Keep OCR
+disabled by default and evaluate it only on footage where shirt numbers
+are visibly legible. Do not infer accuracy from upscaling or confidence
+thresholds alone.
 """
 
 from collections import defaultdict
@@ -123,8 +116,8 @@ def run_jersey_ocr_for_tracklets(
     tracklets: list[Tracklet],
     video_path: str,
     config: TeamReidConfig,
-    max_samples_per_tracklet: int = 8,
-    min_agreeing_reads: int = 2,
+    max_samples_per_tracklet: int | None = None,
+    min_agreeing_reads: int | None = None,
 ) -> None:
     """
     Mutates each PLAYER tracklet's .jersey_number/.jersey_number_conf in place.
@@ -136,6 +129,11 @@ def run_jersey_ocr_for_tracklets(
     """
     import cv2
     from collections import defaultdict
+
+    if max_samples_per_tracklet is None:
+        max_samples_per_tracklet = config.ocr_max_samples_per_tracklet
+    if min_agreeing_reads is None:
+        min_agreeing_reads = config.ocr_min_agreeing_reads
 
     temporal_reader = JerseyNumberReader()
     ocr = JerseyOCR(config) if temporal_reader.deep_model is None else None
