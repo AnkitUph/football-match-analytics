@@ -1,0 +1,121 @@
+Project handoff for the next ChatGPT CLI session
+================================================
+
+Current status (2026-10-04)
+--------------------------
+The user has resubmitted their access request for SoccerNet/SN-PCBAS-2026 on
+Hugging Face and is waiting for it to be accepted. They will tell us when
+access is granted. Wait for that update before attempting the replacement
+download.
+
+SoccerNet Dataset emailed the user that they re-uploaded the SN-PCBAS-2026 ZIP
+files without a password. Their instruction was to fill out the new form and
+download the ZIP files again. The user has now submitted the form.
+
+The user asked to delete the old video downloads and try downloading again.
+That operation did NOT run: the elevated command was interrupted before
+execution. Existing files remain unchanged:
+
+- media/pcbas2026/downloads/videos_352x640_TRAIN.zip (~22.8 GB)
+- media/pcbas2026/downloads/videos_352x640_VAL.zip (~1.36 GB)
+
+The tactical annotation archives and prepared labels also remain. Do not delete
+those. When Hugging Face access is accepted, remove/replace only the two video
+ZIPs, download fresh copies, and verify they are no longer password-encrypted
+before extracting.
+
+Credential distinction
+----------------------
+HF_TOKEN is stored in the project .env and has worked for authenticated
+Hugging Face downloads. Never print, copy, or include the token in logs or
+handoffs. Access may need to be refreshed by submitting the new form; the user
+is currently waiting for acceptance.
+
+The password previously received by email was for the deprecated university
+EXRCS server. Use it only with source="EXRCSDrive". Never use it for Hugging
+Face archives or put it in SOCCERNET_HF_ARCHIVE_PASSWORD.
+
+User's immediate next step
+--------------------------
+Wait for the user to confirm Hugging Face accepted the new request. Then:
+
+1. Download the refreshed train and validation video ZIPs from the
+   SoccerNet/SN-PCBAS-2026 Hugging Face repository using the project's HF_TOKEN.
+2. Verify the ZIPs open without a password (SoccerNet says the re-uploaded
+   archives have no password). Do not use the old EXRCS password.
+3. Extract to:
+   - scratch/pcbas2026/prepared/train/videos
+   - scratch/pcbas2026/prepared/val/videos
+4. Confirm filenames match the annotation sidecars and videos decode.
+5. Proceed with fine-tuning only after successful extraction.
+
+Data and training state
+-----------------------
+- Downloaded SN-PCBAS-2026 tactical archives:
+  media/pcbas2026/downloads/tactical_data_TRAIN.zip
+  media/pcbas2026/downloads/tactical_data_VAL.zip
+- Extracted HDF5 files:
+  scratch/pcbas2026/train_tactical_data.h5
+  scratch/pcbas2026/annotations/val_tactical_data.h5
+- Converted annotations:
+  scratch/pcbas2026/prepared/train/annotations/ (48 games, 91,327 events)
+  scratch/pcbas2026/prepared/val/annotations/ (3 games, 6,070 events)
+- Train/validation video archives have not yet been replaced or decrypted.
+- Fine-tuning has not started. Do not delete the downloaded tactical archives
+  or prepared annotations.
+
+Existing project changes
+------------------------
+- training/train_finetune.py supports --trainable-classes so classes absent
+  from this dataset are excluded from supervised loss rather than used as
+  background negatives.
+- scripts/prepare_pc_bas_events.py maps the 8 SN-PCBAS class IDs to checkpoint
+  labels: DRIVE, PASS, CROSS, THROW IN, SHOT, HEADER,
+  PLAYER SUCCESSFUL TACKLE, BALL PLAYER BLOCK.
+- scripts/extract_pc_bas_videos.py extracts the AES archives using
+  SOCCERNET_HF_ARCHIVE_PASSWORD, but the re-uploaded files are expected not to
+  require a password. It refuses the legacy EXRCS credential.
+- requirements.txt includes h5py and pyzipper.
+- docs/FINE_TUNE_WORKFLOW.md documents the workflow.
+- No tests were run for this workflow.
+
+Training plan and constraints
+-----------------------------
+- Train on the eight mapped classes listed above.
+- Do not treat absent classes as background. GOAL and FREE KICK were planned
+  for heuristics; HIGH PASS and OUT are also absent from this dataset, so
+  retain pretrained behavior or decide on a separate strategy.
+- The training script currently lacks a validation metric. Do not claim quality
+  improvement without evaluation against validation data or manually reviewed
+  project footage.
+- Check the dataset NDA and non-commercial restrictions before distributing or
+  deploying any derived model.
+
+Likely extraction commands after confirming the new ZIPs are downloaded and
+password-free:
+
+  python scripts/extract_pc_bas_videos.py \
+    --archive media/pcbas2026/downloads/videos_352x640_TRAIN.zip \
+    --output-dir scratch/pcbas2026/prepared/train/videos
+
+  python scripts/extract_pc_bas_videos.py \
+    --archive media/pcbas2026/downloads/videos_352x640_VAL.zip \
+    --output-dir scratch/pcbas2026/prepared/val/videos
+
+Possible fine-tuning command (adjust device/runtime; default windows per match
+may be slow on CPU):
+
+  python training/train_finetune.py \
+    --data-dir scratch/pcbas2026/prepared/train \
+    --trainable-classes DRIVE PASS CROSS 'THROW IN' SHOT HEADER \
+      'PLAYER SUCCESSFUL TACKLE' 'BALL PLAYER BLOCK' \
+    --epochs 3 --windows-per-half 8
+
+References
+----------
+- Dataset: https://huggingface.co/datasets/SoccerNet/SN-PCBAS-2026
+- Official SoccerNet data instructions: https://www.soccer-net.org/data
+- FOOTPASS classes/splits: https://github.com/JeremieOchin/FOOTPASS
+- SoccerNet gated dataset access docs: https://huggingface.co/docs/hub/datasets-gated
+- SoccerNet Raw HQ NDA/contact information:
+  https://huggingface.co/datasets/SoccerNet/SoccerNet_raw_HQ/blob/main/README.md

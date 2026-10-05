@@ -622,9 +622,14 @@ def detect_shots(
         vy = (next_point.y_m - current.y_m) / dt_sec
         speed = (vx**2 + vy**2) ** 0.5
 
-        # Exclude frames that are part of an already-identified completed pass (unless high-speed shot)
+        # Exclude frames that are part of an already-identified completed pass
+        # (unless high-speed strike OR close-range finish/tap-in inside penalty box <= 16.5m)
         if pass_intervals and any(start <= current.frame_idx <= end for start, end in pass_intervals):
-            if speed < 16.0:
+            closest_goal_dist = min(
+                ((gc[0] - current.x_m) ** 2 + (gc[1] - current.y_m) ** 2) ** 0.5
+                for gc in goal_centers
+            )
+            if closest_goal_dist > 16.5 and speed < 16.0:
                 continue
 
         best = None  # (goal_center, origin_dist, alignment)
@@ -682,7 +687,8 @@ def detect_shots(
             else:
                 continue
 
-            # Verify shooter presence: at least one attacking player must be in physical striking proximity (<= 3.5m)
+            # Verify shooter presence: at least one candidate player (attacking team or unclassified)
+            # must be in physical striking proximity (<= 3.5m) to exclude non-player graphic artifacts.
             if identities:
                 attacking_team = None
                 if team_defending_goal:
@@ -694,7 +700,8 @@ def detect_shots(
                 for ident in identities:
                     if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
                         continue
-                    if attacking_team is not None and ident.team != attacking_team:
+                    # General: allow the attacking team OR unclassified tracks (Team.UNKNOWN)
+                    if attacking_team is not None and ident.team not in (attacking_team, Team.UNKNOWN):
                         continue
                     for f in range(max(0, current.frame_idx - 4), current.frame_idx + 2):
                         pos = ident.trajectory.get(f)
@@ -705,7 +712,7 @@ def detect_shots(
                                 min_att_d = d
 
                 if min_att_d > 3.5:
-                    continue  # No attacking player close enough to have kicked the ball (discards non-player graphic artifacts)
+                    continue  # No candidate player close enough to have kicked the ball (discards non-player graphic artifacts)
 
             # Extrapolate ball path to goal line (x = goal_center_pitch[0])
             is_on_target = False
@@ -723,16 +730,17 @@ def detect_shots(
             if future_pts and any(abs(p.x_m - goal_center_pitch[0]) <= 2.5 and abs(p.y_m - goal_center_pitch[1]) <= 8.5 for p in future_pts):
                 is_on_target = True
 
-            # Goal detection: ball reaches past the goal line into the net area and settles in the net
+            # Goal detection: ball crosses the goal line (x * goal_dir >= 52.5) strictly
+            # between the goalposts (standard FIFA width 7.32m => abs(y) <= 4.2m with tolerance).
             # If the ball rebounds back out into play (< 48.0m) shortly after reaching the line, it was saved or hit the woodwork.
             is_goal = False
             goal_dir = 1.0 if goal_center_pitch[0] > 0 else -1.0
-            net_entries = [p for p in future_pts if p.x_m * goal_dir >= 51.5 and abs(p.y_m) <= 8.5]
+            net_entries = [p for p in future_pts if p.x_m * goal_dir >= 52.5 and abs(p.y_m) <= 4.2]
             if net_entries:
                 first_net_frame = net_entries[0].frame_idx
                 post_net_pts = [ball_map[f] for f in range(first_net_frame + 1, first_net_frame + 35) if f in ball_map]
                 rebounded = any(p.x_m * goal_dir < 48.0 for p in post_net_pts)
-                net_count = sum(1 for p in post_net_pts if p.x_m * goal_dir >= 51.5)
+                net_count = sum(1 for p in post_net_pts if p.x_m * goal_dir >= 52.5 and abs(p.y_m) <= 4.2)
                 # Physical deceleration check: A ball entering the net decelerates sharply (< 15 m/s).
                 # A ball flying OVER the crossbar into the stands maintains high projectile speed (> 18 m/s).
                 fast_over_bar = False
@@ -741,16 +749,17 @@ def detect_shots(
                         ((post_net_pts[k+1].x_m - post_net_pts[k].x_m)**2 + (post_net_pts[k+1].y_m - post_net_pts[k].y_m)**2)**0.5 * 25.0 > 18.0
                         for k in range(len(post_net_pts) - 1)
                     )
-                if not rebounded and net_count >= 5 and not fast_over_bar:
+                has_subsequent_cut = celebration_intervals and any(0 <= (cs - first_net_frame) <= 100 for cs, ce in celebration_intervals)
+                if not rebounded and not fast_over_bar and (net_count >= 3 or (net_count >= 1 and has_subsequent_cut)):
                     is_goal = True
                     is_on_target = True
 
             # Broadcast goal verification:
-            # If a shot on target inside the attacking zone is followed within 150 frames (6s)
-            # by an extended broadcast celebration/replay cut (>= 450 frames / 18s)
-            if not is_goal and celebration_intervals and is_on_target and origin_dist <= 22.0 and alignment >= 0.85:
+            # If a shot on target inside the attacking zone is followed within 175 frames (7s)
+            # by an extended broadcast celebration/replay cut (>= 300 frames / 12s)
+            if not is_goal and celebration_intervals and is_on_target and origin_dist <= 25.0 and alignment >= 0.85:
                 has_major_cut = any(
-                    0 <= (cut_start - current.frame_idx) <= 150 and (cut_end - cut_start) >= 450
+                    0 <= (cut_start - current.frame_idx) <= 175 and (cut_end - cut_start) >= 300
                     for cut_start, cut_end in celebration_intervals
                 )
                 if has_major_cut:
@@ -779,7 +788,7 @@ def detect_shots(
         g_dir = 1.0 if gx > 0 else -1.0
         net_frames = [
             p.frame_idx for p in valid_points
-            if (p.x_m * g_dir) >= 51.8 and abs(p.y_m) <= 8.5
+            if (p.x_m * g_dir) >= 52.5 and abs(p.y_m) <= 4.2
         ]
         if not net_frames:
             continue

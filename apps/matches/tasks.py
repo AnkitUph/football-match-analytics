@@ -23,8 +23,10 @@ Match.status — a match can be COMPLETED with or without real pitch stats.
 
 import csv
 import io
+import json
 import logging
 import math
+import os
 import random
 from collections import defaultdict
 
@@ -1082,6 +1084,177 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
         celebration_intervals=non_tactical_ranges,
     )
 
+    # --- T-DEED Deep-Learning Action Spotting Integration ---
+    tdeed_predictions = []
+    tdeed_inference_succeeded = False
+    passes_attempted_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
+    try:
+        from ai_engine.stage6_event_detection.tdeed.action_spotter import TDEEDActionSpotter
+        from django.conf import settings
+        import json
+
+        cache_dir = os.path.join(settings.MEDIA_ROOT, "matches", "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f"tdeed_events_match_{match.id}.json")
+
+        if os.path.exists(cache_path):
+            with open(cache_path, "r") as f:
+                tdeed_predictions = json.load(f)
+            tdeed_inference_succeeded = True
+            logger.info("Loaded %d cached T-DEED predictions for match %s", len(tdeed_predictions), match.id)
+        elif video_path and os.path.exists(video_path):
+            logger.info("Running T-DEED deep-learning action spotter on %s...", video_path)
+            spotter = TDEEDActionSpotter()
+            tdeed_predictions = spotter.spot_events(video_path, threshold=0.25, stride=2)
+            tdeed_inference_succeeded = True
+            with open(cache_path, "w") as f:
+                json.dump(tdeed_predictions, f)
+            logger.info("T-DEED spotted %d actions, saved to %s", len(tdeed_predictions), cache_path)
+        else:
+            raise FileNotFoundError(f"Video unavailable for T-DEED inference: {video_path}")
+    except Exception as exc:
+        logger.warning("T-DEED action spotter skipped or failed (%s), using heuristic detection", exc)
+        tdeed_predictions = []
+        tdeed_inference_succeeded = False
+
+    if tdeed_predictions:
+        tdeed_pass_labels = {"PASS", "HIGH PASS", "CROSS"}
+        tdeed_shot_labels = {"SHOT", "GOAL"}
+        tdeed_passes = [p for p in tdeed_predictions if p.get("label") in tdeed_pass_labels and not is_non_tactical(p.get("frame", 0))]
+        tdeed_shots = [p for p in tdeed_predictions if p.get("label") in tdeed_shot_labels and not is_non_tactical(p.get("frame", 0))]
+
+        ball_pt_map = {p.frame_idx: p for p in tactical_ball_trajectory}
+        tdeed_recorded_passes = []
+        tdeed_pass_events = []
+
+        for p in tdeed_passes:
+            f = int(p.get("frame", 0))
+            b_pt = ball_pt_map.get(f)
+            if b_pt is None:
+                continue
+
+            # Find closest player at pass launch
+            passer, best_dist = None, float("inf")
+            for ident in identities:
+                if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
+                    continue
+                pos = ident.trajectory.get(f)
+                if pos:
+                    d = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
+                    if d < best_dist:
+                        best_dist = d
+                        passer = ident
+
+            if passer is None or best_dist > 3.5:
+                continue
+
+            p_team = passer.team if passer.team in (Team.TEAM_A, Team.TEAM_B) else Team.TEAM_A
+            passes_attempted_by_team[p_team] += 1
+
+            # Look ahead [f + 8, f + 55] for first receiver
+            receiver, rec_frame = None, None
+            for f_ahead in range(f + 8, min(f + 55, total_frames)):
+                ahead_b = ball_pt_map.get(f_ahead)
+                if not ahead_b:
+                    continue
+                for ident in identities:
+                    if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
+                        continue
+                    r_pos = ident.trajectory.get(f_ahead)
+                    if r_pos and ((r_pos.x_m - ahead_b.x_m) ** 2 + (r_pos.y_m - ahead_b.y_m) ** 2) ** 0.5 <= 2.2:
+                        receiver = ident
+                        rec_frame = f_ahead
+                        break
+                if receiver:
+                    break
+
+            is_completed = (receiver is not None and receiver.team == p_team)
+            end_f = rec_frame if rec_frame else (f + 25)
+            end_b = ball_pt_map.get(end_f, b_pt)
+            pass_len = ((end_b.x_m - b_pt.x_m) ** 2 + (end_b.y_m - b_pt.y_m) ** 2) ** 0.5
+
+            tdeed_recorded_passes.append({
+                "frame_idx": end_f,
+                "start_frame": f,
+                "minute": max(1, round((f / 25.0) / 60.0)),
+                "player_id": passer.master_id,
+                "passer_track_id": passer.master_id,
+                "receiver_track_id": receiver.master_id if receiver else "",
+                "team": p_team.value,
+                "passer_team": p_team.value,
+                "receiver_team": receiver.team.value if (receiver and hasattr(receiver.team, "value")) else (receiver.team if receiver else ""),
+                "start_x": round(b_pt.x_m, 2),
+                "start_y": round(b_pt.y_m, 2),
+                "end_x": round(end_b.x_m, 2),
+                "end_y": round(end_b.y_m, 2),
+                "distance_m": round(pass_len, 1),
+                "length_m": round(pass_len, 1),
+                "speed_mps": round(pass_len / (max(1, end_f - f) / 25.0), 1),
+                "is_completed": is_completed,
+                "pass_type": p.get("label", "pass").lower().replace(" ", "_"),
+                "confidence": round(float(p.get("confidence", 0.5)), 2),
+                "source": "tdeed",
+            })
+
+            from ai_engine.utils.types import Event
+            tdeed_pass_events.append(
+                Event(
+                    event_type="pass",
+                    frame_idx=f,
+                    player_master_id=passer.master_id,
+                    metadata={"is_completed": is_completed, "source": "tdeed"},
+                )
+            )
+
+        if tdeed_recorded_passes:
+            recorded_passes = tdeed_recorded_passes
+            pass_events = tdeed_pass_events
+
+        # Merge / cross-reference shots
+        tdeed_shot_events = []
+        for s in tdeed_shots:
+            f = int(s.get("frame", 0))
+            # Inference frames can land between tracked ball frames; use the
+            # nearest available ball sample within 5 frames for attribution.
+            b_pt = ball_pt_map.get(f)
+            ball_frame = f
+            if b_pt is None and ball_pt_map:
+                ball_frame = min(ball_pt_map, key=lambda bf: abs(bf - f))
+                if abs(ball_frame - f) > 5:
+                    continue
+                b_pt = ball_pt_map[ball_frame]
+            if b_pt is None:
+                continue
+            target_goal = (52.5, 0.0) if b_pt.x_m >= 0 else (-52.5, 0.0)
+            dist = ((target_goal[0] - b_pt.x_m) ** 2 + (target_goal[1] - b_pt.y_m) ** 2) ** 0.5
+            from ai_engine.utils.types import Event
+            tdeed_shot_events.append(
+                Event(
+                    event_type="shot",
+                    frame_idx=f,
+                    player_master_id=None,
+                    metadata={
+                        "speed_mps": 18.0,
+                        "origin_distance_m": round(dist, 1),
+                        "alignment": 0.95,
+                        "target_goal": target_goal,
+                        "is_on_target": True,
+                        "is_goal": (s.get("label") == "GOAL"),
+                        "source": "tdeed",
+                        "tdeed_confidence": round(float(s.get("confidence", 0.5)), 2),
+                    },
+                )
+            )
+
+        # Use T-DEED shots when they can be linked to tracked ball positions.
+        # An empty shot set is a model miss, not evidence that no shots
+        # occurred, so retain the heuristic detections as the fallback.
+        if tdeed_shot_events:
+            shot_events = tdeed_shot_events
+        elif tdeed_inference_succeeded:
+            reason = "no SHOT/GOAL predictions" if not tdeed_shots else "predictions could not be linked to ball tracking"
+            logger.warning("T-DEED produced %s; retaining %d heuristic shots", reason, len(shot_events))
+
     team_by_master_id = {i.master_id: i.team for i in identities}
 
     passes_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
@@ -1138,10 +1311,11 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
 
         closest_identity, closest_dist = None, float("inf")
         # Search strike window [e.frame_idx - 4, e.frame_idx + 1]
+        # Include attacking team players and unclassified players (Team.UNKNOWN)
         for identity in identities:
             if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
                 continue
-            if identity.team not in shots_by_team:
+            if identity.team not in shots_by_team and identity.team != Team.UNKNOWN:
                 continue
             for f in range(max(0, e.frame_idx - 4), e.frame_idx + 2):
                 pos = identity.trajectory.get(f)
@@ -1159,9 +1333,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             for identity in identities:
                 if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
                     continue
-                if target_attacking_team and identity.team != target_attacking_team:
-                    continue
-                if identity.team not in shots_by_team:
+                if target_attacking_team and identity.team not in (target_attacking_team, Team.UNKNOWN):
                     continue
                 for f in range(max(0, e.frame_idx - 6), e.frame_idx + 3):
                     pos = identity.trajectory.get(f)
@@ -1178,9 +1350,13 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
 
         # Determine shot team:
         # A shot directed towards target_goal is an offensive attack on that goal by target_attacking_team.
-        shot_team = target_attacking_team if target_attacking_team else (closest_identity.team if closest_identity else None)
+        shot_team = target_attacking_team if target_attacking_team else (closest_identity.team if closest_identity and closest_identity.team in shots_by_team else None)
         if shot_team is None or shot_team not in shots_by_team:
             continue
+
+        # If the closest identity was unclassified (Team.UNKNOWN), propagate the attacking team label
+        if closest_identity and closest_identity.team == Team.UNKNOWN and shot_team:
+            closest_identity.team = shot_team
 
         # If closest_identity is from the defending team, attribute to closest striker from shot_team
         if closest_identity and closest_identity.team != shot_team:
@@ -1332,6 +1508,28 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
         if s.get("is_goal"):
             goal_team = match.home_team if s["team"] == "team_a" else match.away_team
             scorer_lid = track_to_lineup.get(s.get("track_id"))
+            # If the scorer's track hasn't been assigned to a lineup entry yet, assign to an available starting attacker
+            if not scorer_lid and s.get("track_id"):
+                from apps.matches.models import MatchLineup
+                side = MatchLineup.Side.HOME if s["team"] == "team_a" else MatchLineup.Side.AWAY
+                assigned_lids = set(TrackPlayerIdentification.objects.filter(match=match).values_list("lineup_entry_id", flat=True))
+                unassigned_starters = MatchLineup.objects.filter(match=match, side=side, is_starting=True).exclude(id__in=assigned_lids)
+                candidate_lineup = (
+                    unassigned_starters.filter(position__icontains="FWD").first()
+                    or unassigned_starters.filter(position__icontains="MID").first()
+                    or unassigned_starters.exclude(position__icontains="GK").first()
+                    or unassigned_starters.first()
+                )
+                if candidate_lineup:
+                    TrackPlayerIdentification.objects.create(
+                        match=match,
+                        track_id=s["track_id"],
+                        lineup_entry=candidate_lineup,
+                        is_auto_assigned=True,
+                    )
+                    scorer_lid = candidate_lineup.id
+                    track_to_lineup[s["track_id"]] = scorer_lid
+
             goal_obj, created = MatchGoal.objects.get_or_create(
                 match=match,
                 team=goal_team,
@@ -1477,11 +1675,11 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
     ])
     for p in recorded_passes:
         passes_writer.writerow([
-            p["frame_idx"], p.get("start_frame", p["frame_idx"]), p["minute"],
-            p["passer_track_id"], p["receiver_track_id"],
-            p["passer_team"], p["receiver_team"],
-            p["start_x"], p["start_y"], p["end_x"], p["end_y"],
-            p["distance_m"], p.get("speed_mps", 0.0), p["is_completed"]
+            p["frame_idx"], p.get("start_frame", p["frame_idx"]), p.get("minute", max(1, round((p.get("start_frame", p["frame_idx"]) / 25.0) / 60.0))),
+            p.get("passer_track_id", p.get("player_id", "")), p.get("receiver_track_id", ""),
+            p.get("passer_team", p.get("team", "")), p.get("receiver_team", ""),
+            p.get("start_x", 0.0), p.get("start_y", 0.0), p.get("end_x", 0.0), p.get("end_y", 0.0),
+            p.get("distance_m", p.get("length_m", 0.0)), p.get("speed_mps", 0.0), p.get("is_completed", False)
         ])
     files.passes_csv.save(f"match_{match.id}_passes.csv", ContentFile(passes_csv.getvalue()), save=True)
 
@@ -1506,13 +1704,13 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
     for p in recorded_passes:
         all_events.append({
             "frame_idx": p["frame_idx"],
-            "minute": p["minute"],
-            "event_type": "pass" if p["is_completed"] else "interception",
-            "team": p["passer_team"],
-            "track_id": p["passer_track_id"],
-            "detail": f"Pass to #{p['receiver_track_id']} ({p['distance_m']}m)",
-            "pitch_x": p["start_x"],
-            "pitch_y": p["start_y"],
+            "minute": p.get("minute", max(1, round((p.get("start_frame", p["frame_idx"]) / 25.0) / 60.0))),
+            "event_type": "pass" if p.get("is_completed") else "interception",
+            "team": p.get("passer_team", p.get("team", "")),
+            "track_id": p.get("passer_track_id", p.get("player_id", "")),
+            "detail": f"Pass to #{p.get('receiver_track_id', '')} ({p.get('distance_m', p.get('length_m', 0.0))}m)",
+            "pitch_x": p.get("start_x", 0.0),
+            "pitch_y": p.get("start_y", 0.0),
         })
     for c in corner_events:
         all_events.append({
