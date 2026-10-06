@@ -425,20 +425,23 @@ def detect_corner_kicks(
     corners = []
     last_corner_frame = -100
 
-    for cur, nxt in zip(valid_points, valid_points[1:]):
+    for idx, cur in enumerate(valid_points):
         if (cur.frame_idx - last_corner_frame) < 100:
             continue
 
-        if abs(cur.x_m) >= 47.0 and abs(cur.y_m) >= 28.0:
-            # Check if ball enters box (|x| >= 34.0, |y| <= 20.0) in subsequent frames
-            dt_frames = nxt.frame_idx - cur.frame_idx
-            if 0 < dt_frames <= 50 and abs(nxt.x_m) >= 34.0 and abs(nxt.y_m) <= 20.0:
+        if abs(cur.x_m) >= 45.0 and abs(cur.y_m) >= 26.0:
+            # Check if ball enters box (|x| >= 32.0, |y| <= 22.0) within subsequent 10 to 75 frames
+            enters_box = any(
+                10 <= (nxt.frame_idx - cur.frame_idx) <= 75 and abs(nxt.x_m) >= 32.0 and abs(nxt.y_m) <= 22.0
+                for nxt in valid_points[idx + 1:idx + 50]
+            )
+            if enters_box:
                 closest_id, closest_team = None, None
                 for ident in identities:
                     pos = ident.trajectory.get(cur.frame_idx)
                     if pos:
                         d = ((pos.x_m - cur.x_m) ** 2 + (pos.y_m - cur.y_m) ** 2) ** 0.5
-                        if d <= 4.0:
+                        if d <= 5.0:
                             closest_id = ident.master_id
                             closest_team = ident.team.value if hasattr(ident.team, "value") else str(ident.team)
                             break

@@ -109,7 +109,7 @@ class HomographyTracker:
         # Check green grass ratio to ignore dugouts, closeups, and replays
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         grass_mask = cv2.inRange(hsv, (35, 38, 38), (85, 255, 255))
-        if (np.count_nonzero(grass_mask) / (frame.shape[0] * frame.shape[1])) < 0.45:
+        if (np.count_nonzero(grass_mask) / (frame.shape[0] * frame.shape[1])) < 0.35:
             # Non-tactical view: pause homography propagation
             self._old_gray = gray
             self._feat_pts = None
@@ -162,7 +162,7 @@ class HomographyTracker:
                         x_span = np.ptp(valid_pitch[:, 0])
                         y_span = np.ptp(valid_pitch[:, 1])
                         # Only accept direct re-solve if points have true 2D pitch spread and non-zero determinant
-                        if det > 0.005 and x_span >= 10.0 and y_span >= 10.0:
+                        if det > 1e-12 and x_span >= 10.0 and y_span >= 10.0:
                             self.current_H = H_norm
                             self._calib_px_points = new_calib[c_valid].reshape(-1, 1, 2).astype(np.float32)
                             self._pitch_points = valid_pitch
@@ -178,7 +178,7 @@ class HomographyTracker:
                         H_prop_norm = H_prop / H_prop[2, 2]
                         det_prop = abs(np.linalg.det(H_prop_norm))
                         cond_prop = np.linalg.cond(H_prop_norm)
-                        if det_prop > 1e-4 and cond_prop < 5000000:
+                        if det_prop > 1e-12 and cond_prop < 50000000:
                             self.current_H = H_prop_norm
                             homography_updated = True
                 except np.linalg.LinAlgError:

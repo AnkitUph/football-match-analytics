@@ -891,7 +891,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 H_norm = H / H[2, 2]
                 det_H = abs(np.linalg.det(H_norm))
                 cond_H = np.linalg.cond(H_norm)
-                if det_H > 1e-4 and cond_H < 5000000:
+                if det_H > 1e-12 and cond_H < 50000000:
                     seg_frames.append(frame_idx)
                     seg_H.append(H_norm.copy())
                     last_good_H = H_norm.copy()
@@ -935,7 +935,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                         alpha = k / N
                         H_corr = ((1.0 - alpha) * np.eye(3) + alpha * Delta) @ seg_H[k]
                         det_corr = abs(np.linalg.det(H_corr))
-                        if det_corr > 0.005 and abs(H_corr[2, 2]) > 1e-4 and np.isfinite(H_corr).all():
+                        if det_corr > 1e-12 and abs(H_corr[2, 2]) > 1e-4 and np.isfinite(H_corr).all():
                             homography_by_frame[f_idx] = H_corr / H_corr[2, 2]
                         else:
                             homography_by_frame[f_idx] = seg_H[k]
@@ -1553,18 +1553,35 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
         for s in tdeed_shots:
             f = int(s.get("frame", 0))
             # Inference frames can land between tracked ball frames; use the
-            # nearest available ball sample within 5 frames for attribution.
+            # nearest available ball sample within 35 frames for attribution.
             b_pt = ball_pt_map.get(f)
             ball_frame = f
             if b_pt is None and ball_pt_map:
                 ball_frame = min(ball_pt_map, key=lambda bf: abs(bf - f))
-                if abs(ball_frame - f) > 5:
-                    continue
-                b_pt = ball_pt_map[ball_frame]
-            if b_pt is None or b_pt.x_m is None or b_pt.y_m is None:
-                continue
-            target_goal = (52.5, 0.0) if b_pt.x_m >= 0 else (-52.5, 0.0)
-            dist = ((target_goal[0] - b_pt.x_m) ** 2 + (target_goal[1] - b_pt.y_m) ** 2) ** 0.5
+                if abs(ball_frame - f) <= 35:
+                    b_pt = ball_pt_map[ball_frame]
+                else:
+                    b_pt = None
+
+            if b_pt is not None and b_pt.x_m is not None and b_pt.y_m is not None:
+                sx, sy = b_pt.x_m, b_pt.y_m
+            else:
+                # Find players active around frame f to infer attacking zone pitch position
+                f_players = [
+                    ident.trajectory[fid]
+                    for ident in identities
+                    for fid in range(max(0, f - 15), f + 16)
+                    if fid in getattr(ident, "trajectory", {}) and ident.trajectory[fid].x_m is not None
+                ]
+                if f_players:
+                    avg_x = sum(pt.x_m for pt in f_players) / len(f_players)
+                    sx = 35.0 if avg_x >= 0 else -35.0
+                    sy = 0.0
+                else:
+                    sx, sy = (35.0, 0.0)
+
+            target_goal = (52.5, 0.0) if sx >= 0 else (-52.5, 0.0)
+            dist = ((target_goal[0] - sx) ** 2 + (target_goal[1] - sy) ** 2) ** 0.5
             from ai_engine.utils.types import Event
             tdeed_shot_events.append(
                 Event(
@@ -1580,6 +1597,8 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                         "is_goal": (s.get("label") == "GOAL"),
                         "source": "tdeed",
                         "tdeed_confidence": round(float(s.get("confidence", 0.5)), 2),
+                        "shot_x": round(sx, 2),
+                        "shot_y": round(sy, 2),
                     },
                 )
             )
@@ -1637,7 +1656,10 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
     for e in shot_events:
         ball_pos = ball_pitch_by_frame.get(e.frame_idx)
         if ball_pos is None or ball_pos.x_m is None or ball_pos.y_m is None:
-            continue
+            if "shot_x" in e.metadata:
+                ball_pos = PitchPoint(x_m=float(e.metadata["shot_x"]), y_m=float(e.metadata["shot_y"]))
+            else:
+                continue
 
         target_goal = e.metadata.get("target_goal", (52.5, 0.0))
         attacking_teams = [t for t, def_goal in team_defending_goal.items() if def_goal != target_goal]
