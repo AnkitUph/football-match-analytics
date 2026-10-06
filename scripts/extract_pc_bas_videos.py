@@ -29,12 +29,29 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
 
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try standard unencrypted zip first
+    try:
+        with zipfile.ZipFile(args.archive, "r") as archive:
+            for member in archive.infolist():
+                if member.is_dir() or not member.filename.lower().endswith(".mp4"):
+                    continue
+                target = (output_dir / Path(member.filename).name).resolve()
+                print(f"Extracting {member.filename} -> {target.name}", flush=True)
+                with archive.open(member) as source, target.open("wb") as destination:
+                    while chunk := source.read(8 * 1024 * 1024):
+                        destination.write(chunk)
+        print(f"Extracted videos to {output_dir}")
+        return
+    except (zipfile.BadZipFile, RuntimeError):
+        pass
+
     password = read_hf_archive_password()
     if not password:
         sys.exit(
-            "SN-PCBAS video ZIP entries are AES encrypted. Set "
-            "SOCCERNET_HF_ARCHIVE_PASSWORD to the password for this Hugging Face archive; "
-            "do not use the legacy EXRCS server password here."
+            "Archive is encrypted and SOCCERNET_HF_ARCHIVE_PASSWORD is not set."
         )
 
     try:
@@ -42,8 +59,6 @@ def main():
     except ImportError as exc:
         raise SystemExit("Install pyzipper to extract the AES-encrypted Hugging Face video archive.") from exc
 
-    output_dir = args.output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
     with pyzipper.AESZipFile(args.archive) as archive:
         archive.pwd = password.encode("utf-8")
         for member in archive.infolist():

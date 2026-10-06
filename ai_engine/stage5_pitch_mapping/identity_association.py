@@ -135,6 +135,17 @@ def build_unified_master_identity_table(
                 # Unknown side labels are not evidence that two fragments
                 # belong to the same player; referees are not player IDs.
                 continue
+
+            # Hard Constraint: Conflicting jersey numbers on the same team can NEVER merge
+            if (
+                a.jersey_number is not None
+                and b.jersey_number is not None
+                and a.jersey_number != b.jersey_number
+                and getattr(a, "jersey_number_conf", 0.0) >= 0.6
+                and getattr(b, "jersey_number_conf", 0.0) >= 0.6
+            ):
+                continue
+
             # A negative shot_id marks an already-stitched master whose
             # detections span multiple camera views. Its endpoint pair is
             # not a single-shot transition, so it cannot seed another merge.
@@ -142,33 +153,51 @@ def build_unified_master_identity_table(
                 continue
 
             b_frames = {d.frame_idx for d in b.detections}
-            # Hard constraint 1: Anti-overlap
+            # Hard constraint 1: Anti-overlap (mutual temporal exclusion)
             if a_frames & b_frames:
                 continue
 
             b_start_det = b.detections[0]
             gap = b_start_det.frame_idx - a_end_frame
-            if 0 < gap < max_gap_frames:
-                b_start_pos = b_start_det.center
-                pixel_dist = float(np.hypot(a_end_pos[0] - b_start_pos[0], a_end_pos[1] - b_start_pos[1]))
+            if gap <= 0:
+                continue
 
-                # Check pitch distance if available
-                pitch_dist = None
-                if homography_by_frame and b_start_det.frame_idx in homography_by_frame and a_pitch_pt is not None:
-                    bfx, bfy = b_start_pos[0], b_start_det.y2
-                    b_pitch_pt = image_point_to_pitch(bfx, bfy, homography_by_frame[b_start_det.frame_idx])
-                    pitch_dist = float(np.hypot(a_pitch_pt.x_m - b_pitch_pt.x_m, a_pitch_pt.y_m - b_pitch_pt.y_m))
+            # Within-shot vs Cross-cut gap limits:
+            # Within shot: up to 125 frames (5.0s).
+            # Across cuts (different shot_ids): up to 375 frames (15.0s) if pitch coordinates exist.
+            max_allowed_gap = 375 if a.shot_id != b.shot_id else max(125, max_gap_frames)
+            if gap > max_allowed_gap:
+                continue
 
-                if a.shot_id != b.shot_id:
-                    # Pixel positions are not comparable across cuts. Only
-                    # join shots when both endpoints have calibrated pitch
-                    # coordinates and their metric positions agree.
-                    if pitch_dist is not None and pitch_dist <= max_stitch_distance_m:
-                        cost[i, j] = pitch_dist * 10.0 + (gap * 0.1)
-                elif pitch_dist is not None:
-                    if pitch_dist <= max_stitch_distance_m:
-                        cost[i, j] = pitch_dist * 10.0 + (gap * 0.1)
-                elif pixel_dist < max_stitch_distance_px:
+            b_start_pos = b_start_det.center
+            pixel_dist = float(np.hypot(a_end_pos[0] - b_start_pos[0], a_end_pos[1] - b_start_pos[1]))
+
+            # Check pitch distance if available
+            pitch_dist = None
+            if homography_by_frame and b_start_det.frame_idx in homography_by_frame and a_pitch_pt is not None:
+                bfx, bfy = b_start_pos[0], b_start_det.y2
+                b_pitch_pt = image_point_to_pitch(bfx, bfy, homography_by_frame[b_start_det.frame_idx])
+                pitch_dist = float(np.hypot(a_pitch_pt.x_m - b_pitch_pt.x_m, a_pitch_pt.y_m - b_pitch_pt.y_m))
+
+            dt_sec = gap / fps
+            # Human sprinting speed cap: 10.0 m/s (36 km/h) anti-hallucination limit
+            max_feasible_dist_m = min(35.0, 2.5 + 8.5 * dt_sec)
+
+            if pitch_dist is not None:
+                speed_mps = pitch_dist / max(dt_sec, 0.04)
+                if speed_mps <= 10.0 and pitch_dist <= max_feasible_dist_m:
+                    base_cost = pitch_dist * 8.0 + (gap * 0.08)
+                    # Jersey number confirmation bonus
+                    if (
+                        a.jersey_number is not None
+                        and b.jersey_number is not None
+                        and a.jersey_number == b.jersey_number
+                    ):
+                        base_cost = max(1.0, base_cost - 40.0)
+                    cost[i, j] = base_cost
+            elif a.shot_id == b.shot_id and gap < max_gap_frames:
+                # Same shot pixel distance fallback
+                if pixel_dist < max_stitch_distance_px:
                     cost[i, j] = pixel_dist + (gap * 0.2)
 
     row_ind, col_ind = linear_sum_assignment(cost)

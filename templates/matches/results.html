@@ -60,7 +60,7 @@
                 <div class="team-scorers home-scorers-list">
                     {% for g in home_goals %}
                     <div class="scorer-pill" onclick="seekVideoToGoal({{ g.minute }}, {{ g.frame_idx|default:0 }})" title="Jump video to goal replay ({{ g.minute }}')">
-                        <span class="scorer-name">{% if g.scorer.jersey_number %}#{{ g.scorer.jersey_number }} {% endif %}{{ g.scorer.player_name|default:"Scorer" }}</span>
+                        <span class="scorer-name">{% if g.scorer.jersey_number %}#{{ g.scorer.jersey_number }} {% endif %}{{ g.scorer.player_name|default:"Scorer" }}{% if g.assistant %} <span class="assistant-tag" style="opacity: 0.85; font-size: 0.85em; font-weight: normal; color: #94a3b8;">(ast. #{{ g.assistant.jersey_number }} {{ g.assistant.player_name }})</span>{% endif %}</span>
                         <span class="scorer-min">{{ g.minute }}'{% if g.is_own_goal %} (OG){% endif %}</span>
                         <span class="scorer-icon">⚽</span>
                     </div>
@@ -71,7 +71,7 @@
                     {% for g in away_goals %}
                     <div class="scorer-pill" onclick="seekVideoToGoal({{ g.minute }}, {{ g.frame_idx|default:0 }})" title="Jump video to goal replay ({{ g.minute }}')">
                         <span class="scorer-icon">⚽</span>
-                        <span class="scorer-name">{% if g.scorer.jersey_number %}#{{ g.scorer.jersey_number }} {% endif %}{{ g.scorer.player_name|default:"Scorer" }}</span>
+                        <span class="scorer-name">{% if g.scorer.jersey_number %}#{{ g.scorer.jersey_number }} {% endif %}{{ g.scorer.player_name|default:"Scorer" }}{% if g.assistant %} <span class="assistant-tag" style="opacity: 0.85; font-size: 0.85em; font-weight: normal; color: #94a3b8;">(ast. #{{ g.assistant.jersey_number }} {{ g.assistant.player_name }})</span>{% endif %}</span>
                         <span class="scorer-min">{{ g.minute }}'{% if g.is_own_goal %} (OG){% endif %}</span>
                     </div>
                     {% endfor %}
@@ -199,12 +199,14 @@
                                         style="font-size:13px;font-weight:600;color:#666;">({{ team_stats.away.pass_accuracy }}%)</span></div>
                                 <div class="metric-label">{{ match.away_team.short_name }} Passes</div>
                             </div>
-                            <div class="metric-card">
-                                <div class="metric-value">{{ team_stats.home.distance_km }}km</div>
+                            <div class="metric-card" title="Tracked on-screen distance across calibrated camera shots, with standard 90-minute full-match extrapolation">
+                                <div class="metric-value">{{ team_stats.home.distance_tracked_km|default:team_stats.home.distance_km }}km <span
+                                        style="font-size:12px;font-weight:600;color:#94a3b8;" title="Extrapolated full match pace">({{ team_stats.home.distance_extrapolated_km }}km pace)</span></div>
                                 <div class="metric-label">{{ match.home_team.short_name }} Distance</div>
                             </div>
-                            <div class="metric-card">
-                                <div class="metric-value">{{ team_stats.away.distance_km }}km</div>
+                            <div class="metric-card" title="Tracked on-screen distance across calibrated camera shots, with standard 90-minute full-match extrapolation">
+                                <div class="metric-value">{{ team_stats.away.distance_tracked_km|default:team_stats.away.distance_km }}km <span
+                                        style="font-size:12px;font-weight:600;color:#94a3b8;" title="Extrapolated full match pace">({{ team_stats.away.distance_extrapolated_km }}km pace)</span></div>
                                 <div class="metric-label">{{ match.away_team.short_name }} Distance</div>
                             </div>
                         </div>

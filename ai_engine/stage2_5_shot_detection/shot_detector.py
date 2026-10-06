@@ -33,12 +33,20 @@ def detect_shot_boundaries(
             )
         )
         scene_manager.detect_scenes(video=video)
-        boundaries = [
-            (int(start.get_frames()), int(end.get_frames()))
-            for start, end in scene_manager.get_scene_list(start_in_scene=True)
-        ]
+        boundaries = []
+        for start, end in scene_manager.get_scene_list(start_in_scene=True):
+            s_fn = getattr(start, "frame_num", None)
+            if s_fn is None:
+                s_fn = start.get_frames()
+            e_fn = getattr(end, "frame_num", None)
+            if e_fn is None:
+                e_fn = end.get_frames()
+            boundaries.append((int(s_fn), int(e_fn)))
     finally:
-        video.close()
+        if hasattr(video, "close"):
+            video.close()
+        elif hasattr(video, "capture") and hasattr(video.capture, "release"):
+            video.capture.release()
 
     if not boundaries:
         raise IOError(f"No frames could be read while detecting shots in {video_path}")
@@ -91,7 +99,7 @@ def classify_shot(frame: np.ndarray, config: ShotDetectionConfig) -> ShotType:
     )
     line_pixel_count = 0
     if lines is not None:
-        for x1, y1, x2, y2 in lines[:, 0]:
+        for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
             line_pixel_count += int(round(np.hypot(x2 - x1, y2 - y1)))
 
     if (

@@ -75,18 +75,21 @@ def perceptual_kit_distance(bgr1: np.ndarray, bgr2: np.ndarray, l_weight: float 
     n2 = bgr2.astype(np.float32) / max(float(np.linalg.norm(bgr2)), 1e-6)
     chrom_dist = float(np.linalg.norm(n1 - n2))
 
-    # Red-vs-Yellow chromatic ratio discriminator:
-    # Red has R >> G and R >> B. Yellow has R ~ G and R,G >> B.
+    # Red-vs-Yellow and Blue-vs-Red chromatic ratio discriminators
     r1, g1, b1 = float(bgr1[2]), float(bgr1[1]), float(bgr1[0])
     r2, g2, b2 = float(bgr2[2]), float(bgr2[1]), float(bgr2[0])
     rg_ratio1 = (r1 - g1) / max(r1 + g1, 1.0)
     rg_ratio2 = (r2 - g2) / max(r2 + g2, 1.0)
     rg_dist = abs(rg_ratio1 - rg_ratio2)
 
-    return lab_dist + 40.0 * chrom_dist + 50.0 * rg_dist
+    br_ratio1 = (b1 - r1) / max(b1 + r1, 1.0)
+    br_ratio2 = (b2 - r2) / max(b2 + r2, 1.0)
+    br_dist = abs(br_ratio1 - br_ratio2)
+
+    return lab_dist + 40.0 * chrom_dist + 40.0 * rg_dist + 50.0 * br_dist
 
 
-def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
+def sample_torso_color(crop: np.ndarray, kit_is_green: bool = False) -> np.ndarray | None:
     """
     Samples a tight chest-region crop, dynamically decouples pitch grass pixels using
     HSV hue and saturation isolation, and returns the median BGR color of the jersey fabric.
@@ -98,20 +101,25 @@ def sample_torso_color(crop: np.ndarray) -> np.ndarray | None:
     if h < 15 or w < 8:
         return None
 
-    # Use the central chest to reduce pitch pixels when the detector box is
-    # loose, while retaining green jersey pixels as valid kit evidence.
-    torso = crop[int(h * 0.24):int(h * 0.44), int(w * 0.38):int(w * 0.62)]
+    # Use the central torso (20%-46% height, 25%-75% width) to capture jersey fabric
+    # while excluding head/neck, shorts, and green pitch grass borders.
+    torso = crop[int(h * 0.20):int(h * 0.46), int(w * 0.25):int(w * 0.75)]
     if torso.size == 0:
         return None
 
     try:
-        # The crop is already a narrow central chest region. Keep saturated
-        # green pixels here: hue-based grass masks erase green kits.
         hsv_torso = cv2.cvtColor(torso, cv2.COLOR_BGR2HSV)
-        kit = (hsv_torso[:, :, 1] >= 45) & (hsv_torso[:, :, 2] >= 35)
-        kit_pixels = torso[kit]
-        if len(kit_pixels) >= 8:
-            return np.median(kit_pixels.astype(np.float32), axis=0)
+        if not kit_is_green:
+            # Mask out green pitch grass: Hue in [33, 82], Saturation >= 35, Value >= 25
+            is_grass = (hsv_torso[:, :, 0] >= 33) & (hsv_torso[:, :, 0] <= 82) & (hsv_torso[:, :, 1] >= 35) & (hsv_torso[:, :, 2] >= 25)
+            kit_pixels = torso[~is_grass]
+            if len(kit_pixels) >= 6:
+                return np.median(kit_pixels.astype(np.float32), axis=0)
+        else:
+            kit = (hsv_torso[:, :, 1] >= 40) & (hsv_torso[:, :, 2] >= 30)
+            kit_pixels = torso[kit]
+            if len(kit_pixels) >= 6:
+                return np.median(kit_pixels.astype(np.float32), axis=0)
     except Exception:
         pass
 
@@ -196,13 +204,22 @@ def _balanced_margin_partition(
 ) -> dict[int, Team]:
     """
     Classifies tracks strictly by perceptual distance to ground truth team kits.
+    Referees are isolated to Team.REFEREE.
     Goalkeepers are classified by proximity to goalkeeper kit colors.
+    Outfield players vote across multiple frames with a 65% consensus threshold
+    to prevent a single noisy frame from flipping or invalidating the track.
     """
     result = {}
     for tid in track_ids:
+        # Strict Referee Isolation
+        if cls_by_track:
+            c = cls_by_track.get(tid)
+            c_val = getattr(c, "value", str(c)).lower()
+            if c_val == "referee":
+                result[tid] = Team.REFEREE
+                continue
+
         col = colors.get(tid)
-        # Missing torso evidence should stay unknown; neutral gray must not
-        # be forced into one of the two teams.
         if col is None:
             result[tid] = Team.UNKNOWN
             continue
@@ -210,7 +227,8 @@ def _balanced_margin_partition(
         is_gk = False
         if cls_by_track:
             c = cls_by_track.get(tid)
-            is_gk = (c == "goalkeeper" or getattr(c, "value", "") == "goalkeeper")
+            c_val = getattr(c, "value", str(c)).lower()
+            is_gk = (c_val == "goalkeeper")
 
         home_ref = home_bgr
         away_ref = away_bgr
@@ -218,34 +236,73 @@ def _balanced_margin_partition(
             home_ref = home_gk_bgr if home_gk_bgr is not None else home_bgr
             away_ref = away_gk_bgr if away_gk_bgr is not None else away_bgr
 
-        samples = (color_samples_by_track or {}).get(tid, [])
-        if not samples:
-            dh = perceptual_kit_distance(col, home_ref)
-            da = perceptual_kit_distance(col, away_ref)
-            result[tid] = (
-                Team.UNKNOWN if abs(dh - da) < 5.0
-                else (Team.TEAM_A if dh < da else Team.TEAM_B)
-            )
-            continue
+        # Check if kits have distinct Blue vs Red polarity
+        home_is_blue_away_red = (home_ref[0] > home_ref[2]) and (away_ref[2] > away_ref[0])
+        home_is_red_away_blue = (home_ref[2] > home_ref[0]) and (away_ref[0] > away_ref[2])
 
-        # A single bad crop can contain mostly pitch or an overlapping
-        # player. Vote across independently sampled frames; if confident
-        # samples disagree, the track may contain an ID switch, so do not
-        # paint every box with one team's name.
+        samples = (color_samples_by_track or {}).get(tid, [])
         votes = []
         for sample in samples:
             if sample is None:
                 continue
             dh = perceptual_kit_distance(sample, home_ref)
             da = perceptual_kit_distance(sample, away_ref)
+
+            # Polarity discrimination:
+            # When one kit is Blue and the other is Red/Claret, B-R polarity is invariant to lighting
+            b_val, r_val = float(sample[0]), float(sample[2])
+            if home_is_blue_away_red and not is_gk:
+                if b_val - r_val >= 12.0:
+                    votes.append(Team.TEAM_A)
+                    continue
+                elif r_val - b_val >= 4.0:
+                    votes.append(Team.TEAM_B)
+                    continue
+            elif home_is_red_away_blue and not is_gk:
+                if r_val - b_val >= 12.0:
+                    votes.append(Team.TEAM_A)
+                    continue
+                elif b_val - r_val >= 4.0:
+                    votes.append(Team.TEAM_B)
+                    continue
+
             if abs(dh - da) < 5.0:
                 continue
             votes.append(Team.TEAM_A if dh < da else Team.TEAM_B)
 
-        if len(votes) >= 2 and len(set(votes)) == 1:
-            result[tid] = votes[0]
+        if votes:
+            n_a = sum(1 for v in votes if v == Team.TEAM_A)
+            n_b = sum(1 for v in votes if v == Team.TEAM_B)
+            total_v = len(votes)
+            if n_a / total_v >= 0.60:
+                result[tid] = Team.TEAM_A
+            elif n_b / total_v >= 0.60:
+                result[tid] = Team.TEAM_B
+            else:
+                result[tid] = Team.UNKNOWN
         else:
-            result[tid] = Team.UNKNOWN
+            b_val, r_val = float(col[0]), float(col[2])
+            if home_is_blue_away_red and not is_gk:
+                if b_val - r_val >= 12.0:
+                    result[tid] = Team.TEAM_A
+                    continue
+                elif r_val - b_val >= 4.0:
+                    result[tid] = Team.TEAM_B
+                    continue
+            elif home_is_red_away_blue and not is_gk:
+                if r_val - b_val >= 12.0:
+                    result[tid] = Team.TEAM_A
+                    continue
+                elif b_val - r_val >= 4.0:
+                    result[tid] = Team.TEAM_B
+                    continue
+
+            dh = perceptual_kit_distance(col, home_ref)
+            da = perceptual_kit_distance(col, away_ref)
+            if abs(dh - da) < 6.0:
+                result[tid] = Team.UNKNOWN
+            else:
+                result[tid] = Team.TEAM_A if dh < da else Team.TEAM_B
 
     return result
 

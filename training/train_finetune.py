@@ -48,7 +48,17 @@ class BallMatchDataset(Dataset):
             annotation = json.loads(annotation_path.read_text())
             video_value = annotation.get("video")
             if video_value:
-                video = (annotation_path.parent / video_value).resolve()
+                cand_path = Path(video_value)
+                if cand_path.is_file():
+                    video = cand_path.resolve()
+                elif str(video_value).startswith("/app/"):
+                    video = (ROOT / str(video_value)[5:]).resolve()
+                elif (annotation_path.parent / video_value).is_file():
+                    video = (annotation_path.parent / video_value).resolve()
+                elif (self.root / "videos" / Path(video_value).name).is_file():
+                    video = (self.root / "videos" / Path(video_value).name).resolve()
+                else:
+                    video = cand_path
             else:
                 candidates = sorted(annotation_path.parent.glob("*.mp4")) + sorted(
                     annotation_path.parent.glob("*.mkv")
@@ -176,6 +186,7 @@ def main():
     parser.add_argument("--out-dir", type=Path, default=ROOT / "ai_engine/models/finetuned")
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or xpu")
     parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--start-epoch", type=int, default=1, help="First epoch number (for resuming)")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--windows-per-half", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-5)
@@ -224,10 +235,13 @@ def main():
     class_weights[1:] = 4.0
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, args.epochs + 1):
+    start_epoch = args.start_epoch
+    end_epoch = start_epoch + args.epochs - 1
+    for epoch in range(start_epoch, end_epoch + 1):
         net.train()
         total_loss = 0.0
-        for frames, target, displacement in loader:
+        n_steps = len(loader)
+        for step, (frames, target, displacement) in enumerate(loader, 1):
             frames = frames.to(device)
             target = target.to(device)
             displacement = displacement.to(device)
@@ -245,11 +259,15 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_((p for p in net.parameters() if p.requires_grad), 1.0)
             optimizer.step()
-            total_loss += float(loss.detach())
+            step_loss = float(loss.detach())
+            total_loss += step_loss
+            if step % 10 == 0 or step == n_steps:
+                running_avg = total_loss / step
+                print(f"[Epoch {epoch}/{end_epoch}] Step {step}/{n_steps}: loss={step_loss:.4f} (running avg: {running_avg:.4f})", flush=True)
         mean_loss = total_loss / max(1, len(loader))
         output = args.out_dir / f"tdeed_ball_finetuned_epoch{epoch}.pt"
         torch.save(spotter.model.state_dict(), output)
-        print(f"Epoch {epoch}/{args.epochs}: loss={mean_loss:.4f}; saved {output}")
+        print(f"Epoch {epoch}/{end_epoch}: loss={mean_loss:.4f}; saved {output}", flush=True)
 
 
 if __name__ == "__main__":

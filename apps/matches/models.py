@@ -559,6 +559,15 @@ class MatchGoal(models.Model):
         help_text="Optional — a goal can be logged before the scorer is confirmed"
     )
 
+    assistant = models.ForeignKey(
+        MatchLineup,
+        on_delete=models.SET_NULL,
+        related_name="goals_assisted",
+        blank=True,
+        null=True,
+        help_text="Optional — player who provided the assist for this goal"
+    )
+
     is_own_goal = models.BooleanField(
         default=False,
         help_text="If True, scorer (if set) belongs to the side OPPOSING `team`"

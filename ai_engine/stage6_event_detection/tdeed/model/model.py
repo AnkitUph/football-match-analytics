@@ -182,7 +182,7 @@ class TDEEDModel(BaseRGBModel):
                 sum(p.numel() for p in self._pred_fine.parameters()))
 
     def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu', args=None):
-        self.device = device
+        self.device = torch.device(device)
         self._model = TDEEDModel.Impl(args=args)
         self._model.print_stats()
         self._args = args

@@ -45,3 +45,5 @@ easyocr>=1.7,<2
 reportlab
 lightgbm>=4.0
 timm>=1.0
+transformers
+tabulate

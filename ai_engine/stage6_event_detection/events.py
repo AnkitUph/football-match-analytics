@@ -732,17 +732,17 @@ def detect_shots(
             if future_pts and any(abs(p.x_m - goal_center_pitch[0]) <= 2.5 and abs(p.y_m - goal_center_pitch[1]) <= 8.5 for p in future_pts):
                 is_on_target = True
 
-            # Goal detection: ball crosses the goal line (x * goal_dir >= 52.5) strictly
-            # between the goalposts (standard FIFA width 7.32m => abs(y) <= 4.2m with tolerance).
+            # Goal detection: ball crosses the goal line (x * goal_dir >= 52.0) strictly
+            # between the goalposts (allowing up to 7.5m in y due to 3D elevation perspective projection of elevated netting).
             # If the ball rebounds back out into play (< 48.0m) shortly after reaching the line, it was saved or hit the woodwork.
             is_goal = False
             goal_dir = 1.0 if goal_center_pitch[0] > 0 else -1.0
-            net_entries = [p for p in future_pts if p.x_m * goal_dir >= 52.5 and abs(p.y_m) <= 4.2]
+            net_entries = [p for p in future_pts if p.x_m * goal_dir >= 52.0 and abs(p.y_m) <= 7.5]
             if net_entries:
                 first_net_frame = net_entries[0].frame_idx
                 post_net_pts = [ball_map[f] for f in range(first_net_frame + 1, first_net_frame + 35) if f in ball_map]
                 rebounded = any(p.x_m * goal_dir < 48.0 for p in post_net_pts)
-                net_count = sum(1 for p in post_net_pts if p.x_m * goal_dir >= 52.5 and abs(p.y_m) <= 4.2)
+                net_count = sum(1 for p in post_net_pts if p.x_m * goal_dir >= 52.0 and abs(p.y_m) <= 7.5)
                 # Physical deceleration check: A ball entering the net decelerates sharply (< 15 m/s).
                 # A ball flying OVER the crossbar into the stands maintains high projectile speed (> 18 m/s).
                 fast_over_bar = False
@@ -751,8 +751,8 @@ def detect_shots(
                         ((post_net_pts[k+1].x_m - post_net_pts[k].x_m)**2 + (post_net_pts[k+1].y_m - post_net_pts[k].y_m)**2)**0.5 * 25.0 > 18.0
                         for k in range(len(post_net_pts) - 1)
                     )
-                has_subsequent_cut = celebration_intervals and any(0 <= (cs - first_net_frame) <= 100 for cs, ce in celebration_intervals)
-                if not rebounded and not fast_over_bar and (net_count >= 3 or (net_count >= 1 and has_subsequent_cut)):
+                has_subsequent_cut = celebration_intervals and any(0 <= (cs - first_net_frame) <= 150 for cs, ce in celebration_intervals)
+                if not rebounded and not fast_over_bar and (net_count >= 2 or (net_count >= 1 and has_subsequent_cut)):
                     is_goal = True
                     is_on_target = True
 
@@ -790,17 +790,17 @@ def detect_shots(
         g_dir = 1.0 if gx > 0 else -1.0
         net_frames = [
             p.frame_idx for p in valid_points
-            if (p.x_m * g_dir) >= 52.5 and abs(p.y_m) <= 4.2
+            if (p.x_m * g_dir) >= 52.0 and abs(p.y_m) <= 7.5
         ]
         if not net_frames:
             continue
 
-        # Find contiguous resting clusters (at least 12 frames in net)
+        # Find contiguous resting clusters (at least 5 frames in net)
         import itertools
         clusters = []
         for k, g in itertools.groupby(enumerate(net_frames), lambda ix: ix[0] - ix[1]):
             grp = [x[1] for x in g]
-            if len(grp) >= 12:
+            if len(grp) >= 5:
                 clusters.append((grp[0], grp[-1]))
 
         for start_net, end_net in clusters:

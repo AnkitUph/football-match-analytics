@@ -178,7 +178,7 @@ class HomographyTracker:
                         H_prop_norm = H_prop / H_prop[2, 2]
                         det_prop = abs(np.linalg.det(H_prop_norm))
                         cond_prop = np.linalg.cond(H_prop_norm)
-                        if det_prop > 1e-4 and cond_prop < 250000:
+                        if det_prop > 1e-4 and cond_prop < 5000000:
                             self.current_H = H_prop_norm
                             homography_updated = True
                 except np.linalg.LinAlgError:

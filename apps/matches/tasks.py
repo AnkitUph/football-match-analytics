@@ -876,7 +876,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 H_norm = H / H[2, 2]
                 det_H = abs(np.linalg.det(H_norm))
                 cond_H = np.linalg.cond(H_norm)
-                if det_H > 1e-4 and cond_H < 250000:
+                if det_H > 1e-4 and cond_H < 5000000:
                     seg_frames.append(frame_idx)
                     seg_H.append(H_norm.copy())
                 else:
@@ -1006,6 +1006,76 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             jersey_number=jersey_number,
             jersey_number_conf=jersey_conf,
         ))
+
+    # Refresh team classifications if needed (e.g. high unknown ratio or newly configured kits)
+    unknown_track_count = sum(1 for t in valid if t.team == Team.UNKNOWN)
+    if (
+        unknown_track_count / max(len(valid), 1) > 0.08
+        and video_path
+        and os.path.exists(video_path)
+        and match.home_kit_color
+        and match.away_kit_color
+    ):
+        logger.info(
+            "compute_pitch_mapping: %d/%d tracks are UNKNOWN; running grass-masked team classification from %s",
+            unknown_track_count, len(valid), video_path,
+        )
+        try:
+            from ai_engine.stage3_team_reid.team_classifier import (
+                sample_torso_color,
+                classify_teams_with_fallback,
+            )
+            crops_by_frame = defaultdict(list)
+            for t in valid:
+                dets = t.detections
+                n = len(dets)
+                indices = [0, n // 4, n // 2, 3 * n // 4, n - 1] if n >= 5 else list(range(n))
+                for idx in set(indices):
+                    d = dets[idx]
+                    crops_by_frame[d.frame_idx].append((t.track_id, (d.x1, d.y1, d.x2, d.y2)))
+
+            cap_reclass = cv2.VideoCapture(video_path)
+            colors_by_track = defaultdict(list)
+            sorted_f = sorted(crops_by_frame.keys())
+            curr_f = 0
+            for f_idx in sorted_f:
+                if f_idx != curr_f:
+                    if 0 < f_idx - curr_f <= 5:
+                        while curr_f < f_idx:
+                            cap_reclass.grab()
+                            curr_f += 1
+                    else:
+                        cap_reclass.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
+                        curr_f = f_idx
+                ret, frame = cap_reclass.read()
+                curr_f += 1
+                if not ret:
+                    continue
+                for tid, (x1, y1, x2, y2) in crops_by_frame[f_idx]:
+                    crop = frame[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
+                    col = sample_torso_color(crop)
+                    if col is not None:
+                        colors_by_track[tid].append(col)
+            cap_reclass.release()
+
+            home_bgr = _hex_to_bgr(match.home_kit_color)
+            away_bgr = _hex_to_bgr(match.away_kit_color)
+            home_gk_bgr = _hex_to_bgr(match.home_gk_kit_color) if match.home_gk_kit_color else None
+            away_gk_bgr = _hex_to_bgr(match.away_gk_kit_color) if match.away_gk_kit_color else None
+            median_colors = {tid: np.median(cols, axis=0) for tid, cols in colors_by_track.items() if cols}
+            cls_by_track_map = {t.track_id: t.cls for t in valid}
+            team_by_track_id = classify_teams_with_fallback(
+                median_colors, home_bgr, away_bgr, DEFAULT_CONFIG.team_reid,
+                home_gk_bgr=home_gk_bgr, away_gk_bgr=away_gk_bgr,
+                cls_by_track=cls_by_track_map,
+                color_samples_by_track=colors_by_track,
+            )
+            for t in valid:
+                if t.track_id in team_by_track_id:
+                    t.team = team_by_track_id[t.track_id]
+            logger.info("compute_pitch_mapping: Refreshed %d tracklet teams successfully", len(team_by_track_id))
+        except Exception as exc:
+            logger.warning("compute_pitch_mapping: Team re-classification failed (%s), proceeding with existing teams", exc)
 
     # --- Reconstruct ball trajectory from the saved ball_tracking_csv ---
     ball_trajectory = []
@@ -1305,13 +1375,14 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             p_team = passer.team
             passes_attempted_by_team[p_team] += 1
 
-            # Look ahead [f + 8, f + 55] for first receiver
+            # Look ahead [f + 8, f + 85] for first receiver with dynamic trajectory proximity
             receiver, rec_frame = None, None
             current_shot = shot_for_frame(f)
             lookahead_end = min(
-                f + 55,
+                f + 85,
                 current_shot.end_frame if current_shot is not None else total_frames,
             )
+            best_rec_dist = float("inf")
             for f_ahead in range(f + 8, lookahead_end):
                 ahead_b = ball_pt_map.get(f_ahead)
                 if not ahead_b:
@@ -1320,14 +1391,24 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                     if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
                         continue
                     r_pos = ident.trajectory.get(f_ahead)
-                    if r_pos and ((r_pos.x_m - ahead_b.x_m) ** 2 + (r_pos.y_m - ahead_b.y_m) ** 2) ** 0.5 <= 2.2:
-                        receiver = ident
-                        rec_frame = f_ahead
-                        break
-                if receiver:
+                    if r_pos:
+                        d_ball = ((r_pos.x_m - ahead_b.x_m) ** 2 + (r_pos.y_m - ahead_b.y_m) ** 2) ** 0.5
+                        if d_ball <= 3.2 and d_ball < best_rec_dist:
+                            best_rec_dist = d_ball
+                            receiver = ident
+                            rec_frame = f_ahead
+                # If we found a very close receiver (< 1.8m), stop searching
+                if receiver and best_rec_dist <= 1.8:
                     break
 
-            is_completed = (receiver is not None and receiver.team == p_team)
+            is_completed = False
+            if receiver is not None:
+                if receiver.team == p_team:
+                    is_completed = True
+                elif receiver.team in (Team.TEAM_A, Team.TEAM_B):
+                    is_completed = False  # Intercepted by opponent
+                elif receiver.team == Team.UNKNOWN and best_rec_dist <= 2.2:
+                    is_completed = True
             fallback_end = min(
                 f + 25,
                 current_shot.end_frame - 1 if current_shot is not None else total_frames - 1,

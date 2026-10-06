@@ -18,7 +18,17 @@ from torch.utils.data import DataLoader
 
 # Default paths
 BASE_DIR = TDEED_DIR.parent.parent.parent
-DEFAULT_WEIGHTS = BASE_DIR / "ai_engine" / "models" / "tdeed_ball_action_spotter.pt"
+FINETUNED_WEIGHTS = BASE_DIR / "ai_engine" / "models" / "finetuned" / "tdeed_ball_finetuned_epoch5.pt"
+PRETRAINED_WEIGHTS = BASE_DIR / "ai_engine" / "models" / "tdeed_ball_action_spotter.pt"
+
+env_weights = os.environ.get("TDEED_WEIGHTS_PATH")
+if env_weights:
+    DEFAULT_WEIGHTS = Path(env_weights)
+elif FINETUNED_WEIGHTS.is_file():
+    DEFAULT_WEIGHTS = FINETUNED_WEIGHTS
+else:
+    DEFAULT_WEIGHTS = PRETRAINED_WEIGHTS
+
 DEFAULT_CONFIG = BASE_DIR / "ai_engine" / "models" / "tdeed_ball_action_spotter.json"
 
 
@@ -33,7 +43,7 @@ class TDEEDActionSpotter:
         self.device = torch.device(device)
         self.config_path = Path(config_path)
         self.weights_path = Path(weights_path)
-        
+
         cfg = load_json(str(self.config_path))
         class Args: pass
         self.args = Args()
@@ -50,8 +60,8 @@ class TDEEDActionSpotter:
         self.classes = load_classes(str(TDEED_DIR / "data" / self.args.dataset / "class.txt"))
         pretrain_classes = load_classes(str(TDEED_DIR / "data" / self.args.pretrain["dataset"] / "class.txt"))
 
-        # Instantiate model
-        self.model = TDEEDModel(args=self.args)
+        # Instantiate model — pass torch.device so seq.device comparison works correctly
+        self.model = TDEEDModel(device=self.device, args=self.args)
         n_classes = [len(self.classes) + 1, len(pretrain_classes) + 1]
         self.model._model.update_pred_head(n_classes)
         self.model._num_classes = sum(n_classes)
@@ -61,8 +71,14 @@ class TDEEDActionSpotter:
         self.model.load(ckpt)
         self.model._model.to(self.device)
         self.model._model.eval()
+
         if self.device.type == "cpu":
             torch.set_num_threads(min(8, os.cpu_count() or 4))
+        elif self.device.type == "xpu":
+            # Disable CUDA AMP for XPU — patch predict to use use_amp=False
+            import functools
+            original_predict = self.model.predict
+            self.model.predict = functools.partial(original_predict, use_amp=False)
 
     def spot_events(self, video_path, threshold=0.25, frame_width=398, frame_height=224, stride=2):
         """

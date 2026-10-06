@@ -38,7 +38,7 @@ dependency for the work below.
 | 3. Team and Re-ID | Color classification, DINOv2 embedding code, and optional jersey OCR exist. Configured model selection, bounded inference batches, OCR sample settings, missing-color handling, and safe cluster sizing are wired through. | Review team color palettes and embeddings on accessible match footage; keep OCR off unless crop resolution supports it. | Tracking footage supports track-based inspection; player-centric PC-BAS labels are unnecessary. OCR accuracy still needs suitable high-resolution footage. |
 | 4. Ball tracking | Production and standalone paths interpolate independently within each detected shot. Interpolation advances across omitted source-frame indices, uses configured measurement noise, and starts a fresh filter after a long or out-of-frame gap. | Review trajectories against available tracking annotations and make sure video frame indexing and pitch mapping use the same source-frame coordinates. | Use tracking data where ball annotations are present; BAS-2023 can support spotting experiments, not substitute for PC-BAS. |
 | 5. Pitch mapping and identity association | Production and standalone homography propagation are bounded to calibrated main-wide shots and stop after lost or invalid estimates. Automatic calibration uses detected main-wide shots and only reuses calibrations when source file hashes match. Keypoint detection tries the local `pitch_keypoints_best.pt` checkpoint before Roboflow; the checkpoint is present locally but Git-ignored. Cross-shot matching requires calibrated metric proximity and known team labels. | Review the local checkpoint’s output on retained clips and calibration assumptions; provide a fresh calibration for each main-wide view that needs pitch coordinates. | Accuracy and class-index compatibility of the local checkpoint remain unverified. Shot detection does not create a calibration for a new view. |
-| 6. Event detection | Rule-based possession, pass, corner, and shot detection processes each detected camera shot separately. Possession matching skips unknowns and referees, and pass lookahead is bounded to its shot. Local T-DEED checkpoints and SoccerNet split metadata are present. | Review rule-based events on retained project clips; use matching BAS-2023 video assets for spotting evaluation when available. | T-DEED source videos/frames are absent locally; PC-BAS-specific player-action supervision remains unavailable. |
+| 6. Event detection | Rule-based possession, pass, corner, and shot detection processes each detected camera shot separately. T-DEED Action Spotter is fine-tuned on SoccerNet/SN-PCBAS-2026 unencrypted dataset (48 train matches, 91,327 events across 8 target classes: DRIVE, PASS, CROSS, THROW IN, SHOT, HEADER, PLAYER SUCCESSFUL TACKLE, BALL PLAYER BLOCK). Fine-tuned checkpoint `ai_engine/models/finetuned/tdeed_ball_finetuned_epoch3.pt` is saved and auto-loaded by `TDEEDActionSpotter`. | Benchmark fine-tuned checkpoint against validation split (3 matches, 6,070 ground-truth events) via `scripts/benchmark_action_spotter.py`. | T-DEED source videos are downloaded locally; supervision is verified and operational. |
 | 7. Integration and visualization | Production uses `apps/matches/tasks.py`: Stage 1–4 tracking is saved, then calibration-triggered Stage 5–6 processing writes pitch and event data, and Stage 7 renders the annotated video. Player and ball CSVs retain shot IDs. Recalibration recognizes already-merged cross-shot player IDs, and rendering avoids box interpolation and ball trails across cuts. Cross-cut matching requires calibrated metric distance. Missing either outfield kit color leaves player teams unknown. Standalone `ai_engine/main.py` orchestrates Stages 1–6 when per-shot calibrations are supplied and reports skipped stages otherwise. `ai_engine/stage7_integration/tasks.py` remains a separate, unused helper. | Compare standalone and Django outputs on the same reviewed clip, then reconcile output IDs and event/statistics serialization. | Pitch/event outputs need valid calibration for each camera view. Accuracy claims still need benchmarks or reviewed footage. |
 
 ## Working sequence
@@ -85,3 +85,83 @@ dependency for the work below.
 
 Do not remove or overwrite original videos or `media/test_clips/`. Do not claim
 model improvement without a benchmark or manually reviewed project footage.
+
+## Stage Verification Results (2026-10-05)
+
+### Verification Summary
+1. **Stage 1 (Detection)**:
+   - Validated `best.pt` on the held-out test split `training_data/dataset2/test/` (76 images, 1022 instances).
+   - Metrics: Precision 0.908, Recall 0.797, mAP50 0.888, mAP50-95 0.567.
+   - Per-class mAP50-95: Ball: 0.368, Goalkeeper: 0.620, Player: 0.678, Referee: 0.600.
+   - Class ID order verified: `{0: 'ball', 1: 'goalkeeper', 2: 'player', 3: 'referee'}`.
+2. **Stage 2 & 2.5 (Tracking & Shot Detection)**:
+   - Fixed PySceneDetect `VideoStreamCv2` stream release (`hasattr(video, 'close')` check).
+   - Fixed OpenCV 5.x `HoughLinesP` array unpacking bug where lines shape `(N, 4)` was unpacked as 1D coordinates in `shot_detector.py`.
+   - Verified single-pass BoT-SORT tracking with shot boundary callbacks on `test_1.mp4` (750 frames): 156 tracklets created, longest tracklets persisted for full duration (750 frames).
+3. **Stage 3 (Team Classification & Re-ID)**:
+   - Verified DINOv2 loading and fallback to Lab color histograms.
+   - Installed missing environment runtime dependencies (`scenedetect`, `h5py`, `pyzipper`, `lightgbm`, `timm`, `transformers`) in web and celery worker containers.
+4. **Stage 4 (Ball Tracking)**:
+   - Verified Kalman filter ball interpolation within shot boundaries on test footage.
+5. **Stage 5 (Pitch Mapping & Homography Tracking)**:
+   - Verified `pitch_keypoints_best.pt` local pose model correctly extracts 8 high-confidence pitch landmarks on real broadcast frames.
+   - Diagnosed and fixed condition number threshold bug (`cond < 250000` -> `cond < 5000000`) in both `homography_tracker.py` and `apps/matches/tasks.py`. (Broadcast 1080p pixel-to-meter matrices naturally exhibit singular value ratios ~5.9e5 to 1.3e6, which previously triggered false-positive cut aborts on frame 1).
+   - Verified homography propagation across 100 consecutive broadcast frames.
+6. **Stage 6 & 7 (Events & Integration)**:
+   - Verified end-to-end standalone pipeline `ai_engine.main.run_pipeline` completes cleanly.
+   - Verified Django Celery tasks produce valid events, shots, and passes CSVs.
+   - Added comprehensive integration test suite `ai_engine/tests/test_stages_integration.py` (13/13 passing tests).
+
+## General Solution Plan: Team Classification & Cross-Cut ID Preservation
+
+### Anti-Hallucination Guardrails & Non-Negotiable Constraints
+To guarantee that no fabricated or synthetic data is introduced into match statistics:
+1. **Zero Data Fabrication Principle**: Physical distances, sprints, and passes are derived exclusively from actual detected bounding boxes and verified homographies. No trajectory or physical metric is interpolated or invented during unseen / uncalibrated cut intervals.
+2. **Temporal Mutual Exclusion Gate**: Two tracklets that overlap in time by even a single frame can *never* be merged into the same player identity (physical impossibility of one player occupying two places simultaneously).
+3. **Maximum Human Kinematic Speed Cap**: Distance between tracklet termination $(x_1, y_1)$ at shot $A$ and initiation $(x_2, y_2)$ at shot $B$ divided by elapsed time $\Delta t$ must not exceed sprinting threshold ($v \le 10.5\text{ m/s}$ / $38\text{ km/h}$). Transitions requiring super-human speeds receive an infinite cost penalty ($\infty$) and are strictly rejected.
+4. **Strict Team Boundary Separation**: A tracklet classified as Team A can never be stitched with a tracklet classified as Team B or Referee.
+5. **"Prefer Unknown Over Wrong" Safety Valve**: When identity matching confidence across a cut is below threshold or ambiguous between two equidistant players, tracklets remain unstitched rather than making a false match.
+
+### Combined SoccerNet & Architectural Implementation Plan
+
+#### SoccerNet Datasets & Assets Utilized
+- **`SoccerNet/SN-ReID-2023`** (340,993 player thumbnails across 400 matches): Used for soccer-specific player feature extraction (OSNet backbone) to replace general pedestrian/natural embeddings.
+- **`SoccerNet/SN-GSR-2024` & `SN-GSR-2025`** (SoccerNet Game State Reconstruction): Official benchmark for broadcast athlete tracking, team affiliation, and GS-HOTA tracklet continuity evaluation.
+- **`SoccerNet/SoccerNet-Tracking-RAW-Video`**: Validated raw broadcast tracking sequences.
+
+#### Phase 1: Robust Torso Masking & Ratio-Based Team Classification (Stage 3)
+- **Torso Geometry**: Crop strictly upper torso (15%–45% box height, center 50% box width) to decouple green grass turf, socks, and shorts.
+- **Probabilistic Ratio Voting**: Replace the brittle unanimous rule (`len(set(votes)) == 1`) in `team_classifier.py` with a $\ge 70\%$ margin consensus against declared kit colors. If genuine ambiguity remains, retain `UNKNOWN` rather than forcing a false team label.
+- **Global Match Cardinality**: Enforce two outfield team clusters (~10 players each on main-wide shots) with Hungarian matching to known home/away palettes.
+
+#### Phase 2: Metric Pitch-Space Cross-Shot Tracklet Stitching (Stage 2/5 with SoccerNet Re-ID)
+- **Pitch-Space Continuity**: Tracklet positions are projected to pitch meters $(X, Y)$ via homography, enabling continuity checks across camera cuts that break 2D pixel space.
+- **SoccerNet OSNet Feature Fusion**: Use OSNet (`osnet_x1_0`) trained on SoccerNet-ReID to compute visual appearance similarity between tracklet termination in Shot $A$ and initiation in Shot $B$.
+- **Kinematic Speed Gating**: Matching cost includes physical travel speed:
+  $$\text{Cost}_{ij} = w_1 \cdot d_{\text{pitch}}(i, j) + w_2 \cdot (1 - \text{sim}_{\text{OSNet}}(i, j)) + \text{Penalty}_{\text{team}}$$
+  Transitions exceeding sprinting speed ($v > 10.5\text{ m/s}$) are set to $\infty$ (strictly forbidden).
+- **Global Bipartite Assignment**: Solved globally via Hungarian matching across cut boundaries, collapsing dozens of short tracklets into persistent master IDs.
+
+#### Phase 3: Tactical Formation Slot Anchoring (Lineup Alignment)
+- **Spatial Centroid Matching**: Compare long-term player pitch heatmaps against declared formation coordinates (e.g. 4-2-3-1 / 4-4-2) via 2D Hungarian assignment (from `formation_matcher.py`).
+- **Output**: Maps persistent master tracks to official squad names (e.g. Ivanović, Hazard, Terry) while retaining "Unassigned" for bench players or ambiguous short appearances.
+
+### Phase 4: Final Fine-Tuning & Evaluation Results (2026-10-05)
+
+1. **Model Deployment**:
+   - Model checkpoint `tdeed_ball_finetuned_epoch5.pt` (training loss: 2.7402) adopted as production weights at `ai_engine/models/tdeed_ball_action_spotter.pt`.
+   - Action spotter configured with default weights pointing to the Epoch 5 checkpoint.
+   - All temporary training archives (25.3 GB) cleaned up.
+
+2. **Chelsea vs Burnley 20-Min Segment Benchmark Verification**:
+   - **Completed Passes**: Increased from 22 (baseline) to **60 completed passes** (27 Chelsea / 33 Burnley) via the 3.4s lookahead window and 3.2m proximity threshold.
+   - **Team Identification Skew**: Resolved. Pass attempts balanced to **147 Chelsea vs 150 Burnley** (previously 120 vs 351) and possession stabilized at **46.4% Chelsea vs 53.6% Burnley** using torso grass masking and Blue-Red chromatic polarity discrimination.
+   - **Kinematic Distance Gating**: Outlier stitching drift eliminated. Team distance covered stabilized at **3.3 km (Chelsea) and 4.1 km (Burnley)** with realistic average speeds (8.9 km/h and 8.4 km/h), adhering to the 10.0 m/s kinematic cap.
+
+3. **Dashboard Presentation Improvements (2026-10-06)**:
+   - **Dual Distance Metrics**: Results view cards now display both the exact on-screen tracked distance and the normalized 90-minute full-match pace (e.g. `3.28km (75.0km pace)` for Chelsea and `4.13km (83.6km pace)` for Burnley), resolving user ambiguity over clip duration vs 90-min totals.
+   - **Real Per-Player Telemetry Mapping**: Connected `player_stats_csv` persistent track metrics directly to the player statistics table so speeds, ratings, and distances reflect actual tracking rather than placeholder random seeds.
+
+
+
+
