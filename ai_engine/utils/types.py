@@ -108,6 +108,8 @@ class MasterIdentity:
     cls: Optional[ObjectClass] = None
     # frame_idx -> PitchPoint, only populated for frames inside main_wide shots
     trajectory: dict[int, PitchPoint] = field(default_factory=dict)
+    # frame_idx -> Detection (bounding box in pixels, confidence, etc.)
+    pixel_detections: dict[int, Detection] = field(default_factory=dict)
 
 
 @dataclass
@@ -116,6 +118,8 @@ class BallTrajectoryPoint:
     x_m: Optional[float]
     y_m: Optional[float]
     interpolated: bool = False
+    x_px: Optional[float] = None
+    y_px: Optional[float] = None
 
 
 @dataclass

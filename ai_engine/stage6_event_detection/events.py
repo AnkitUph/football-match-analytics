@@ -8,7 +8,7 @@ those gaps later, that's a future enhancement (e.g. carrying possession
 state across a cut using the last known state), not part of this stub.
 """
 
-from collections import Counter, deque
+from collections import Counter, defaultdict, deque
 
 from ai_engine.config import EventDetectionConfig
 from ai_engine.utils.types import BallTrajectoryPoint, Event, MasterIdentity, ObjectClass, Team
@@ -151,13 +151,20 @@ def detect_passes(
         dist = 0.0
         if pos1 and pos2:
             dist = round(((pos2.x_m - pos1.x_m) ** 2 + (pos2.y_m - pos1.y_m) ** 2) ** 0.5, 1)
+        else:
+            d1 = getattr(p1, "pixel_detections", {}).get(prev_event.frame_idx) if p1 else None
+            d2 = getattr(p2, "pixel_detections", {}).get(next_event.frame_idx) if p2 else None
+            if d1 and d2:
+                scale_m = 1.8 / max(10.0, ((d1.y2 - d1.y1) + (d2.y2 - d2.y1)) / 2.0)
+                dist_px = ((d2.center[0] - d1.center[0]) ** 2 + (d2.center[1] - d1.center[1]) ** 2) ** 0.5
+                dist = round(dist_px * scale_m, 1)
 
         dt_frames = next_event.frame_idx - prev_event.frame_idx
         dt_sec = max(0.04, dt_frames / 25.0)
         speed = round(dist / dt_sec, 1)
 
-        # Kinematic filters: pass must cover at least 4.5m, take >= 3 frames, and speed <= 32.0 m/s
-        if dist < 4.5 or dt_frames < 3 or speed > 32.0:
+        # Kinematic filters: pass must cover at least 8.1m, take >= 5 frames, and speed <= 32.0 m/s
+        if dist < 8.1 or dt_frames < 5 or speed > 32.0:
             continue
 
         events.append(
@@ -189,8 +196,9 @@ def compute_continuous_possession(
     control_radius_m: float = 4.5,
 ) -> dict:
     """
-    Computes frame-by-frame ball possession across all frames with valid ball pitch coordinates:
-    - Finds the closest player to the ball at each frame.
+    Computes frame-by-frame ball possession across all frames using hybrid 2D/3D tracking:
+    - Finds the closest player to the ball at each frame using metric pitch distance
+      when available, falling back to normalized player bounding-box proximity.
     - If distance <= control_radius_m, attributes possession to that player's team.
     - If distance > control_radius_m (ball in flight or uncontested), attributes to the
       most recent controlling team for up to 1.5 seconds (38 frames).
@@ -204,7 +212,10 @@ def compute_continuous_possession(
     identity_by_id = {i.master_id: i for i in identities}
     team_by_id = {i.master_id: i.team for i in identities}
 
-    valid_points = [p for p in ball_trajectory if p.x_m is not None]
+    valid_points = [
+        p for p in ball_trajectory
+        if p.x_m is not None or getattr(p, "x_px", None) is not None
+    ]
     if not valid_points:
         return {
             "percentages": {Team.TEAM_A: 50.0, Team.TEAM_B: 50.0},
@@ -221,19 +232,43 @@ def compute_continuous_possession(
     max_carry_frames = int(1.5 * fps)
 
     # Debounce discrete possession change events with a rolling window
-    # Prevents 1-frame micro-oscillations during contested tackles
+    # Prevents micro-oscillations during contested tackles
     window_size = 5
     recent_closest: deque = deque(maxlen=window_size)
     event_holder_id = None
 
+    # Pre-index players by frame_idx: frame_idx -> [(identity, pos, det)]
+    # Drastically reduces inner loop from N_points * N_identities (80M) to N_points * 22
+    identities_by_frame = defaultdict(list)
+    for identity in identities:
+        if getattr(identity, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or identity.team == Team.REFEREE:
+            continue
+        for f, pos in identity.trajectory.items():
+            identities_by_frame[f].append((identity, pos, None))
+        for f, det in getattr(identity, "pixel_detections", {}).items():
+            if f not in identity.trajectory:
+                identities_by_frame[f].append((identity, None, det))
+
     for point in valid_points:
         closest_id, closest_dist = None, float("inf")
-        for identity in identities:
-            pos = identity.trajectory.get(point.frame_idx)
-            if pos is not None:
-                d = ((pos.x_m - point.x_m) ** 2 + (pos.y_m - point.y_m) ** 2) ** 0.5
+        has_pitch = (point.x_m is not None)
+        bx, by = (point.x_m, point.y_m) if has_pitch else (point.x_px, point.y_px)
+
+        cands = identities_by_frame.get(point.frame_idx, [])
+        for identity, pos, det in cands:
+            if has_pitch and pos is not None:
+                d = ((pos.x_m - bx) ** 2 + (pos.y_m - by) ** 2) ** 0.5
                 if d < closest_dist:
                     closest_dist = d
+                    closest_id = identity.master_id
+            elif det is not None and getattr(point, "x_px", None) is not None:
+                feet_x, feet_y = (det.x1 + det.x2) / 2.0, det.y2
+                h_box = max(10.0, det.y2 - det.y1)
+                d_px = ((point.x_px - feet_x) ** 2 + (point.y_px - feet_y) ** 2) ** 0.5
+                d_norm = d_px / h_box
+                d_equiv = d_norm * 2.0
+                if d_norm <= 1.05 and d_equiv < closest_dist:
+                    closest_dist = d_equiv
                     closest_id = identity.master_id
 
         if closest_id is not None and closest_dist <= control_radius_m:
@@ -329,17 +364,33 @@ def detect_passes_with_metadata(
         ex = round(pos2.x_m, 2) if pos2 else 0.0
         ey = round(pos2.y_m, 2) if pos2 else 0.0
 
-        dist = round(((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5, 1)
+        if pos1 and pos2:
+            dist = round(((ex - sx) ** 2 + (ey - sy) ** 2) ** 0.5, 1)
+        else:
+            d1 = getattr(p1_ident, "pixel_detections", {}).get(prev_ev.frame_idx) if p1_ident else None
+            d2 = getattr(p2_ident, "pixel_detections", {}).get(next_ev.frame_idx) if p2_ident else None
+            if d1 and d2:
+                scale_m = 1.8 / max(10.0, ((d1.y2 - d1.y1) + (d2.y2 - d2.y1)) / 2.0)
+                dist_px = ((d2.center[0] - d1.center[0]) ** 2 + (d2.center[1] - d1.center[1]) ** 2) ** 0.5
+                dist = round(dist_px * scale_m, 1)
+            else:
+                dist = 0.0
+
         dt_frames = next_ev.frame_idx - prev_ev.frame_idx
         dt_sec = max(0.04, dt_frames / fps)
         speed = round(dist / dt_sec, 1)
 
-        # Kinematic filters: discard micro-distance nudges, instantaneous blips, or unphysical teleports
-        if dist < 4.5 or dt_frames < 3 or speed > 32.0:
-            continue
-
         is_completed = (t1 == t2)
         video_minute = max(1, round((prev_ev.frame_idx / fps) / 60.0))
+
+        if is_completed:
+            # Completed pass between teammates: covers >= 8.1m, >= 5 frames, speed <= 32.0 m/s
+            if dist < 8.1 or dt_frames < 5 or speed > 32.0:
+                continue
+        else:
+            # Intercepted pass attempt: ball actively played in flight across distance
+            if dist < 12.0 or dt_frames < 20 or speed > 32.0:
+                continue
 
         passes.append({
             "frame_idx": next_ev.frame_idx,
@@ -943,29 +994,44 @@ def detect_extended_match_events(
             t2 = team_by_id.get(p2_id)
 
             if t1 is not None and t2 is not None:
+                p1_ident = identity_by_id.get(p1_id)
+                p2_ident = identity_by_id.get(p2_id)
+                if p1_ident and (getattr(p1_ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or p1_ident.team == Team.REFEREE):
+                    continue
+                if p2_ident and (getattr(p2_ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or p2_ident.team == Team.REFEREE):
+                    continue
+
+                pos1 = p1_ident.trajectory.get(event.frame_idx) if p1_ident else None
+                pos2 = p2_ident.trajectory.get(next_ev.frame_idx) if p2_ident else None
+                if pos1 and pos2:
+                    dist = ((pos2.x_m - pos1.x_m) ** 2 + (pos2.y_m - pos1.y_m) ** 2) ** 0.5
+                else:
+                    d1 = getattr(p1_ident, "pixel_detections", {}).get(event.frame_idx) if p1_ident else None
+                    d2 = getattr(p2_ident, "pixel_detections", {}).get(next_ev.frame_idx) if p2_ident else None
+                    if d1 and d2:
+                        scale = 1.8 / max(10.0, ((d1.y2 - d1.y1) + (d2.y2 - d2.y1)) / 2.0)
+                        dist = ((d2.center[0] - d1.center[0]) ** 2 + (d2.center[1] - d1.center[1]) ** 2) ** 0.5 * scale
+                    else:
+                        dist = 5.0
+
+                dt_frames = next_ev.frame_idx - event.frame_idx
+                dt_sec = max(0.04, dt_frames / fps)
+                speed = dist / dt_sec
+
                 if t1 == t2 and p1_id != p2_id:
                     # Completed pass between teammates
-                    passes_completed[p1_id] += 1
-                    passes_attempted[p1_id] += 1
-                    team_passes_completed[t1] += 1
-                    team_passes_attempted[t1] += 1
+                    if dist >= 8.1 and dt_frames >= 5 and speed <= 32.0:
+                        passes_completed[p1_id] += 1
+                        passes_attempted[p1_id] += 1
+                        team_passes_completed[t1] += 1
+                        team_passes_attempted[t1] += 1
 
-                    # Check for Key Pass: receiver takes a shot within 10s (250 frames)
-                    for s in shot_events:
-                        if 0 < (s.frame_idx - next_ev.frame_idx) <= int(10.0 * fps):
-                            key_passes[p1_id] += 1
-                            break
+                        # Check for Key Pass: receiver takes a shot within 10s (250 frames)
+                        for s in shot_events:
+                            if 0 < (s.frame_idx - next_ev.frame_idx) <= int(10.0 * fps):
+                                key_passes[p1_id] += 1
+                                break
                 elif t1 != t2:
-                    # Possession changed to opposing team
-                    passes_attempted[p1_id] += 1
-                    team_passes_attempted[t1] += 1
-
-                    # Duel check: distance between p1 and p2 around transition frame
-                    p1_ident = identity_by_id.get(p1_id)
-                    p2_ident = identity_by_id.get(p2_id)
-                    pos1 = p1_ident.trajectory.get(next_ev.frame_idx) if p1_ident else None
-                    pos2 = p2_ident.trajectory.get(next_ev.frame_idx) if p2_ident else None
-
                     action_pos = pos2 if pos2 is not None else (pos1 if pos1 is not None else None)
                     action_x = action_pos.x_m if action_pos is not None else 0.0
                     action_y = action_pos.y_m if action_pos is not None else 0.0
@@ -982,19 +1048,18 @@ def detect_extended_match_events(
                         is_high_press = (action_x < -17.5)
                         zone = "high_press" if is_high_press else ("midfield" if abs(action_x) <= 17.5 else "defensive")
 
-                    if pos1 and pos2:
-                        dist = ((pos1.x_m - pos2.x_m) ** 2 + (pos1.y_m - pos2.y_m) ** 2) ** 0.5
-                        if dist <= 2.8:
-                            # Close-quarters challenge: tackle won by p2
-                            tackles[p2_id] += 1
-                            action_type = "tackle"
-                        else:
-                            # Loose / passed ball intercepted by p2
-                            interceptions[p2_id] += 1
-                            action_type = "interception"
+                    if dist <= 2.8:
+                        # Close-quarters challenge: tackle won by p2 (NOT an attempted pass by p1)
+                        tackles[p2_id] += 1
+                        action_type = "tackle"
                     else:
+                        # Loose / passed ball intercepted by p2
                         interceptions[p2_id] += 1
                         action_type = "interception"
+                        # Only credit as an attempted pass if the ball was actively played in flight across distance
+                        if dist >= 12.0 and dt_frames >= 20 and speed <= 32.0:
+                            passes_attempted[p1_id] += 1
+                            team_passes_attempted[t1] += 1
 
                     defensive_events.append({
                         "frame_idx": next_ev.frame_idx,
@@ -1008,11 +1073,6 @@ def detect_extended_match_events(
                         "zone": zone,
                         "detail": ("High-Press " if is_high_press else "") + ("Tackle Won" if action_type == "tackle" else "Interception / Ball Recovery"),
                     })
-        else:
-            # Last possession event
-            if t1 is not None:
-                passes_attempted[p1_id] += 1
-                team_passes_attempted[t1] += 1
 
     # Ensure passes_attempted is always at least passes_completed
     for pid in list(passes_completed.keys()):
@@ -1020,6 +1080,12 @@ def detect_extended_match_events(
             passes_attempted[pid] = passes_completed[pid]
 
     # 2. Clearances: high-speed kicks away from defensive third (|x| > 25m)
+    identities_by_frame_pitch = defaultdict(list)
+    for ident in identities:
+        for f, pos in ident.trajectory.items():
+            if pos.x_m is not None:
+                identities_by_frame_pitch[f].append((ident, pos))
+
     ball_valid = [p for p in ball_trajectory if p.x_m is not None]
     last_clearance_frame = -50
     for cur, nxt in zip(ball_valid, ball_valid[1:]):
@@ -1033,13 +1099,11 @@ def detect_extended_match_events(
 
         if speed > 11.0 and abs(cur.x_m) > 25.0:
             closest_id, closest_dist = None, float("inf")
-            for ident in identities:
-                pos = ident.trajectory.get(cur.frame_idx)
-                if pos:
-                    d = ((pos.x_m - cur.x_m) ** 2 + (pos.y_m - cur.y_m) ** 2) ** 0.5
-                    if d < closest_dist:
-                        closest_dist = d
-                        closest_id = ident.master_id
+            for ident, pos in identities_by_frame_pitch.get(cur.frame_idx, []):
+                d = ((pos.x_m - cur.x_m) ** 2 + (pos.y_m - cur.y_m) ** 2) ** 0.5
+                if d < closest_dist:
+                    closest_dist = d
+                    closest_id = ident.master_id
 
             if closest_id is not None and closest_dist <= 3.5:
                 # If in negative third (x < -25), clearing toward positive x (vx > 2.0)

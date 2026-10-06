@@ -576,7 +576,7 @@ def _run_automatic_calibration(match, video_path, shot_segments, num_anchors=4, 
                         if sha256_file(mv.original_video.path) != curr_digest:
                             continue
                         prev_cals = MatchCalibration.objects.filter(match=mv.match)
-                        if prev_cals.exists():
+                        if prev_cals.count() >= 3:
                             for pc in prev_cals:
                                 MatchCalibration.objects.update_or_create(
                                     match=match,
@@ -648,10 +648,7 @@ def _run_automatic_calibration(match, video_path, shot_segments, num_anchors=4, 
             grass_mask = cv2.inRange(hsv, (35, 38, 38), (85, 255, 255))
             h_f, w_f = frame.shape[:2]
             green_ratio = float(np.count_nonzero(grass_mask) / (h_f * w_f))
-            top_h = max(1, int(h_f * 0.25))
-            top_green_ratio = float(np.count_nonzero(grass_mask[:top_h, :]) / (top_h * w_f))
-            # Tactical sideline camera requires >= 45% grass, and top quarter must NOT be all grass (replays/zooms)
-            if green_ratio < 0.45 or top_green_ratio > 0.35:
+            if green_ratio < 0.35:
                 continue
 
             suggestions = detect_pitch_keypoints(
@@ -664,26 +661,41 @@ def _run_automatic_calibration(match, video_path, shot_segments, num_anchors=4, 
             if len(suggestions) < 4:
                 continue
 
-            # 2. Mathematical Conditioning Guard: Ensure points span 2D space and form a non-degenerate H
-            img_pts = [(s["pixel_x"], s["pixel_y"]) for s in suggestions]
-            pitch_pts = [(s["pitch_x"], s["pitch_y"]) for s in suggestions]
-            from ai_engine.stage5_pitch_mapping.homography import compute_homography_from_points
-            from ai_engine.config import DEFAULT_CONFIG
-            H_cand = compute_homography_from_points(img_pts, pitch_pts, DEFAULT_CONFIG.pitch_mapping)
-            if H_cand is None or abs(H_cand[2, 2]) < 1e-4:
+            # 2. Geometric Consistency Guard: Filter candidate correspondences with RANSAC
+            # and verify reprojection error and metric span in pitch space.
+            img_pts_arr = np.array([(s["pixel_x"], s["pixel_y"]) for s in suggestions], dtype=np.float32)
+            pitch_pts_arr = np.array([(s["pitch_x"], s["pitch_y"]) for s in suggestions], dtype=np.float32)
+            H_cand, inlier_mask = cv2.findHomography(img_pts_arr, pitch_pts_arr, cv2.RANSAC, 5.0)
+            if H_cand is None or inlier_mask is None:
                 continue
-            H_norm = H_cand / H_cand[2, 2]
-            det_cand = abs(np.linalg.det(H_norm))
-            cond_cand = np.linalg.cond(H_norm)
-            x_span = max(p[0] for p in pitch_pts) - min(p[0] for p in pitch_pts)
-            y_span = max(p[1] for p in pitch_pts) - min(p[1] for p in pitch_pts)
-            if det_cand < 1e-4 or cond_cand > 250000 or x_span < 12.0 or y_span < 12.0:
+            inliers = inlier_mask.ravel() == 1
+            if int(np.sum(inliers)) < 4:
                 continue
 
-            score = sum(s["confidence"] for s in suggestions)
+            inlier_pitch = pitch_pts_arr[inliers]
+            x_span = float(np.ptp(inlier_pitch[:, 0]))
+            y_span = float(np.ptp(inlier_pitch[:, 1]))
+            if x_span < 12.0 or y_span < 12.0:
+                continue
+
+            from ai_engine.stage5_pitch_mapping.homography import image_point_to_pitch
+            inlier_img = img_pts_arr[inliers]
+            inlier_errs = [
+                np.hypot(
+                    image_point_to_pitch(px, py, H_cand).x_m - gx,
+                    image_point_to_pitch(px, py, H_cand).y_m - gy,
+                )
+                for (px, py), (gx, gy) in zip(inlier_img, inlier_pitch)
+            ]
+            mean_err = float(np.mean(inlier_errs))
+            if mean_err > 2.0:
+                continue
+
+            inlier_suggestions = [s for s, inl in zip(suggestions, inliers) if inl]
+            score = sum(s["confidence"] for s in inlier_suggestions)
             if score > best_score:
                 best_score = score
-                best_suggestions = suggestions
+                best_suggestions = inlier_suggestions
                 best_frame_idx = frame_idx
 
         if best_suggestions is None:
@@ -867,6 +879,9 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
         seg_H = [homography_tracker.current_H.copy()]
         cap.set(cv2.CAP_PROP_POS_FRAMES, calibration.calibration_frame + 1)
         was_cut_paused = False
+        failed_frames = 0
+        max_grace_frames = 8
+        last_good_H = homography_tracker.current_H.copy()
         for frame_idx in range(calibration.calibration_frame + 1, segment_end_frame):
             ok, frame = cap.read()
             if not ok:
@@ -879,9 +894,15 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 if det_H > 1e-4 and cond_H < 5000000:
                     seg_frames.append(frame_idx)
                     seg_H.append(H_norm.copy())
-                else:
-                    was_cut_paused = True
-                    break
+                    last_good_H = H_norm.copy()
+                    failed_frames = 0
+                    continue
+
+            failed_frames += 1
+            if failed_frames <= max_grace_frames and last_good_H is not None:
+                # Carry forward the last valid transformation through momentary blur / drop
+                seg_frames.append(frame_idx)
+                seg_H.append(last_good_H.copy())
             else:
                 was_cut_paused = True
                 break
@@ -1137,14 +1158,32 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 frame_width=110,
                 frame_height=74,
             )
-            for tp in pitch_interp:
-                if tp.x_m is not None:
-                    ball_pitch_trajectory.append(BallTrajectoryPoint(
-                        frame_idx=tp.frame_idx,
-                        x_m=tp.x_m - 55.0,
-                        y_m=tp.y_m - 37.0,
-                        interpolated=tp.interpolated,
-                    ))
+            pitch_map = {tp.frame_idx: tp for tp in pitch_interp if tp.x_m is not None}
+            shot_ball = [p for p in ball_trajectory if shot.start_frame <= p.frame_idx < shot.end_frame]
+            for p in shot_ball:
+                ptp = pitch_map.get(p.frame_idx)
+                px_m = (ptp.x_m - 55.0) if ptp is not None else None
+                py_m = (ptp.y_m - 37.0) if ptp is not None else None
+                ball_pitch_trajectory.append(BallTrajectoryPoint(
+                    frame_idx=p.frame_idx,
+                    x_m=px_m,
+                    y_m=py_m,
+                    interpolated=ptp.interpolated if ptp is not None else p.interpolated,
+                    x_px=p.x_m,
+                    y_px=p.y_m,
+                ))
+
+        handled_fids = {p.frame_idx for p in ball_pitch_trajectory}
+        for p in ball_trajectory:
+            if p.frame_idx not in handled_fids:
+                ball_pitch_trajectory.append(BallTrajectoryPoint(
+                    frame_idx=p.frame_idx,
+                    x_m=None,
+                    y_m=None,
+                    interpolated=p.interpolated,
+                    x_px=p.x_m,
+                    y_px=p.y_m,
+                ))
         ball_pitch_trajectory.sort(key=lambda point: point.frame_idx)
     else:
         ball_pitch_trajectory = []
@@ -1157,7 +1196,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
     for p in ball_trajectory:
         px, py = "", ""
         ptp = pitch_traj_by_frame.get(p.frame_idx)
-        if ptp is not None:
+        if ptp is not None and ptp.x_m is not None and ptp.y_m is not None:
             px, py = round(ptp.x_m, 2), round(ptp.y_m, 2)
         x_val = round(p.x_m, 2) if p.x_m is not None else ""
         y_val = round(p.y_m, 2) if p.y_m is not None else ""
@@ -1197,6 +1236,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
         if getattr(t, "cls", None) == ObjectClass.BALL:
             continue
         traj = {}
+        pixel_dets = {det.frame_idx: det for det in t.detections}
         for det in t.detections:
             if det.frame_idx not in homography_by_frame:
                 continue
@@ -1204,11 +1244,11 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             pt = image_point_to_pitch(fx, fy, homography_by_frame[det.frame_idx])
             if abs(pt.x_m) <= 55.0 and abs(pt.y_m) <= 37.0:
                 traj[det.frame_idx] = PitchPoint(x_m=pt.x_m, y_m=pt.y_m)
-        if traj:
-            identities.append(MasterIdentity(
-                master_id=t.track_id, team=t.team, reid_embedding=[],
-                jersey_number=t.jersey_number, cls=t.cls, trajectory=traj,
-            ))
+        identities.append(MasterIdentity(
+            master_id=t.track_id, team=t.team, reid_embedding=[],
+            jersey_number=t.jersey_number, cls=t.cls, trajectory=traj,
+            pixel_detections=pixel_dets,
+        ))
 
     cls_by_track = {t.track_id: t.cls for t in stitched}
     try:
@@ -1322,16 +1362,36 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 tdeed_predictions = json.load(f)
             tdeed_inference_succeeded = True
             logger.info("Loaded %d cached T-DEED predictions for match %s", len(tdeed_predictions), match.id)
-        elif video_path and os.path.exists(video_path):
-            logger.info("Running T-DEED deep-learning action spotter on %s...", video_path)
-            spotter = TDEEDActionSpotter()
-            tdeed_predictions = spotter.spot_events(video_path, threshold=0.25, stride=2)
-            tdeed_inference_succeeded = True
-            with open(cache_path, "w") as f:
-                json.dump(tdeed_predictions, f)
-            logger.info("T-DEED spotted %d actions, saved to %s", len(tdeed_predictions), cache_path)
         else:
-            raise FileNotFoundError(f"Video unavailable for T-DEED inference: {video_path}")
+            # Check if predictions were already cached for another match with the same video
+            alt_cache = None
+            if os.path.exists(cache_dir):
+                for fname in sorted(os.listdir(cache_dir)):
+                    if fname.startswith("tdeed_events_match_") and fname.endswith(".json"):
+                        cand = os.path.join(cache_dir, fname)
+                        try:
+                            with open(cand, "r") as f:
+                                test_preds = json.load(f)
+                            if test_preds and len(test_preds) > 50:
+                                alt_cache = cand
+                                tdeed_predictions = test_preds
+                                tdeed_inference_succeeded = True
+                                with open(cache_path, "w") as f_out:
+                                    json.dump(test_preds, f_out)
+                                logger.info("Shared %d cached T-DEED predictions from %s for match %s", len(tdeed_predictions), alt_cache, match.id)
+                                break
+                        except Exception:
+                            continue
+            if not tdeed_inference_succeeded and video_path and os.path.exists(video_path):
+                logger.info("Running T-DEED deep-learning action spotter on %s...", video_path)
+                spotter = TDEEDActionSpotter()
+                tdeed_predictions = spotter.spot_events(video_path, threshold=0.25, stride=2)
+                tdeed_inference_succeeded = True
+                with open(cache_path, "w") as f:
+                    json.dump(tdeed_predictions, f)
+                logger.info("T-DEED spotted %d actions, saved to %s", len(tdeed_predictions), cache_path)
+            elif not tdeed_inference_succeeded:
+                raise FileNotFoundError(f"Video unavailable for T-DEED inference: {video_path}")
     except Exception as exc:
         logger.warning("T-DEED action spotter skipped or failed (%s), using heuristic detection", exc)
         tdeed_predictions = []
@@ -1355,15 +1415,25 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
 
             # Find closest player at pass launch
             passer, best_dist = None, float("inf")
+            has_pitch_launch = (b_pt.x_m is not None)
             for ident in identities:
                 if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
                     continue
                 pos = ident.trajectory.get(f)
-                if pos:
+                if has_pitch_launch and pos:
                     d = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
-                    if d < best_dist:
-                        best_dist = d
-                        passer = ident
+                else:
+                    det = getattr(ident, "pixel_detections", {}).get(f)
+                    if det is not None and getattr(b_pt, "x_px", None) is not None:
+                        feet_x, feet_y = (det.x1 + det.x2) / 2.0, det.y2
+                        h_box = max(10.0, det.y2 - det.y1)
+                        d_norm = (((b_pt.x_px - feet_x) ** 2 + (b_pt.y_px - feet_y) ** 2) ** 0.5) / h_box
+                        d = d_norm * 2.0
+                    else:
+                        d = float("inf")
+                if d < best_dist:
+                    best_dist = d
+                    passer = ident
 
             if (
                 passer is None
@@ -1387,16 +1457,26 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 ahead_b = ball_pt_map.get(f_ahead)
                 if not ahead_b:
                     continue
+                has_pitch_ahead = (ahead_b.x_m is not None)
                 for ident in identities:
                     if getattr(ident, "cls", None) in (ObjectClass.REFEREE, ObjectClass.BALL) or ident.team == Team.REFEREE:
                         continue
                     r_pos = ident.trajectory.get(f_ahead)
-                    if r_pos:
+                    if has_pitch_ahead and r_pos:
                         d_ball = ((r_pos.x_m - ahead_b.x_m) ** 2 + (r_pos.y_m - ahead_b.y_m) ** 2) ** 0.5
-                        if d_ball <= 3.2 and d_ball < best_rec_dist:
-                            best_rec_dist = d_ball
-                            receiver = ident
-                            rec_frame = f_ahead
+                    else:
+                        det = getattr(ident, "pixel_detections", {}).get(f_ahead)
+                        if det is not None and getattr(ahead_b, "x_px", None) is not None:
+                            feet_x, feet_y = (det.x1 + det.x2) / 2.0, det.y2
+                            h_box = max(10.0, det.y2 - det.y1)
+                            d_norm = (((ahead_b.x_px - feet_x) ** 2 + (ahead_b.y_px - feet_y) ** 2) ** 0.5) / h_box
+                            d_ball = d_norm * 2.0
+                        else:
+                            d_ball = float("inf")
+                    if d_ball <= 3.2 and d_ball < best_rec_dist:
+                        best_rec_dist = d_ball
+                        receiver = ident
+                        rec_frame = f_ahead
                 # If we found a very close receiver (< 1.8m), stop searching
                 if receiver and best_rec_dist <= 1.8:
                     break
@@ -1415,7 +1495,15 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             )
             end_f = rec_frame if rec_frame else fallback_end
             end_b = ball_pt_map.get(end_f, b_pt)
-            pass_len = ((end_b.x_m - b_pt.x_m) ** 2 + (end_b.y_m - b_pt.y_m) ** 2) ** 0.5
+            if b_pt.x_m is not None and end_b.x_m is not None:
+                pass_len = ((end_b.x_m - b_pt.x_m) ** 2 + (end_b.y_m - b_pt.y_m) ** 2) ** 0.5
+                sx_val, sy_val = round(b_pt.x_m, 2), round(b_pt.y_m, 2)
+                ex_val, ey_val = round(end_b.x_m, 2), round(end_b.y_m, 2)
+            else:
+                scale_px = 1.8 / 50.0
+                pass_len = (((end_b.x_px or 0.0) - (b_pt.x_px or 0.0)) ** 2 + ((end_b.y_px or 0.0) - (b_pt.y_px or 0.0)) ** 2) ** 0.5 * scale_px
+                sx_val, sy_val = 0.0, 0.0
+                ex_val, ey_val = 0.0, 0.0
 
             tdeed_recorded_passes.append({
                 "frame_idx": end_f,
@@ -1427,10 +1515,10 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 "team": p_team.value,
                 "passer_team": p_team.value,
                 "receiver_team": receiver.team.value if (receiver and hasattr(receiver.team, "value")) else (receiver.team if receiver else ""),
-                "start_x": round(b_pt.x_m, 2),
-                "start_y": round(b_pt.y_m, 2),
-                "end_x": round(end_b.x_m, 2),
-                "end_y": round(end_b.y_m, 2),
+                "start_x": sx_val,
+                "start_y": sy_val,
+                "end_x": ex_val,
+                "end_y": ey_val,
                 "distance_m": round(pass_len, 1),
                 "length_m": round(pass_len, 1),
                 "speed_mps": round(pass_len / (max(1, end_f - f) / 25.0), 1),
@@ -1450,9 +1538,15 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 )
             )
 
+        # Enrich continuous tracking passes with T-DEED spotted confidence where timestamps align
         if tdeed_recorded_passes:
-            recorded_passes = tdeed_recorded_passes
-            pass_events = tdeed_pass_events
+            tdeed_f_map = {tp["start_frame"]: tp for tp in tdeed_recorded_passes}
+            for p in recorded_passes:
+                sf = p.get("start_frame", p.get("frame_idx", 0))
+                matching_tp = next((tp for tf, tp in tdeed_f_map.items() if abs(tf - sf) <= 5), None)
+                if matching_tp:
+                    p["tdeed_confidence"] = matching_tp.get("confidence", 0.5)
+                    p["source"] = "tracking+tdeed"
 
         # Merge / cross-reference shots
         tdeed_shot_events = []
@@ -1467,7 +1561,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 if abs(ball_frame - f) > 5:
                     continue
                 b_pt = ball_pt_map[ball_frame]
-            if b_pt is None:
+            if b_pt is None or b_pt.x_m is None or b_pt.y_m is None:
                 continue
             target_goal = (52.5, 0.0) if b_pt.x_m >= 0 else (-52.5, 0.0)
             dist = ((target_goal[0] - b_pt.x_m) ** 2 + (target_goal[1] - b_pt.y_m) ** 2) ** 0.5
@@ -1502,24 +1596,20 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
     team_by_master_id = {i.master_id: i.team for i in identities}
 
     passes_by_team = {Team.TEAM_A: 0, Team.TEAM_B: 0}
-    for e in pass_events:
-        passer_team = team_by_master_id.get(e.player_master_id)
-        if passer_team in passes_by_team:
-            passes_by_team[passer_team] += 1
-
-    # Per-player completed-pass count, same track_id space as
-    # player_stats_csv below (identity.master_id). NOTE: detect_passes
-    # only ever emits a COMPLETED pass — a failed/intercepted pass is
-    # architecturally invisible to this stage (see events.py), so this
-    # is a real "passes completed" count but there is deliberately no
-    # matching "passes attempted"/"pass accuracy" anywhere real — don't
-    # try to derive one, it would be fabricated. See _load_real_distance_by_jersey
-    # / _load_real_distance_by_assignment and _dummy_player_rows in
-    # views.py for how this is kept separate from the still-dummy
-    # attempted/accuracy fields on the results page.
     passes_completed_by_track_id = defaultdict(int)
-    for e in pass_events:
-        passes_completed_by_track_id[e.player_master_id] += 1
+    for p in recorded_passes:
+        if p.get("is_completed"):
+            p_team_val = p.get("passer_team", "")
+            if p_team_val == Team.TEAM_A.value:
+                passes_by_team[Team.TEAM_A] += 1
+            elif p_team_val == Team.TEAM_B.value:
+                passes_by_team[Team.TEAM_B] += 1
+            pid = p.get("passer_track_id") or p.get("player_id")
+            if pid:
+                try:
+                    passes_completed_by_track_id[int(pid)] += 1
+                except (ValueError, TypeError):
+                    passes_completed_by_track_id[pid] += 1
 
     # Per-shot: closest identity (not just team) to the ball at the shot
     # frame — same "closest identity to ball at that frame" inference
@@ -1546,7 +1636,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
 
     for e in shot_events:
         ball_pos = ball_pitch_by_frame.get(e.frame_idx)
-        if ball_pos is None:
+        if ball_pos is None or ball_pos.x_m is None or ball_pos.y_m is None:
             continue
 
         target_goal = e.metadata.get("target_goal", (52.5, 0.0))
@@ -1564,7 +1654,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             for f in range(max(0, e.frame_idx - 4), e.frame_idx + 2):
                 pos = identity.trajectory.get(f)
                 b_pt = ball_pitch_by_frame.get(f)
-                if pos is None or b_pt is None:
+                if pos is None or b_pt is None or pos.x_m is None or b_pt.x_m is None or pos.y_m is None or b_pt.y_m is None:
                     continue
                 dist = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
                 if dist < closest_dist:
@@ -1582,7 +1672,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 for f in range(max(0, e.frame_idx - 6), e.frame_idx + 3):
                     pos = identity.trajectory.get(f)
                     b_pt = ball_pitch_by_frame.get(f)
-                    if pos is None or b_pt is None:
+                    if pos is None or b_pt is None or pos.x_m is None or b_pt.x_m is None or pos.y_m is None or b_pt.y_m is None:
                         continue
                     dist = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
                     if dist < attacker_dist:
@@ -1612,7 +1702,7 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
                 for f in range(max(0, e.frame_idx - 6), e.frame_idx + 3):
                     pos = identity.trajectory.get(f)
                     b_pt = ball_pitch_by_frame.get(f)
-                    if pos and b_pt:
+                    if pos and b_pt and pos.x_m is not None and b_pt.x_m is not None and pos.y_m is not None and b_pt.y_m is not None:
                         d = ((pos.x_m - b_pt.x_m) ** 2 + (pos.y_m - b_pt.y_m) ** 2) ** 0.5
                         if d < best_striker_dist:
                             best_striker_dist = d
@@ -1652,8 +1742,8 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             "minute": video_minute,
             "track_id": track_id,
             "team": shot_team.value,
-            "pitch_x": round(ball_pos.x_m, 2),
-            "pitch_y": round(ball_pos.y_m, 2),
+            "pitch_x": round(ball_pos.x_m, 2) if ball_pos and ball_pos.x_m is not None else 0.0,
+            "pitch_y": round(ball_pos.y_m, 2) if ball_pos and ball_pos.y_m is not None else 0.0,
             "target_goal_x": target_goal[0],
             "target_goal_y": target_goal[1],
             "distance_m": round(e.metadata["origin_distance_m"], 1),
@@ -1673,8 +1763,18 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
         shot_events=shot_events,
         fps=25.0,
     )
-    passes_attempted_by_team = extended_events["team_passes_attempted"]
-    passes_attempted_by_track_id = extended_events["passes_attempted"]
+    passes_attempted_by_team = {
+        Team.TEAM_A: sum(1 for p in recorded_passes if p.get("passer_team") == Team.TEAM_A.value),
+        Team.TEAM_B: sum(1 for p in recorded_passes if p.get("passer_team") == Team.TEAM_B.value),
+    }
+    passes_attempted_by_track_id = defaultdict(int)
+    for p in recorded_passes:
+        pid = p.get("passer_track_id") or p.get("player_id")
+        if pid:
+            try:
+                passes_attempted_by_track_id[int(pid)] += 1
+            except (ValueError, TypeError):
+                passes_attempted_by_track_id[pid] += 1
     tackles_by_track_id = extended_events["tackles"]
     interceptions_by_track_id = extended_events["interceptions"]
     clearances_by_track_id = extended_events["clearances"]
@@ -1709,8 +1809,9 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
     # TeamStatistics: real possession, shots, shots on target, passes completed/attempted, accuracy, corners, speed
     for team_enum, team_obj in [(Team.TEAM_A, match.home_team), (Team.TEAM_B, match.away_team)]:
         possession_pct = possession_pct_by_team.get(team_enum, 50.0)
-        completed = passes_by_team[team_enum]
-        attempted = passes_attempted_by_team.get(team_enum, completed)
+        t_key = team_enum.value
+        completed = sum(1 for p in recorded_passes if p.get("is_completed") and p.get("passer_team") == t_key)
+        attempted = sum(1 for p in recorded_passes if p.get("passer_team") == t_key)
         if attempted < completed:
             attempted = completed
         accuracy = round(100.0 * completed / attempted, 1) if attempted > 0 else 0.0
