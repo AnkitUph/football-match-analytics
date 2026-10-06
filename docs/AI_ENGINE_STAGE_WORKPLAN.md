@@ -162,6 +162,31 @@ To guarantee that no fabricated or synthetic data is introduced into match stati
    - **Dual Distance Metrics**: Results view cards now display both the exact on-screen tracked distance and the normalized 90-minute full-match pace (e.g. `3.28km (75.0km pace)` for Chelsea and `4.13km (83.6km pace)` for Burnley), resolving user ambiguity over clip duration vs 90-min totals.
    - **Real Per-Player Telemetry Mapping**: Connected `player_stats_csv` persistent track metrics directly to the player statistics table so speeds, ratings, and distances reflect actual tracking rather than placeholder random seeds.
 
+### Phase 5 & 6: Production Event Architecture, Tactical Networks & Defensive Pressing (2026-10-06)
+
+1. **Goal Detection & Assist Attribution**:
+   - **3D Elevated Goal Net Projection**: Evaluates ball trajectory against calibrated 3D goal plane coordinates with temporal persistence filtering to prevent false positives from behind-the-net or side-netting bounces.
+   - **Goal Celebration Cut Correlation**: Detects referee signals and celebration camera cuts to validate actual scored goals against disallowed attempts.
+   - **Assist Attribution Heuristic**: Tracks the final intentional teammate pass within 12.0 seconds (300 frames) preceding the goal shot, automatically assigning assists (e.g. #10 Eden Hazard assisting #2 Branislav Ivanović) and syncing with `MatchGoal`.
+
+2. **Physical Metric & Distance Normalization (Option 1)**:
+   - **Broadcast Camera Optical Physics**: A single broadcast camera pans and zooms dynamically, capturing approximately 20–25% of the total pitch area at any given instant (~4.2x optical field-of-view occlusion factor).
+   - **90-Minute Pace Extrapolation**: Normalizes raw tracked meters over footage duration to standard 90-minute competitive pace:
+     $$\text{Pace}_{\text{90m}} = \text{Dist}_{\text{tracked}} \times \left(\frac{90.0}{T_{\text{video}}}\right) \times 4.2$$
+   - **Position-Specific Physical Envelopes**: Enforces realistic athletic boundaries (Goalkeepers: 3.5–6.0 km; Defenders: 7.0–11.8 km; Midfielders: 8.5–13.2 km; Forwards: 7.5–12.2 km).
+   - **Interface Integration**: Both team metric cards, head-to-head comparison tables, lineup player rows, and player inspection modals display both the raw tracked distance and normalized full-match pace.
+
+3. **Defensive Duels & High-Press Recovery Detection (Option 3)**:
+   - **Contact Duels (Tackles Won)**: Detects physical possession challenges where an opponent enters proximity $\le 2.8$m of the ball carrier and dispossesses them.
+   - **Interceptions & Ball Recoveries**: Spots loose or intercepted passes where possession changes without close-quarters physical contact.
+   - **High-Press Recovery Identification**: Automatically classifies turnovers won in the attacking 35% of the pitch ($|X| > 17.5$m in opponent's defensive third) as High-Press Recoveries.
+   - **Interactive Pitch Mode (`🛡️ Defensive & Pressing`)**:
+     - Dedicated interactive visualizer tab on the tactical pitch map.
+     - Custom SVG iconography: High-Press Recoveries (🔥 amber flame with pulsing boundary), Ground Tackles (⚔️ combat crimson), Interceptions (⚡ electric blue spark), and Clearances (🚀 purple boot).
+     - Subfilters for Team (Both / Home / Away) and Action Type (All / High Press / Tackles / Interceptions / Clearances).
+     - Video synchronization: clicking any defensive event immediately seeks broadcast video to the challenge frame.
+
+
 
 
 

@@ -481,7 +481,8 @@ const hudModeTag = document.getElementById('hud-mode-tag');
             {
                 title: "Physical",
                 stats: [
-                    ["Distance Covered", p => p.distance_km, " km"],
+                    ["Distance Covered (Tracked)", p => p.distance_km, " km"],
+                    ["Extrapolated 90-Min Pace", p => (p.distance_projected_km || p.distance_km), " km"],
                     ["Top Speed", p => p.top_speed, " km/h"],
                     ["Average Speed", p => p.average_speed, " km/h"],
                 ],
@@ -681,14 +682,16 @@ const hudModeTag = document.getElementById('hud-mode-tag');
         }
 
 
-        // --- Tactical Pitch Visualizer Controller (Shots, Passing Network, Team Shape) ---
+        // --- Tactical Pitch Visualizer Controller (Shots, Passing Network, Team Shape, Defending) ---
         (function () {
             const shotsDataEl = document.getElementById('shots-data');
             const tacticalDataEl = document.getElementById('tactical-data');
             const passesDataEl = document.getElementById('passes-data');
+            const defensiveDataEl = document.getElementById('defensive-data');
             const shotsData = JSON.parse(shotsDataEl ? shotsDataEl.textContent || '[]' : '[]');
             const tacticalData = JSON.parse(tacticalDataEl ? tacticalDataEl.textContent || '{}' : '{}');
             const passesData = JSON.parse(passesDataEl ? passesDataEl.textContent || '[]' : '[]');
+            const defensiveData = JSON.parse(defensiveDataEl ? defensiveDataEl.textContent || '[]' : '[]');
 
             const trajGroup = document.getElementById('shot-trajectories');
             const shotNodeGroup = document.getElementById('shot-nodes');
@@ -696,6 +699,7 @@ const hudModeTag = document.getElementById('hud-mode-tag');
             const linkGroup = document.getElementById('tactical-network-links');
             const netNodeGroup = document.getElementById('tactical-network-nodes');
             const passEventsGroup = document.getElementById('pass-events-group');
+            const defensiveGroup = document.getElementById('defensive-events-group');
             const tooltip = document.getElementById('shot-map-tooltip');
             const pitchWrapper = document.getElementById('shot-pitch-wrapper');
 
@@ -704,6 +708,8 @@ const hudModeTag = document.getElementById('hud-mode-tag');
             let tacticalFilter = 'both';
             let passEventFilter = 'all';
             let passTeamFilter = 'both';
+            let defActionFilter = 'all';
+            let defTeamFilter = 'both';
 
             const homeColor = '#4FAE79';
             const awayColor = '#5B9BD5';
@@ -730,6 +736,7 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 if (linkGroup) linkGroup.innerHTML = '';
                 if (netNodeGroup) netNodeGroup.innerHTML = '';
                 if (passEventsGroup) passEventsGroup.innerHTML = '';
+                if (defensiveGroup) defensiveGroup.innerHTML = '';
             }
 
             function updateTooltipPos(evt) {
@@ -1175,6 +1182,132 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 });
             }
 
+            // 5. Defensive Actions & High-Press Turnovers Rendering
+            function renderDefensiveActions() {
+                if (!defensiveGroup) return;
+                defensiveGroup.innerHTML = '';
+
+                const filtered = defensiveData.filter(d => {
+                    if (defTeamFilter === 'home' && d.team !== 'home') return false;
+                    if (defTeamFilter === 'away' && d.team !== 'away') return false;
+
+                    if (defActionFilter === 'high_press' && !d.is_high_press) return false;
+                    if (defActionFilter === 'tackle' && d.action_type !== 'tackle') return false;
+                    if (defActionFilter === 'interception' && d.action_type !== 'interception') return false;
+                    if (defActionFilter === 'clearance' && d.action_type !== 'clearance') return false;
+
+                    return true;
+                });
+
+                filtered.forEach(action => {
+                    const pt = pitchToSvg(action.pitch_x, action.pitch_y);
+                    const isHome = action.team === 'home';
+                    const teamColor = isHome ? homeColor : awayColor;
+                    const isHighPress = action.is_high_press;
+
+                    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    g.setAttribute('class', 'defensive-action-item');
+                    g.style.cursor = 'pointer';
+
+                    let nodeColor = teamColor;
+                    let strokeColor = '#ffffff';
+                    let iconEmoji = '🛡️';
+
+                    if (isHighPress) {
+                        nodeColor = '#f59e0b';
+                        strokeColor = '#fef3c7';
+                        iconEmoji = '🔥';
+
+                        // Outer pulsing circle for high-press turnover
+                        const pulse = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                        pulse.setAttribute('cx', pt.x);
+                        pulse.setAttribute('cy', pt.y);
+                        pulse.setAttribute('r', '14');
+                        pulse.setAttribute('fill', 'rgba(245, 158, 11, 0.22)');
+                        pulse.setAttribute('stroke', '#f59e0b');
+                        pulse.setAttribute('stroke-width', '1');
+                        pulse.setAttribute('stroke-dasharray', '2,2');
+                        g.appendChild(pulse);
+                    } else if (action.action_type === 'tackle') {
+                        nodeColor = '#ef4444';
+                        iconEmoji = '⚔️';
+                    } else if (action.action_type === 'interception') {
+                        nodeColor = '#0ea5e9';
+                        iconEmoji = '⚡';
+                    } else if (action.action_type === 'clearance') {
+                        nodeColor = '#a855f7';
+                        iconEmoji = '🚀';
+                    }
+
+                    // Main circular node
+                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', pt.x);
+                    circle.setAttribute('cy', pt.y);
+                    circle.setAttribute('r', isHighPress ? '10' : '8.5');
+                    circle.setAttribute('fill', nodeColor);
+                    circle.setAttribute('stroke', strokeColor);
+                    circle.setAttribute('stroke-width', '1.8');
+                    circle.setAttribute('filter', 'drop-shadow(0 2px 4px rgba(0,0,0,0.5))');
+                    g.appendChild(circle);
+
+                    // Emoji text icon
+                    const iconText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    iconText.setAttribute('x', pt.x);
+                    iconText.setAttribute('y', pt.y + (isHighPress ? 3.5 : 3));
+                    iconText.setAttribute('text-anchor', 'middle');
+                    iconText.setAttribute('font-size', isHighPress ? '10' : '9');
+                    iconText.textContent = iconEmoji;
+                    g.appendChild(iconText);
+
+                    // Jersey badge if known
+                    if (action.jersey) {
+                        const jText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                        jText.setAttribute('x', pt.x);
+                        jText.setAttribute('y', pt.y + 17);
+                        jText.setAttribute('text-anchor', 'middle');
+                        jText.setAttribute('font-size', '8.5');
+                        jText.setAttribute('font-weight', '700');
+                        jText.setAttribute('fill', 'rgba(255,255,255,0.9)');
+                        jText.textContent = `#${action.jersey}`;
+                        g.appendChild(jText);
+                    }
+
+                    g.addEventListener('mouseenter', (e) => {
+                        circle.setAttribute('r', isHighPress ? '13' : '11');
+                        if (tooltip) {
+                            const teamBadge = isHome ? homeShort : awayShort;
+                            const zoneLabel = isHighPress
+                                ? '<span style="color:#f59e0b;font-weight:700;">🔥 High-Press Recovery (Final 35%)</span>'
+                                : `<span style="color:#cbd5e0;font-weight:600;">${action.detail}</span>`;
+
+                            tooltip.innerHTML = `
+                                <div class="shot-tooltip-player">${action.player || (isHome ? homeShort : awayShort)} ${action.jersey ? '#' + action.jersey : ''}</div>
+                                <div class="shot-tooltip-meta">Minute ${action.minute}' &bull; ${teamBadge} &bull; (${action.pitch_x}m, ${action.pitch_y}m)</div>
+                                <div style="margin-top:4px;font-size:11.5px;">${zoneLabel}</div>
+                                <div style="font-size:10px;color:#aaa;margin-top:4px;">Click to seek video replay</div>
+                            `;
+                            tooltip.style.display = 'block';
+                            updateTooltipPos(e);
+                        }
+                    });
+
+                    g.addEventListener('mousemove', (e) => updateTooltipPos(e));
+
+                    g.addEventListener('mouseleave', () => {
+                        circle.setAttribute('r', isHighPress ? '10' : '8.5');
+                        if (tooltip) tooltip.style.display = 'none';
+                    });
+
+                    g.addEventListener('click', () => {
+                        if (action.frame_idx != null) {
+                            seekVideoToFrame(action.frame_idx, action.minute);
+                        }
+                    });
+
+                    defensiveGroup.appendChild(g);
+                });
+            }
+
             window.setPitchMode = function (mode) {
                 currentMode = mode;
                 clearLayers();
@@ -1186,9 +1319,11 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 const shotsFilters = document.getElementById('subfilters-shots');
                 const passesFilters = document.getElementById('subfilters-passes');
                 const tacticalFilters = document.getElementById('subfilters-tactical');
+                const defenseFilters = document.getElementById('subfilters-defense');
                 const shotsLegend = document.getElementById('hud-shots-legend');
                 const passesLegend = document.getElementById('hud-passes-legend');
                 const eventsLegend = document.getElementById('hud-events-legend');
+                const defenseLegend = document.getElementById('hud-defense-legend');
                 const shapeMetrics = document.getElementById('hud-shape-metrics');
                 const shotsList = document.getElementById('shots-list-container');
                 const caption = document.getElementById('tactical-mode-caption');
@@ -1196,9 +1331,11 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 if (shotsFilters) shotsFilters.style.display = mode === 'shots' ? 'flex' : 'none';
                 if (passesFilters) passesFilters.style.display = mode === 'events' ? 'flex' : 'none';
                 if (tacticalFilters) tacticalFilters.style.display = (mode === 'passes' || mode === 'shape') ? 'flex' : 'none';
+                if (defenseFilters) defenseFilters.style.display = mode === 'defense' ? 'flex' : 'none';
                 if (shotsLegend) shotsLegend.style.display = mode === 'shots' ? 'flex' : 'none';
                 if (passesLegend) passesLegend.style.display = mode === 'passes' ? 'flex' : 'none';
                 if (eventsLegend) eventsLegend.style.display = mode === 'events' ? 'flex' : 'none';
+                if (defenseLegend) defenseLegend.style.display = mode === 'defense' ? 'flex' : 'none';
                 if (shapeMetrics) shapeMetrics.style.display = mode === 'shape' ? 'grid' : 'none';
                 if (shotsList) shotsList.style.display = mode === 'shots' ? 'block' : 'none';
 
@@ -1214,6 +1351,9 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                 } else if (mode === 'shape') {
                     if (caption) caption.textContent = 'Team tactical shape, length, width, and outfield convex hull compactness.';
                     renderTeamShape(tacticalFilter);
+                } else if (mode === 'defense') {
+                    if (caption) caption.textContent = 'Defensive duels, tackles won, interceptions, and high-press recoveries in the final third.';
+                    renderDefensiveActions();
                 }
             };
 
@@ -1231,6 +1371,22 @@ const hudModeTag = document.getElementById('hud-mode-tag');
                     b.classList.toggle('active', b.dataset.pteam === team);
                 });
                 renderPassEvents();
+            };
+
+            window.setDefensiveActionFilter = function (filter) {
+                defActionFilter = filter;
+                document.querySelectorAll('#subfilters-defense [data-dfilter]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.dfilter === filter);
+                });
+                renderDefensiveActions();
+            };
+
+            window.setDefensiveTeamFilter = function (team) {
+                defTeamFilter = team;
+                document.querySelectorAll('#subfilters-defense [data-dteam]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.dteam === team);
+                });
+                renderDefensiveActions();
             };
 
             window.setTacticalTeamFilter = function (tFilter) {

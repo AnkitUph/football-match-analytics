@@ -227,6 +227,8 @@
                                     onclick="setPitchMode('events')">⚡ Pass Events</button>
                                 <button type="button" class="pitch-mode-btn" id="btn-mode-shape" data-mode="shape"
                                     onclick="setPitchMode('shape')">📐 Team Shape</button>
+                                <button type="button" class="pitch-mode-btn" id="btn-mode-defense" data-mode="defense"
+                                    onclick="setPitchMode('defense')">🛡️ Defensive &amp; Pressing</button>
                             </div>
                         </div>
 
@@ -265,6 +267,26 @@
                                     onclick="setTacticalTeamFilter('home')">{{ match.home_team.short_name }}</button>
                                 <button type="button" class="shot-filter-btn" data-tfilter="away"
                                     onclick="setTacticalTeamFilter('away')">{{ match.away_team.short_name }}</button>
+                            </div>
+                            <div id="subfilters-defense" class="shot-filters" style="display:none;">
+                                <button type="button" class="shot-filter-btn active" data-dfilter="all"
+                                    onclick="setDefensiveActionFilter('all')">All Actions ({{ defensive_actions|length }})</button>
+                                <button type="button" class="shot-filter-btn" data-dfilter="high_press"
+                                    onclick="setDefensiveActionFilter('high_press')">🔥 High-Press Turnovers</button>
+                                <button type="button" class="shot-filter-btn" data-dfilter="tackle"
+                                    onclick="setDefensiveActionFilter('tackle')">⚔️ Tackles</button>
+                                <button type="button" class="shot-filter-btn" data-dfilter="interception"
+                                    onclick="setDefensiveActionFilter('interception')">⚡ Interceptions</button>
+                                <button type="button" class="shot-filter-btn" data-dfilter="clearance"
+                                    onclick="setDefensiveActionFilter('clearance')">🚀 Clearances</button>
+                                <span
+                                    style="border-left:1px solid rgba(255,255,255,0.2); margin: 0 4px; height: 16px; display:inline-block; vertical-align:middle;"></span>
+                                <button type="button" class="shot-filter-btn active" data-dteam="both"
+                                    onclick="setDefensiveTeamFilter('both')">Both</button>
+                                <button type="button" class="shot-filter-btn" data-dteam="home"
+                                    onclick="setDefensiveTeamFilter('home')">{{ match.home_team.short_name }}</button>
+                                <button type="button" class="shot-filter-btn" data-dteam="away"
+                                    onclick="setDefensiveTeamFilter('away')">{{ match.away_team.short_name }}</button>
                             </div>
                             <div id="tactical-mode-caption" style="font-size:11.5px; color:#718096;">
                                 Shot trajectories &amp; xG model derived from computer vision tracking.
@@ -357,6 +379,9 @@
                                 <!-- Dynamic Pass Event Vectors Group -->
                                 <g id="pass-events-group"></g>
 
+                                <!-- Dynamic Defensive & Pressing Actions Group -->
+                                <g id="defensive-events-group"></g>
+
                                 <!-- Dynamic Shot Lines and Nodes -->
                                 <g id="shot-trajectories"></g>
                                 <g id="shot-nodes"></g>
@@ -399,6 +424,18 @@
                             </div>
                             <div style="font-size:11px;color:#94a3b8;">Vectors represent measured pitch trajectory &amp;
                                 direction</div>
+                        </div>
+
+                        <!-- HUD 2.8: Defensive & High-Press Legend -->
+                        <div id="hud-defense-legend"
+                            style="display:none;margin-bottom:12px;font-size:11.5px;color:#cbd5e0;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+                                <span class="legend-item"><span style="color:#f6ad55;font-weight:700;">🔥 High-Press</span> (Opponent 35% Final Third)</span>
+                                <span class="legend-item"><span style="color:#ef4444;font-weight:700;">⚔️ Tackle</span> (Ground duel won)</span>
+                                <span class="legend-item"><span style="color:#38bdf8;font-weight:700;">⚡ Interception</span> (Ball cut off)</span>
+                                <span class="legend-item"><span style="color:#a855f7;font-weight:700;">🚀 Clearance</span> (Defensive 3rd kick)</span>
+                            </div>
+                            <div style="font-size:11px;color:#94a3b8;">Hover action for detail &bull; Click node to seek video replay</div>
                         </div>
 
                         <!-- HUD 3: Team Shape & Compactness Metrics Grid -->
@@ -734,9 +771,9 @@
                         </tr>
                         <tr>
                             <td class="stat-label">Distance Covered</td>
-                            <td class="home-val">{{ team_stats.home.distance_km }} km</td>
+                            <td class="home-val">{{ team_stats.home.distance_km }} km <span style="font-size:11px;color:#94a3b8;" title="Full-match 90m pace based on broadcast camera coverage">({{ team_stats.home.distance_extrapolated_km }} km pace)</span></td>
                             <td></td>
-                            <td class="away-val">{{ team_stats.away.distance_km }} km</td>
+                            <td class="away-val">{{ team_stats.away.distance_km }} km <span style="font-size:11px;color:#94a3b8;" title="Full-match 90m pace based on broadcast camera coverage">({{ team_stats.away.distance_extrapolated_km }} km pace)</span></td>
                         </tr>
                         <tr>
                             <td class="stat-label">Average Speed</td>
@@ -1018,7 +1055,7 @@
                                             {% else %}
                                                 <span class="badge-unverified" title="Unconfirmed player assignment">Unverified</span>
                                             {% endif %}
-                                            <span>{{ player.distance_km }} km</span>
+                                            <span>{{ player.distance_km }} km <span style="font-size:11px;color:#94a3b8;" title="Full-match 90m pace based on broadcast camera coverage">({{ player.distance_projected_km|default:player.distance_km }} km pace)</span></span>
                                         {% else %}
                                             <span class="badge-dummy">Est</span>
                                             <span>{{ player.distance_km }} km</span>
@@ -1049,7 +1086,7 @@
                                             {% else %}
                                                 <span class="badge-unverified" title="Unconfirmed player assignment">Unverified</span>
                                             {% endif %}
-                                            <span>{{ player.distance_km }} km</span>
+                                            <span>{{ player.distance_km }} km <span style="font-size:11px;color:#94a3b8;" title="Full-match 90m pace based on broadcast camera coverage">({{ player.distance_projected_km|default:player.distance_km }} km pace)</span></span>
                                         {% else %}
                                             <span class="badge-dummy">Est</span>
                                             <span>{{ player.distance_km }} km</span>
@@ -1578,6 +1615,7 @@
     {{ shots|json_script:"shots-data" }}
     {{ tactical_data|json_script:"tactical-data" }}
     {{ passes|json_script:"passes-data" }}
+    {{ defensive_actions|json_script:"defensive-data" }}
 
     <script>
         window.MATCH_STUDIO_CONFIG = {

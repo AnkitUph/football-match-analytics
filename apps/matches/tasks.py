@@ -1967,6 +1967,17 @@ def compute_pitch_mapping(self, match_id, finalize: bool = True):
             "pitch_x": c["pitch_x"],
             "pitch_y": c["pitch_y"],
         })
+    for d in extended_events.get("defensive_events", []):
+        all_events.append({
+            "frame_idx": d["frame_idx"],
+            "minute": d["minute"],
+            "event_type": "high_press_turnover" if d.get("is_high_press") else d["action_type"],
+            "team": d["team"],
+            "track_id": d.get("track_id", ""),
+            "detail": d["detail"],
+            "pitch_x": d["pitch_x"],
+            "pitch_y": d["pitch_y"],
+        })
     from apps.matches.models import MatchGoal
     for g in MatchGoal.objects.filter(match=match):
         frame_approx = int((g.minute or 1) * 60 * 25)

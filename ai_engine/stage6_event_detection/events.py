@@ -931,6 +931,7 @@ def detect_extended_match_events(
 
     team_passes_completed = defaultdict(int)
     team_passes_attempted = defaultdict(int)
+    defensive_events = []
 
     # 1. Analyze possession transitions for passes, interceptions, and tackles
     for idx, event in enumerate(possession_events):
@@ -965,16 +966,48 @@ def detect_extended_match_events(
                     pos1 = p1_ident.trajectory.get(next_ev.frame_idx) if p1_ident else None
                     pos2 = p2_ident.trajectory.get(next_ev.frame_idx) if p2_ident else None
 
+                    action_pos = pos2 if pos2 is not None else (pos1 if pos1 is not None else None)
+                    action_x = action_pos.x_m if action_pos is not None else 0.0
+                    action_y = action_pos.y_m if action_pos is not None else 0.0
+
+                    # Determine pitch zone & high press:
+                    # Team A attacks right (+X, attacking 3rd is x > 17.5m)
+                    # Team B attacks left (-X, attacking 3rd is x < -17.5m)
+                    t2_str = t2.value if hasattr(t2, "value") else str(t2)
+                    is_team_a = "team_a" in t2_str.lower() or "home" in t2_str.lower()
+                    if is_team_a:
+                        is_high_press = (action_x > 17.5)
+                        zone = "high_press" if is_high_press else ("midfield" if abs(action_x) <= 17.5 else "defensive")
+                    else:
+                        is_high_press = (action_x < -17.5)
+                        zone = "high_press" if is_high_press else ("midfield" if abs(action_x) <= 17.5 else "defensive")
+
                     if pos1 and pos2:
                         dist = ((pos1.x_m - pos2.x_m) ** 2 + (pos1.y_m - pos2.y_m) ** 2) ** 0.5
                         if dist <= 2.8:
                             # Close-quarters challenge: tackle won by p2
                             tackles[p2_id] += 1
+                            action_type = "tackle"
                         else:
                             # Loose / passed ball intercepted by p2
                             interceptions[p2_id] += 1
+                            action_type = "interception"
                     else:
                         interceptions[p2_id] += 1
+                        action_type = "interception"
+
+                    defensive_events.append({
+                        "frame_idx": next_ev.frame_idx,
+                        "minute": max(1, round((next_ev.frame_idx / fps) / 60.0)),
+                        "team": t2_str,
+                        "track_id": p2_id,
+                        "action_type": action_type,
+                        "is_high_press": is_high_press,
+                        "pitch_x": round(float(action_x), 2),
+                        "pitch_y": round(float(action_y), 2),
+                        "zone": zone,
+                        "detail": ("High-Press " if is_high_press else "") + ("Tackle Won" if action_type == "tackle" else "Interception / Ball Recovery"),
+                    })
         else:
             # Last possession event
             if t1 is not None:
@@ -1014,6 +1047,20 @@ def detect_extended_match_events(
                 if (cur.x_m < -25.0 and vx > 2.0) or (cur.x_m > 25.0 and vx < -2.0):
                     clearances[closest_id] += 1
                     last_clearance_frame = cur.frame_idx
+                    clr_team = team_by_id.get(closest_id)
+                    clr_team_str = clr_team.value if hasattr(clr_team, "value") else str(clr_team or "")
+                    defensive_events.append({
+                        "frame_idx": cur.frame_idx,
+                        "minute": max(1, round((cur.frame_idx / fps) / 60.0)),
+                        "team": clr_team_str,
+                        "track_id": closest_id,
+                        "action_type": "clearance",
+                        "is_high_press": False,
+                        "pitch_x": round(float(cur.x_m), 2),
+                        "pitch_y": round(float(cur.y_m), 2),
+                        "zone": "defensive",
+                        "detail": f"Defensive Clearance ({round(speed, 1)} m/s)",
+                    })
 
     # 3. Dribbles Completed: player moves with ball >= 4.5m with opponent nearby
     ball_by_frame = {b.frame_idx: b for b in ball_valid}
@@ -1046,6 +1093,7 @@ def detect_extended_match_events(
         "clearances": clearances,
         "dribbles": dribbles,
         "key_passes": key_passes,
+        "defensive_events": defensive_events,
     }
 
 
